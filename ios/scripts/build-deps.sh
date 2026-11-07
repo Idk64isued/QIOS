@@ -51,20 +51,20 @@ tar -xf "$ROOT/src/proxy-libintl-0.5.tar.gz" -C glib-2.88.3/subprojects
 # --- meson cross file ---------------------------------------------------------------------------------------
 cat > "$ROOT/ios-arm64.meson" <<EOM
 [binaries]
-c = ["$CLANG", "-arch", "arm64", "-isysroot", "$SDK", "-miphoneos-version-min=$MIN"]
-cpp = ["$(xcrun -f clang++)", "-arch", "arm64", "-isysroot", "$SDK", "-miphoneos-version-min=$MIN"]
-objc = ["$CLANG", "-arch", "arm64", "-isysroot", "$SDK", "-miphoneos-version-min=$MIN"]
-ar = "$(xcrun -f ar)"
-strip = "$(xcrun -f strip)"
-pkg-config = "$(command -v pkg-config)"
+c = ['$CLANG', '-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=$MIN']
+cpp = ['$(xcrun -f clang++)', '-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=$MIN']
+objc = ['$CLANG', '-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=$MIN']
+ar = '$(xcrun -f ar)'
+strip = '$(xcrun -f strip)'
+pkg-config = '$(command -v pkg-config)'
 [host_machine]
-system = "darwin"
-subsystem = "ios"
-kernel = "xnu"
-cpu_family = "aarch64"
-cpu = "aarch64"
-endian = "little"
-[built-in options]
+system = 'darwin'
+subsystem = 'ios'
+kernel = 'xnu'
+cpu_family = 'aarch64'
+cpu = 'aarch64'
+endian = 'little'
+[properties]
 needs_exe_wrapper = true
 EOM
 CROSS=(--cross-file "$ROOT/ios-arm64.meson")
