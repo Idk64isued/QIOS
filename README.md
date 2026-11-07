@@ -1,7 +1,7 @@
 # Light Touch on iOS (StikDebug JIT, LiveContainer, GitHub Actions)
 
 Untested port. Nothing here has been compiled or run on a device; expect to fix things from the first CI logs.
-
+(Made with AI, Sorry)
 ## Install into your fork
 Run `import.sh` inside a clone of this repo (see the top of the script): it adds the LightTouchMac source plus `ios/` and `.github/`. Keep the repository **private**; the upstream README is kept as `UPSTREAM-README.md`.
 
