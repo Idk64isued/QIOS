@@ -27,9 +27,9 @@ jobs:
           key: ios-deps-${{ hashFiles('build-support/dependencies.json', 'ios/scripts/build-deps.sh') }}
       - name: Build dependencies
         if: steps.cache.outputs.cache-hit != 'true'
-        run: ios/scripts/build-deps.sh "$RUNNER_TEMP/qemu-ios" "$RUNNER_TEMP/ios-deps"
+        run: bash ios/scripts/build-deps.sh "$RUNNER_TEMP/qemu-ios" "$RUNNER_TEMP/ios-deps"
       - name: Build emulator libraries (JIT + interpreter)
-        run: ios/scripts/build-qemu.sh "$RUNNER_TEMP/qemu-ios" "$RUNNER_TEMP/ios-deps/prefix" "$RUNNER_TEMP/qemu-out"
+        run: bash ios/scripts/build-qemu.sh "$RUNNER_TEMP/qemu-ios" "$RUNNER_TEMP/ios-deps/prefix" "$RUNNER_TEMP/qemu-out"
       - name: Build the app
         working-directory: ios/App
         run: |
