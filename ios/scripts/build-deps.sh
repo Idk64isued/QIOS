@@ -57,12 +57,21 @@ needs_exe_wrapper = true
 EOM
 CROSS=(--cross-file "$ROOT/ios-arm64.meson")
 
-# The iOS SDK ships libffi/zlib/iconv; give pkg-config a way to find them.
-[ -f "$SDK/usr/include/ffi/ffi.h" ] || { echo "iOS SDK has no libffi headers at $SDK/usr/include/ffi" >&2; exit 1; }
-printf "Name: libffi\nDescription: iOS SDK libffi\nVersion: 3.4.0\nLibs: -lffi\nCflags: -I$SDK/usr/include/ffi\n" > "$P/lib/pkgconfig/libffi.pc"
+# The iOS SDK ships zlib and iconv but NOT libffi (the macOS SDK does), so libffi is built from source below.
 printf "Name: zlib\nDescription: iOS SDK zlib\nVersion: 1.2.12\nLibs: -lz\nCflags:\n" > "$P/lib/pkgconfig/zlib.pc"
 
 log() { echo "== $*"; }
+# --- libffi (not in dependencies.json; pinned here, sha256 recorded when this script was written) ------------
+log libffi
+LIBFFI=libffi-3.4.8.tar.gz
+LIBFFI_SHA256=bc9842a18898bfacb0ed1252c4febcc7e78fa139fd27fdc7a3e30d9d9356119b
+[ -f "$ROOT/src/$LIBFFI" ] || curl -fsSL -o "$ROOT/src/$LIBFFI" "https://github.com/libffi/libffi/releases/download/v3.4.8/$LIBFFI"
+echo "$LIBFFI_SHA256  $ROOT/src/$LIBFFI" | shasum -a 256 -c - || { echo "libffi checksum mismatch" >&2; exit 1; }
+tar -xf "$ROOT/src/$LIBFFI"
+(cd libffi-3.4.8 && CC="$CLANG $FLAGS" ./configure --prefix="$P" --libdir="$P/lib" --host=aarch64-apple-darwin --disable-shared \
+    --enable-static --disable-docs --disable-multi-os-directory >"$ROOT/logs/libffi.log" 2>&1 \
+  && make -j"$JOBS" >>"$ROOT/logs/libffi.log" 2>&1 && make install >>"$ROOT/logs/libffi.log" 2>&1) \
+  || { tail -40 "$ROOT/logs/libffi.log"; exit 1; }
 # --- pcre2 --------------------------------------------------------------------------------------------------
 log pcre2
 (cd pcre2-10.48 && CC="$CLANG $FLAGS" ./configure --prefix="$P" --host=aarch64-apple-darwin --disable-shared --enable-static \
