@@ -15,8 +15,8 @@ build() {   # NAME DYLIB EXTRA-CONFIGURE-ARGS...
     "$QEMU/configure" --cross-prefix= --cpu=aarch64 --cc="clang $FLAGS" --cxx="clang++ $FLAGS" --objcc="clang $FLAGS" \
         --target-list=arm-softmmu --without-default-features --enable-pixman --enable-slirp --enable-nettle --disable-pie \
         --disable-tools --disable-docs --audio-drv-list= --python="${QEMU_PYTHON:-python3}" \
-        --extra-cflags="-I$P/include -miphoneos-version-min=16.0" --extra-ldflags="-L$P/lib -lcrypto -miphoneos-version-min=16.0" "$@"
-    ninja -j"$JOBS" qemu-system-arm
+        --extra-cflags="-I$P/include -miphoneos-version-min=16.0 -DGLES_SILENCE_DEPRECATION -ferror-limit=0" --extra-ldflags="-L$P/lib -lcrypto -miphoneos-version-min=16.0" "$@"
+    ninja -k 0 -j"$JOBS" qemu-system-arm   # -k 0: keep going, so one run reports every failing file
     bash "$HERE/make-dylib-ios.sh" "$QEMU" "$PWD" "$dylib"
     cp "$dylib" "$OUT/"
 }
