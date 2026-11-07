@@ -1,0 +1,85 @@
+#!/bin/bash
+# The vendor directory for the current pins:
+#
+#     scripts/vendor-check --key [CHECKOUT]   the pin key of this checkout or another (scripts/vendor's directory name)
+#     scripts/vendor-check --print   the current pins' vendor directory, or one line saying to run scripts/vendor
+#     scripts/vendor-check           Xcode's first phase (LightTouchServices): with VENDOR_DIR at its default,
+#                                    $(SRCROOT)/build/vendor, point that link at the current pins' directory; with
+#                                    VENDOR_DIR set in Local.xcconfig, check that it is the current
+#                                    pins' directory. Either way a missing or stale one fails the build, and so
+#                                    does a MachineOptions.swift that isn't the one scripts/vendor wrote there.
+#
+# The key is the first 12 hex digits of a SHA-256 over every keyed file's relative path and content (directories
+# walked in byte order, without .build or .DS_Store, symlinks to files followed, symlinks to directories skipped).
+# The vendor root is ~/Developer/ltm-vendor.noindex, or LTM_VENDOR_ROOT outside Xcode and in Debug builds.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export LC_ALL=C
+
+pin_key() (
+    cd "$ROOT"
+    shopt -s dotglob nullglob
+    local names=(
+        build-support/sources.json build-support/dependencies.json build-support/recipes
+        build-support/developer-disk-images.json build-support/checks
+        Packages/BuildTools/Package.swift Packages/BuildTools/Sources
+        build-support/patches/*
+    )
+    local list=() name path
+    for name in "${names[@]}"; do
+        [[ "$(basename "$name")" == .DS_Store ]] && continue
+        if [[ -d "$name" ]]; then
+            while IFS= read -r path; do
+                [[ -L "$name/$path" && -d "$name/$path" ]] || list+=("$name/$path")
+            done < <(cd "$name" && find . \( -type f -o -type l \) ! -name .DS_Store | sed 's|^\./||' \
+                | grep -Ev '(^|/)\.build(/|$)' | sort)
+        elif [[ -e "$name" ]]; then
+            list+=("$name")
+        fi
+    done
+    local i=0 sums
+    sums=($(shasum -a 256 -- "${list[@]}" | cut -d' ' -f1))
+    for path in "${list[@]}"; do printf '%s\0%s\0' "$path" "${sums[i++]}"; done | shasum -a 256 | cut -c1-12
+)
+
+stale() {
+    local where="$1"
+    echo "error: no complete vendor directory for the current pins ($where): run scripts/vendor (about 15 minutes)" >&2
+    exit 1
+}
+
+# The -machine options of these pins' QEMU (scripts/vendor writes them into the vendor directory and the checkout).
+options() {
+    local generated="$1/MachineOptions.swift" checkout="$ROOT/Packages/HostRuntime/Sources/HostRuntime/MachineOptions.swift"
+    cmp -s "$generated" "$checkout" && return
+    [[ -f "$generated" ]] || stale "$1 has no MachineOptions.swift"
+    echo "error: $checkout is not the -machine options of these pins' QEMU: run scripts/vendor (it rewrites the file) and commit it" >&2
+    exit 1
+}
+
+default_root="$HOME/Developer/ltm-vendor.noindex"
+case "${1:-}" in
+    --key) [[ -z "${2:-}" ]] || ROOT="$(cd "$2" && pwd)"; pin_key; exit ;;
+    --print)
+        dir="${LTM_VENDOR_ROOT:-$default_root}/$(pin_key)"
+        [[ -f "$dir/vendor.json" ]] || stale "$dir"
+        echo "$dir"; exit ;;
+esac
+
+: "${VENDOR_DIR:?run from Xcode, or with --key or --print}"
+key="$(pin_key)"
+link="$ROOT/build/vendor"
+if [[ "$VENDOR_DIR" == "$link" ]]; then
+    root="$default_root"
+    [[ "${CONFIGURATION:-}" == Debug && -n "${LTM_VENDOR_ROOT:-}" ]] && root="$LTM_VENDOR_ROOT"
+    dir="${root/#\~/$HOME}/$key"
+    [[ -f "$dir/vendor.json" ]] || stale "$dir"
+    [[ "$(readlink "$link" 2>/dev/null)" == "$dir" ]] || { mkdir -p "$(dirname "$link")"; ln -sfn "$dir" "$link"; }
+    options "$dir"
+else
+    # An override (Local.xcconfig) must still be these pins' build.
+    real="$(cd "$VENDOR_DIR" 2>/dev/null && pwd -P)" || stale "VENDOR_DIR $VENDOR_DIR is missing"
+    [[ "$(basename "$real")" == "$key" && -f "$real/vendor.json" ]] \
+        || stale "VENDOR_DIR $VENDOR_DIR is not $key; drop the override or point it there"
+    options "$real"
+fi

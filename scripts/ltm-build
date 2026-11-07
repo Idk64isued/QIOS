@@ -1,0 +1,17 @@
+#!/bin/bash
+# The build's own tools (Packages/BuildTools), built on first use: scripts/ltm-build SUBCOMMAND ... (the subcommands
+# are listed in Packages/BuildTools/Sources/ltm-build/main.swift). LTM_BUILD_TOOL names an already built one
+# (scripts/vendor hands itself to the recipes it runs, whose compiler flags must not reach this build).
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -z "${LTM_BUILD_TOOL:-}" ]; then
+    PACKAGE="$ROOT/Packages/BuildTools"
+    clean=(env -i HOME="$HOME" PATH="/usr/bin:/bin:/usr/sbin:/sbin" TMPDIR="${TMPDIR:-/tmp}")
+    [ -z "${DEVELOPER_DIR:-}" ] || clean+=(DEVELOPER_DIR="$DEVELOPER_DIR")
+    # its own scratch path: a `swift test` of the package (BuildToolsTests runs tests/scripts/ship.sh, which runs this)
+    # holds the lock on the package's .build
+    build=(swift build -c release --package-path "$PACKAGE" --scratch-path "$ROOT/.build/ltm-build")
+    "${clean[@]}" "${build[@]}" -q >&2
+    LTM_BUILD_TOOL="$("${clean[@]}" "${build[@]}" --show-bin-path)/ltm-build"
+fi
+LTM_ROOT="$ROOT" exec "$LTM_BUILD_TOOL" "$@"

@@ -1,0 +1,36 @@
+#!/bin/bash
+# The one setup command, on a fresh Mac and after a pin bump: checks what a build needs (printing each missing piece
+# and where to get it), then builds what Xcode can't, from the pins, into a cached vendor directory that Archive
+# copies into the app:
+#
+#     scripts/vendor               check, then build (or reuse) ~/Developer/ltm-vendor.noindex/<pin-hash>/
+#     scripts/vendor --check       only check (exit 1 if anything is missing)
+#     scripts/vendor --release     also the built-in iPod (scripts/ship passes it)
+#     scripts/vendor --print       print the vendor directory for the current pins
+#
+# The checks, the layout, the inputs and the keying: Packages/BuildTools/Sources/BuildTools/Vendor.swift
+# (`scripts/vendor --help`).
+set -uo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# The pre-commit formatter (scripts/hooks/pre-commit) and blame's skip list of reformat commits (optional: a worktree
+# on an older branch has none, and blame would fail without the file).
+git -C "$ROOT" config core.hooksPath scripts/hooks &&
+    git -C "$ROOT" config blame.ignoreRevsFile ':(optional).git-blame-ignore-revs'
+# Xcode first: the rest of the checks are Swift (scripts/ltm-build), which needs it.
+version="$(xcodebuild -version 2>/dev/null | sed -n 's/^Xcode \([0-9]*\).*/\1/p')"
+if [[ -z "$version" ]]; then
+    printf 'missing: Xcode (xcode-select -p is %s)\n    %s\n' "$(xcode-select -p 2>/dev/null || echo unset)" \
+        "install Xcode 27 or later from the App Store or developer.apple.com, then: sudo xcode-select -s /Applications/Xcode.app"
+    exit 1
+elif ((version < 27)); then
+    printf 'missing: Xcode 27 or later (found %s)\n    %s\n' "$version" \
+        "developer.apple.com/download/all, then sudo xcode-select -s that Xcode"
+    exit 1
+fi
+"$ROOT/scripts/ltm-build" vendor "$@" || exit
+# Point build/vendor at this checkout's vendor directory now, not only in Xcode's first build phase: SwiftPM resolves
+# tests/offline (its headers come from build/vendor/include) before that phase runs, so on a fresh checkout or after
+# a pin bump the Unit plan failed to find libimobiledevice's headers.
+case " $* " in *" --check "* | *" --print "* | *" --help "* | *" -h "*) exit 0 ;; esac
+dir="$("$ROOT/scripts/vendor-check" --print)" || exit
+mkdir -p "$ROOT/build" && ln -sfn "$dir" "$ROOT/build/vendor"

@@ -1,0 +1,14 @@
+Light Touch links ANGLE's Metal backend to Metal strongly: the app's minimum macOS (14.4) always has Metal, and the
+release checks refuse weak imports, which ANGLE's -weak_framework made of every Metal symbol it uses.
+
+--- a/src/libANGLE/renderer/metal/BUILD.gn
++++ b/src/libANGLE/renderer/metal/BUILD.gn
+@@ -17,7 +17,7 @@ assert(angle_enable_metal)
+ config("angle_metal_backend_config") {
+   defines = [ "ANGLE_ENABLE_METAL" ]
+   ldflags = [
+-    "-weak_framework",
++    "-framework",
+     "Metal",
+   ]
+   include_dirs = [ "$root_gen_dir/angle" ]

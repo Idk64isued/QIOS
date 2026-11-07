@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: What Light Touch covers
+    url: https://github.com/samhenrigold/LightTouchMac#scope
+    about: Mac only, and only the devices in the README. Ports to other platforms and other devices aren't planned.

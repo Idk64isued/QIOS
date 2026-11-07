@@ -1,0 +1,37 @@
+name: Bug report
+description: Something doesn't work the way it should
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Light Touch version and build
+      description: From Light Touch ▸ About Light Touch, including the build number in parentheses. Reports without the build can't be looked into.
+      placeholder: 1.0 (1447)
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Emulated device and iOS version
+      description: Which device the problem is on, for example "iPod touch (2nd gen), iOS 3.1.3". The info below lists the selected device and every running one.
+  - type: textarea
+    id: info
+    attributes:
+      label: Light Touch info
+      description: Choose Help ▸ Copy Bug Report Info in Light Touch, then paste here. It names the build, your Mac and macOS, and each device's setup and storage, with no personal details. Required.
+      placeholder: Paste the block here.
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Select the device, then choose Help ▸ Export Diagnostics. It saves a zip of Light Touch's logs and that device's, with personal details removed. Attach it here.

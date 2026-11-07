@@ -1,0 +1,31 @@
+#!/bin/bash
+# Whether this Mac can take another emulator run now, as one line and an exit code:
+#     READY <load> <free slots> <free disk>     exit 0
+#     WAIT <why>                                exit 1
+# Waits on: the 1-minute load average at or over the core count (LTM_HOST_LOAD_PER_CORE, default 1.0, times the
+# cores), no free emulator slot (sessions' flocks: LTM_EMULATOR_SLOT_DIR, LTM_EMULATOR_SLOTS, default 3), or less than
+# LTM_HOST_MIN_DISK_GB (default 50) free under ~/Developer.
+set -uo pipefail
+cores="$(sysctl -n hw.ncpu)"
+load="$(sysctl -n vm.loadavg | awk '{print $2}')"
+limit="$(awk -v c="$cores" -v f="${LTM_HOST_LOAD_PER_CORE:-1.0}" 'BEGIN { print c * f }')"
+dir="${LTM_EMULATOR_SLOT_DIR:-$HOME/Developer/ltm-scratch.noindex/.emulator-slots}"
+slots="${LTM_EMULATOR_SLOTS:-3}"
+mkdir -p "$dir"
+free_slots="$(perl -e 'use Fcntl ":flock"; my $n = 0;
+    for my $i (0 .. $ARGV[1] - 1) { open(my $f, ">>", "$ARGV[0]/slot-$i") or next;
+        if (flock($f, LOCK_EX | LOCK_NB)) { $n++; flock($f, LOCK_UN) } close $f }
+    print $n' "$dir" "$slots")"
+disk_gb="$(df -Pk "$HOME/Developer" 2>/dev/null | awk 'NR == 2 { print int($4 / 1048576) }')"
+min_disk="${LTM_HOST_MIN_DISK_GB:-50}"
+
+why=()
+awk -v l="$load" -v m="$limit" 'BEGIN { exit !(l >= m) }' && why+=("load $load on $cores cores (limit $limit)")
+((free_slots > 0)) || why+=("all $slots emulator slots taken ($dir)")
+((disk_gb >= min_disk)) || why+=("${disk_gb} GB free under ~/Developer (want $min_disk; scripts/clean)")
+if ((${#why[@]})); then
+    joined="$(printf '%s; ' "${why[@]}")"
+    echo "WAIT ${joined%; }"
+    exit 1
+fi
+echo "READY load $load/$cores, $free_slots of $slots slots free, ${disk_gb} GB free"

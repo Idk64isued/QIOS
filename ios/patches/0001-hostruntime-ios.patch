@@ -1,0 +1,36 @@
+diff -ruN a/Packages/HostRuntime/Package.swift b/Packages/HostRuntime/Package.swift
+--- a/Packages/HostRuntime/Package.swift	2026-11-07 01:45:58.311832293 +0000
++++ b/Packages/HostRuntime/Package.swift	2026-11-07 01:45:58.325477742 +0000
+@@ -3,7 +3,7 @@
+ 
+ let package = Package(
+     name: "HostRuntime",
+-    platforms: [.macOS(.v13)],
++    platforms: [.macOS(.v13), .iOS(.v16)],
+     products: [.library(name: "HostRuntime", type: .static, targets: ["HostRuntime"])],
+     targets: [.target(name: "HostRuntime"), .testTarget(name: "HostRuntimeTests", dependencies: ["HostRuntime"])]
+ )
+diff -ruN a/Packages/HostRuntime/Sources/HostRuntime/DeviceInfo.swift b/Packages/HostRuntime/Sources/HostRuntime/DeviceInfo.swift
+--- a/Packages/HostRuntime/Sources/HostRuntime/DeviceInfo.swift	2026-11-07 01:45:58.311976075 +0000
++++ b/Packages/HostRuntime/Sources/HostRuntime/DeviceInfo.swift	2026-11-07 01:45:58.325592292 +0000
+@@ -62,6 +62,7 @@
+     public var screenPixels: CGSize { CGSize(width: screenWidth, height: screenHeight) }
+ 
+     /// Every machine `helper` (LightTouchDevice) runs: its machines launch ({"dylibPath", "machines"}).
++#if os(macOS)
+     public static func list(helper: URL) throws -> [DeviceInfo] {
+         let process = Process()
+         process.executableURL = helper
+@@ -95,6 +96,12 @@
+         struct Listing: Decodable { let machines: [DeviceInfo] }
+         return try JSONDecoder().decode(Listing.self, from: data).machines
+     }
++#else
++    /// iOS has no helper process: the app lists machines from the dlopen-ed library and calls Machines.set.
++    public static func list(helper: URL) throws -> [DeviceInfo] {
++        throw CocoaError(.featureUnsupported, userInfo: [NSLocalizedDescriptionKey: "no helper process on iOS"])
++    }
++#endif
+ }
+ 
+ /// The emulator's machines by board, for this process: listed once from the helper `Machines.helper` names (the

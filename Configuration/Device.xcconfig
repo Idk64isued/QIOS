@@ -1,0 +1,14 @@
+// The LightTouchDevice helper target, on top of Shared.xcconfig (the project's settings).
+
+PRODUCT_BUNDLE_IDENTIFIER = gold.samhenri.LightTouchMac.LightTouchDevice
+MARKETING_VERSION = 1.0
+INFOPLIST_FILE = Configuration/LightTouchDevice-Info.plist
+CREATE_INFOPLIST_SECTION_IN_BINARY = YES
+SKIP_INSTALL = YES
+ENABLE_DEBUG_DYLIB = NO
+SWIFT_OBJC_BRIDGING_HEADER = LightTouchDevice/GuestTLS.h
+
+// LTM_HELPER_SANDBOX (Shared.xcconfig) picks the sandboxed or plain entitlements; Debug adds
+// disable-library-validation, to load a qemu-ios development build.
+CODE_SIGN_ENTITLEMENTS = $(LTM_HELPER_ENTITLEMENTS_$(LTM_HELPER_SANDBOX))
+CODE_SIGN_ENTITLEMENTS[config=Debug] = $(LTM_HELPER_DEBUG_ENTITLEMENTS_$(LTM_HELPER_SANDBOX))

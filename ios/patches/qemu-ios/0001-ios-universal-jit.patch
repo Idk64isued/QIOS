@@ -1,0 +1,128 @@
+diff --git a/tcg/region.c b/tcg/region.c
+index f424971..116de9e 100644
+--- a/tcg/region.c
++++ b/tcg/region.c
+@@ -640,6 +640,7 @@ extern kern_return_t mach_vm_remap(vm_map_t target_task,
+ #if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+ #include <sys/types.h>
+ #include <sys/sysctl.h>
++#include <sys/utsname.h>
+ 
+ /*
+  * iOS has no JIT entitlement a development certificate can carry, so the only
+@@ -672,19 +673,83 @@ static int is_debugger_attached(void)
+ }
+ 
+ /*
+- * Ask the debugger to associate the code buffer as a legitimate debug mapping,
+- * by trapping with the range in x0/x1. The debugger writes into the range,
+- * which is what makes TXM accept it; without that, the first jump into
+- * generated code dies with EXC_BAD_ACCESS (code=50).
++ * Does this device have TXM (iOS 26+, A15/M2 and later)? Mirrors StikDebug's
++ * ProcessInfo.hasTXM, because StikDebug only runs its JIT script on devices it
++ * calls TXM: on the others it attaches, sets CS_DEBUGGED and detaches, and a
++ * brk here would stop the process with nobody left to continue it.
++ * QEMU_IOS_TXM=0|1 overrides the guess.
++ */
++static int ios_has_txm(void)
++{
++    const char *force = getenv("QEMU_IOS_TXM");
++    struct utsname u;
++    unsigned major = 0, minor = 0;
++    int is_ipad;
++
++    if (force && *force) {
++        return atoi(force) != 0;
++    }
++    if (!__builtin_available(iOS 26, visionOS 26, watchOS 26, tvOS 26, *)) {
++        return 0;
++    }
++    if (uname(&u) != 0) {
++        return 0;
++    }
++    if (__builtin_available(iOS 27, visionOS 27, watchOS 27, tvOS 27, *)) {
++        return strcmp(u.machine, "iPad8,11") && strcmp(u.machine, "iPad8,12");
++    }
++    is_ipad = !strncmp(u.machine, "iPad", 4);
++    if (sscanf(u.machine, is_ipad ? "iPad%u,%u" : "iPhone%u,%u",
++               &major, &minor) != 2) {
++        return 0;
++    }
++    /* StikDebug: major + minor/10^digits(minor) >= 14.2 (iPhone), 14.5 (iPad) */
++    return major > 14 || (major == 14 && minor >= (is_ipad ? 5 : 2));
++}
++
++/* CS_DEBUGGED stays set after the debugger detaches; non-TXM JIT needs only that. */
++extern int csops(pid_t pid, unsigned int ops, void *useraddr, size_t usersize);
++static int ios_cs_debugged(void)
++{
++    uint32_t flags = 0;
++    return csops(getpid(), 0 /* CS_OPS_STATUS */, &flags, sizeof(flags)) == 0
++           && (flags & 0x10000000 /* CS_DEBUGGED */);
++}
++
++static int jit_protocol_legacy(void)
++{
++    const char *p = getenv("QEMU_IOS_JIT_PROTOCOL");
++    return p && !strcmp(p, "legacy");
++}
++
++/*
++ * Ask the attached debugger to bless the code buffer. StikDebug's current
++ * universal.js speaks "JIT26": brk #0xf00d with the command in x16
++ * (0 detach, 1 prepare region); it answers the old brk #0x69 with an error.
++ * QEMU_IOS_JIT_PROTOCOL=legacy keeps #0x69 for legacy.js and lldb-jit.py.
+  *
+- * Nothing happens if the attached debugger does not understand this trap, so
+- * contrib/ios-app/lldb-jit.py has to be loaded for a JIT build to run.
++ * Under the universal script the debugger stays attached and keeps waiting for
++ * traps until told to detach, so detach as soon as the region is blessed
++ * (CS_DEBUGGED and the blessed pages outlive the debugger).
+  */
+ static void break_prepare_jit_region(mach_vm_address_t addr, size_t len)
+ {
+-    asm ("mov x0, %0\n"
+-         "mov x1, %1\n"
+-         "brk #0x69" :: "r" (addr), "r" (len) : "x0", "x1");
++    if (jit_protocol_legacy()) {
++        asm volatile("mov x0, %0\n"
++                     "mov x1, %1\n"
++                     "brk #0x69" :: "r" (addr), "r" (len) : "x0", "x1");
++        return;
++    }
++    {
++        register mach_vm_address_t x0 __asm__("x0") = addr;
++        register size_t x1 __asm__("x1") = len;
++        register uint64_t x16 __asm__("x16") = 1;
++        asm volatile("brk #0xf00d" : "+r"(x0) : "r"(x1), "r"(x16) : "memory");
++    }
++    {
++        register uint64_t x16 __asm__("x16") = 0;
++        asm volatile("brk #0xf00d" :: "r"(x16) : "memory");
++    }
+ }
+ #endif
+ 
+@@ -696,7 +761,12 @@ static int alloc_code_gen_buffer_splitwx_vmremap(size_t size, Error **errp)
+     int orig_prot = PROT_READ | PROT_WRITE;
+ 
+ #if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+-    if (__builtin_available(iOS 26, visionOS 26, watchOS 26, tvOS 26, *)) {
++    if (!ios_has_txm() && !ios_cs_debugged()) {
++        error_setg(errp, "jit needs StikDebug (or another debugger) to have "
++                         "enabled JIT for this process first");
++        return -1;
++    }
++    if (ios_has_txm()) {
+         /*
+          * Refuse early without a debugger. The mappings below would all
+          * SUCCEED -- measured on an A19: rx and rwx both map fine with
+@@ -754,7 +824,7 @@ static int alloc_code_gen_buffer_splitwx_vmremap(size_t size, Error **errp)
+     }
+ 
+ #if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+-    if (__builtin_available(iOS 26, visionOS 26, watchOS 26, tvOS 26, *)) {
++    if (ios_has_txm()) {
+         if (is_debugger_attached()) {
+             /* Only the debugger may bless this range; ask it to. */
+             break_prepare_jit_region(buf_rx, size);

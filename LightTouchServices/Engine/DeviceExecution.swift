@@ -1,0 +1,268 @@
+// The services helper's C engine: the deadline race (withDeadline, abandoned blocked C calls, handles a late open
+// leaves behind) and the one serial gate per process (DeviceGate). The errors, the timeout knobs and the soft
+// deadline are HostServiceWire's. Foundation only; the offline checks compile this file whole.
+
+import Foundation
+import HostServiceWire
+
+// MARK: - Deadline
+
+/// Race blocking work against a timeout. The loser is abandoned: a blocked C
+/// call ignores cancellation, so on a timeout the detached task keeps running
+/// until the call returns and its result is discarded — the deliberate leak the
+/// service process owns. The host registry kills and reaps the whole process
+/// before reporting a terminal timeout to the GUI.
+/// The race MUST be unstructured. A task group awaits every child before its
+/// scope unwinds — and `await Task.detached{}.value` is not interrupted by
+/// cancellation — so racing inside a group produced the timeout error but then
+/// blocked until the C call returned anyway: the deadline never actually fired,
+/// and a wedged guest held the serial gate forever (every later device op
+/// queued behind it with no error, looking like "buttons do nothing").
+/// Resume-once + a detached worker is what genuinely leaves the thread behind.
+func withDeadline<T: Sendable>(
+    _ seconds: Double,
+    _ operation: String,
+    _ work: @escaping @Sendable () throws -> T
+) async throws -> T {
+    try Task.checkCancellation()
+    let once = ResumeOnce<T>()
+    let worker = Task.detached {
+        let result: Result<T, Error>
+        do {
+            try Task.checkCancellation()
+            result = .success(try work())
+        } catch { result = .failure(error) }
+        // Timeout and cancellation count the abandoned worker while holding
+        // the resume-once lock. Only a losing worker returns that exact slot.
+        if !once.resume(result) { AbandonedWork.returned() }
+    }
+    let watchdog = Task.detached {
+        do { try await Task.sleep(for: .seconds(seconds)) } catch { return }
+        once.resume(
+            .failure(DeviceError.timedOut(operation: operation)),
+            onWin: {
+                AbandonedWork.abandoned(operation)
+                worker.cancel()
+            }
+        )
+    }
+    defer { watchdog.cancel() }
+    return try await withTaskCancellationHandler {
+        try await withCheckedThrowingContinuation { once.attach($0) }
+    } onCancel: {
+        // C handles remain owned by the worker. Stop waiting promptly, count
+        // the still-live session against the cap, and let cooperative upload
+        // loops unwind between C calls. A blocked call is never freed under it.
+        once.resume(
+            .failure(CancellationError()),
+            onWin: {
+                AbandonedWork.abandoned(operation)
+                worker.cancel()
+            }
+        )
+    }
+}
+
+/// How many blocked C threads have been walked away from and not come back.
+///
+/// The gate does NOT bound this on its own, whatever the header used to claim:
+/// what releases the gate is the deadline firing, not the thread finishing, so
+/// a guest that never answers leaks one thread and one lockdown session per
+/// attempt — and the list poll alone attempts one every few seconds. Each of
+/// those sessions is a slot the guest doesn't have, so piling on more is also
+/// what stops it from ever recovering. Past the cap, new work fails fast until
+/// the stuck threads drain, which they do the moment the guest comes back.
+nonisolated enum AbandonedWork {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var outstanding = 0
+
+    /// Above this, the guest is clearly not answering and more sessions will
+    /// not help. Two in flight is already one more than it serves.
+    static let cap = 3
+
+    static var count: Int { lock.withLock { outstanding } }
+
+    static func abandoned(_ operation: String) {
+        let n = lock.withLock {
+            outstanding += 1
+            return outstanding
+        }
+        logEvent("device: abandoned a blocked thread in \(operation) (\(n) outstanding)")
+    }
+
+    static func returned() {
+        lock.withLock { if outstanding > 0 { outstanding -= 1 } }
+    }
+}
+
+// MARK: - Handles a late open leaves behind
+
+/// What a blocking open hands back (a service client, its callback context);
+/// `free` is safe from any thread.
+nonisolated protocol OpenedHandles: AnyObject, Sendable { func free() }
+
+/// Open under a deadline and hand the handles to the caller. withDeadline
+/// discards the race's loser, so an open that lands after the deadline (or the
+/// caller's cancellation) has nobody to take its handles: they are freed here
+/// instead, never under a live library thread. nil when `open` produced none.
+func openBeforeDeadline<H: OpenedHandles>(
+    _ seconds: Double,
+    _ operation: String,
+    _ open: @escaping @Sendable () throws -> H?
+) async throws -> H? {
+    let late = LateHandles<H>()
+    do {
+        try await withDeadline(seconds, operation) { if let opened = try open() { late.store(opened) } }
+    } catch {
+        if let orphan = late.take(abandon: true) { await freeDetached(orphan, seconds, operation) }
+        throw error
+    }
+    return late.take()
+}
+
+/// Free on a task of its own under a deadline: the C free can block (it joins
+/// the library's reader thread), and it must run even when the caller was cancelled.
+func freeDetached<H: OpenedHandles>(_ handles: H, _ seconds: Double, _ operation: String) async {
+    await Task.detached {
+        _ = try? await withDeadline(seconds, "\(operation) cleanup") { handles.free() }
+    }.value
+}
+
+/// Keeps what an open produced reachable until the caller claims it or the
+/// deadline's loser frees it; an open that lands after the abandon frees itself.
+nonisolated private final class LateHandles<H: OpenedHandles>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var handles: H?
+    private var abandoned = false
+    func store(_ opened: H) {
+        let discard = lock.withLock {
+            if abandoned { return true }
+            handles = opened
+            return false
+        }
+        if discard { opened.free() }
+    }
+    func take(abandon: Bool = false) -> H? {
+        lock.withLock {
+            abandoned = abandon
+            defer { handles = nil }
+            return handles
+        }
+    }
+}
+
+// MARK: - Install watchdog box
+
+/// Bridges the C updater thread (which calls `touch`/`finish`) to the waiting
+/// install thread. `wait` blocks until a terminal result or until the callback
+/// has gone quiet for `idle` seconds — the watchdog that bounds the otherwise
+/// unbounded installd wait. NSCondition, because both sides are plain threads.
+nonisolated final class SyncBox: @unchecked Sendable {
+    enum Terminal {
+        case done
+        case failed(InstproxyError, String)
+    }
+    private let cond = NSCondition()
+    private var lastActivity = Date()
+    private var terminal: Terminal?
+
+    func touch() {
+        cond.lock()
+        lastActivity = Date()
+        cond.signal()
+        cond.unlock()
+    }
+    func finish(_ t: Terminal) {
+        cond.lock()
+        terminal = t
+        cond.signal()
+        cond.unlock()
+    }
+
+    /// Terminal result, or nil if the callback fell silent for `idle` seconds
+    /// or the whole thing ran past `absolute`.
+    func wait(idle: TimeInterval, absolute: TimeInterval) -> Terminal? {
+        let hardDeadline = Date().addingTimeInterval(absolute)
+        cond.lock()
+        defer { cond.unlock() }
+        while terminal == nil {
+            let wake = min(lastActivity.addingTimeInterval(idle), hardDeadline)
+            if wake <= Date() { return nil }
+            cond.wait(until: wake)
+        }
+        return terminal
+    }
+}
+
+// MARK: - Serial gate
+
+/// One libimobiledevice operation at a time, process-wide. The busy flag +
+/// waiter queue (not actor isolation, which reentrancy would break across the
+/// body's awaits) is what enforces it.
+actor DeviceGate {
+    static let shared = DeviceGate()
+
+    /// Select the endpoint before a worker can enter the C library. After a
+    /// timeout, that worker may still make additional usbmuxd connections, so
+    /// its endpoint must stay selected until every abandoned worker returns.
+    /// Same-device work remains available below the abandonment cap.
+    private static func point(at socket: String) throws {
+        try socketLock.withLock {
+            if let currentSocket, currentSocket != socket, AbandonedWork.count > 0 {
+                throw DeviceError.endpointBusy
+            }
+            guard setenv("USBMUXD_SOCKET_ADDRESS", socket, 1) == 0 else {
+                throw DeviceError.failed("Could not select the device’s USB connection.")
+            }
+            currentSocket = socket
+        }
+    }
+    private static let socketLock = NSLock()
+    nonisolated(unsafe) private static var currentSocket: String?
+    private var busy = false
+    private var waiters: [(id: UUID, continuation: CheckedContinuation<Void, Error>)] = []
+
+    private func acquire() async throws {
+        try Task.checkCancellation()
+        if !busy {
+            busy = true
+            return
+        }
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                waiters.append((id, continuation))
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id) }
+        }
+    }
+
+    private func cancelWaiter(_ id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        waiters.remove(at: index).continuation.resume(throwing: CancellationError())
+    }
+
+    private func release() {
+        if waiters.isEmpty { busy = false } else { waiters.removeFirst().continuation.resume() }
+    }
+
+    func serialized<T: Sendable>(socket: String? = nil, _ body: @Sendable () async throws -> T) async throws -> T {
+        // Refuse rather than pile on: every one of those outstanding threads is
+        // still holding a lockdown session against a guest that serves about
+        // one, so starting another is what keeps it from recovering.
+        guard AbandonedWork.count < AbandonedWork.cap else { throw DeviceError.recovering }
+        try await acquire()
+        do {
+            try Task.checkCancellation()
+            guard AbandonedWork.count < AbandonedWork.cap else { throw DeviceError.recovering }
+            if let socket { try Self.point(at: socket) }
+            let r = try await body()
+            release()
+            return r
+        } catch {
+            release()
+            throw error
+        }
+    }
+}

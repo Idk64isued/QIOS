@@ -1,0 +1,1 @@
+../../../../LightTouchMac/UI/LogWindowController.swift

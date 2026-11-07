@@ -1,0 +1,407 @@
+#!/bin/bash
+# A release, end to end, from a clean checkout; the only way to make one:
+#
+#     scripts/ship --notes path/to/notes.md [--title "Light Touch — October 21"] [--commit REV] [--archive X.xcarchive]
+#                  [--dry-run]
+#     scripts/ship --pin-xcode     record the running Xcode's build as the release's (build-support/sources.json)
+#
+# 1. preflight: xcodebuild -version is the Xcode build build-support/sources.json pins (xcode.build); the tree is clean
+#    and at REV (default origin/main, fetched); the notes are there, not empty and carry no template text;
+#    notarization has an App Store Connect API key (below); the ExportOptions team's Developer ID Application identity
+#    is in the keychain; amore and gh are logged in; at least LTM_SHIP_MIN_DISK_GB (default 80) free in the release
+#    directory; scripts/host-ready says READY (asked every minute for up to LTM_SHIP_HOST_WAIT seconds, default 3600).
+# 2. IPSWs: every IPSW the vendor step and ReleaseBootTests need (Packages/ReleaseChecks/boots.json) into the app's
+#    IPSW cache (the catalog's sha1), cloned from a local copy with that SHA-1 (LTM_BUILT_IN_IPSW for the built-in iPod,
+#    then any .ipsw of the catalog's size under LTM_IPSW_DIRS, colon-separated, default ~/Developer/ipod2g-re/OldSDK,
+#    ~/Developer/qemu-ios-files and ~/Downloads), else downloaded from the catalog's URL or its mirrors and checked.
+# 3. scripts/vendor --release (the native build and the built-in iPod), then xcodebuild archive (Release, only the
+#    package versions Package.resolved records) to release-<commit>.xcarchive. --archive skips 3 and takes that one.
+# 4. export for Developer ID (Configuration/ExportOptions.plist), zip, notarize (notarytool; on Invalid, print the
+#    log), staple and validate; LightTouchMac-universal.zip and SHA256SUMS naming it beside the exported app.
+# 5. the Release plan on the stapled app: the static checks (as an export: Gatekeeper and the ticket too), then the
+#    boots: the built-in iPod, and a fresh `firmwarekit create` of one firmware per preparation route, each booted
+#    (ReleaseBootTests), run once more if they fail; then spctl.
+# 6. Amore: a DMG of the stapled app (`amore release -o`, unsigned, not notarized; it doesn't re-sign the app), signed
+#    with the app's Developer ID identity (or LTM_SIGN_IDENTITY), notarized, stapled and checked by Gatekeeper,
+#    uploaded as a draft with the notes, the CDN's copy checked byte for byte, published, and the appcast's item for
+#    the build checked: the notes and an edSignature of the CDN's DMG valid for the app's SUPublicEDKey.
+# 7. GitHub: `gh release create v<version>-<YYYY.MM.DD>[b|c|…]` at the commit, with the notes, the zip and
+#    SHA256SUMS; the title defaults to "Light Touch — <Month day>" (with " (b)" and so on).
+# 8. one line in LTM_RELEASE_LOG (default <release directory>/releases.log): build, commit, tag, notarization ids,
+#    Amore id, the zip's SHA-256; then archives and exports beyond the newest two are removed.
+# --dry-run runs 1 to 5 without notarizing, stapling or the export-only checks, and prints what 6 to 8 would do;
+# LTM_RELEASE_SKIP_PREPARE=1 (dry runs only) also skips 5's prepare matrix. The helper is under the App Sandbox
+# (Configuration/Shared.xcconfig); LTM_HELPER_SANDBOX=NO archives it without, for debugging; 5 holds the helper and
+# the app to the entitlements LTM_HELPER_SANDBOX names, so an --archive built the other way fails there.
+#
+# Notarization's App Store Connect API key: LTM_NOTARY_KEY (the .p8's path), LTM_NOTARY_KEY_ID and LTM_NOTARY_ISSUER
+# from the environment, else from ~/.config/lighttouch/notary.env (LTM_NOTARY_CONFIG moves it; KEY=value lines, ~ or
+# $HOME allowed at the start of a path, mode 600; it may also set LTM_SIGN_IDENTITY). Never printed.
+#
+# Everything lands in LTM_RELEASE_DIR (default ~/Developer/ltm-int-rel); this run's log and work in
+# ship-<commit>-<time>/ there, kept. The last line is the verdict: `PASS released build N (tag) <log>` (exit 0),
+# or `FAIL <step>: <why> <log>`, exit 2 for preflight and 1 for a step.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# notes_problem FILE: why FILE can't be a release's notes (missing, empty, template text left in), or nothing.
+notes_problem() {
+    [[ -f "$1" && -r "$1" ]] || { echo "no notes at $1"; return; }
+    grep -q '[^[:space:]]' "$1" || { echo "the notes at $1 are empty"; return; }
+    local left
+    left="$(grep -n -i -E 'TODO|TBD|FIXME|XXX|lorem ipsum|<!--|\{\{|\[(insert|placeholder)' "$1" | head -1)" || true
+    [[ -z "$left" ]] || echo "the notes at $1 still have template text (line $left)"
+}
+
+# xcode_problem SOURCES VERSION: why the Xcode whose `xcodebuild -version` is VERSION isn't the one SOURCES pins, or
+# nothing.
+xcode_problem() {
+    local pinned running
+    pinned="$(plutil -extract xcode.build raw -o - "$1" 2>/dev/null)" || { echo "$1 pins no Xcode build"; return; }
+    running="$(sed -n 's/^Build version //p' <<< "$2")"
+    [[ "$running" == "$pinned" ]] || echo "Xcode ${running:-(none)} is not the pinned $pinned: select Xcode $pinned (xcode-select -s), or record this one with scripts/ship --pin-xcode and commit build-support/sources.json"
+}
+
+# notary_config: sets NOTARY (notarytool's arguments) and NOTARY_FROM (where they came from: "the environment" or the
+# file), or prints why not and returns 1.
+notary_config() {
+    local config="${LTM_NOTARY_CONFIG:-$HOME/.config/lighttouch/notary.env}" k v
+    NOTARY_FROM="the environment"
+    if [[ -f "$config" ]]; then
+        [[ "$(stat -f %Lp "$config")" == 600 ]] || { echo "$config must be mode 600 (chmod 600)"; return 1; }
+        while IFS='=' read -r k v || [[ -n "$k" ]]; do
+            k="${k#export }"
+            case "$k" in LTM_NOTARY_KEY | LTM_NOTARY_KEY_ID | LTM_NOTARY_ISSUER | LTM_SIGN_IDENTITY) ;; *) continue ;; esac
+            [[ -n "${!k:-}" ]] && continue
+            v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
+            v="${v/#\~/$HOME}"; v="${v/#\$\{HOME\}/$HOME}"
+            printf -v "$k" '%s' "${v/#\$HOME/$HOME}"
+            NOTARY_FROM="$config"
+        done < "$config"
+    fi
+    [[ -n "${LTM_NOTARY_KEY:-}${LTM_NOTARY_KEY_ID:-}${LTM_NOTARY_ISSUER:-}" ]] \
+        || { echo "no App Store Connect API key (LTM_NOTARY_KEY, LTM_NOTARY_KEY_ID, LTM_NOTARY_ISSUER or $config)"; return 1; }
+    [[ -n "${LTM_NOTARY_KEY:-}" && -n "${LTM_NOTARY_KEY_ID:-}" && -n "${LTM_NOTARY_ISSUER:-}" ]] \
+        || { echo "LTM_NOTARY_KEY, LTM_NOTARY_KEY_ID and LTM_NOTARY_ISSUER go together (from $NOTARY_FROM)"; return 1; }
+    [[ -f "$LTM_NOTARY_KEY" && -r "$LTM_NOTARY_KEY" ]] || { echo "LTM_NOTARY_KEY names no readable file"; return 1; }
+    NOTARY=(--key "$LTM_NOTARY_KEY" --key-id "$LTM_NOTARY_KEY_ID" --issuer "$LTM_NOTARY_ISSUER")
+}
+
+# next_tag BASE EXISTING...: BASE, else BASEb, BASEc, … whichever no EXISTING tag has taken.
+next_tag() {
+    local base=$1 s; shift
+    for s in "" b c d e f g h i j k l m n o p q r s t u v w x y z; do
+        [[ " $* " == *" $base$s "* ]] || { echo "$base$s"; return 0; }
+    done
+    return 1
+}
+
+# fill_ipsw CACHE ID SHA1 BYTES URL...: CACHE/SHA1.ipsw from a local copy with that SHA-1, else from the first URL
+# whose download has it. Prints where it came from; returns 1 when nothing did.
+fill_ipsw() {
+    local cache=$1 id=$2 sha1=$3 bytes=$4 f dir url
+    shift 4
+    local dest="$cache/$sha1.ipsw"
+    [[ -f "$dest" ]] && { echo "$id: in the cache"; return 0; }
+    mkdir -p "$cache"
+    local candidates=() dirs=()
+    [[ "$id" == "$BUILT_IN" && -n "${LTM_BUILT_IN_IPSW:-}" ]] && candidates+=("$LTM_BUILT_IN_IPSW")
+    IFS=: read -r -a dirs <<< "${LTM_IPSW_DIRS:-$HOME/Developer/ipod2g-re/OldSDK:$HOME/Developer/qemu-ios-files:$HOME/Downloads}"
+    for dir in "${dirs[@]}"; do
+        [[ -d "$dir" ]] || continue
+        while IFS= read -r f; do candidates+=("$f"); done \
+            < <(find "$dir" -maxdepth 4 -name '*.ipsw' -type f $( (( bytes > 0 )) && echo "-size ${bytes}c") 2>/dev/null)
+    done
+    for f in ${candidates[@]+"${candidates[@]}"}; do
+        [[ -f "$f" && "$(shasum -a 1 "$f" | cut -d' ' -f1)" == "$sha1" ]] || continue
+        cp -c "$f" "$dest.part" && mv "$dest.part" "$dest" && { echo "$id: cloned from $f"; return 0; }
+    done
+    for url in "$@"; do
+        echo "$id: downloading $url"
+        if curl -fL --retry 3 -s -o "$dest.part" "$url" && [[ "$(shasum -a 1 "$dest.part" | cut -d' ' -f1)" == "$sha1" ]]; then
+            mv "$dest.part" "$dest" && { echo "$id: downloaded"; return 0; }
+        fi
+        rm -f "$dest.part"
+    done
+    echo "$id: no local copy with SHA-1 $sha1 and no download matched"
+    return 1
+}
+
+# prune_releases DIR KEEP DRY: prints keep/remove for each DIR/release-*.xcarchive (newest first) and its -export,
+# and removes those past the newest KEEP unless DRY is 1.
+prune_releases() {
+    local dir=$1 keep=$2 dry=$3 n=0 a
+    while IFS= read -r a; do
+        n=$((n + 1))
+        if ((n <= keep)); then echo "keep   $a"; continue; fi
+        echo "remove $a ${a%.xcarchive}-export$( ((dry)) && echo " (dry run: not removed)")"
+        ((dry)) || rm -rf "$a" "${a%.xcarchive}-export"
+    done < <(ls -dt "$dir"/release-*.xcarchive 2>/dev/null)
+}
+
+# Sourced (tests/scripts/ship.sh): the functions only.
+[[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
+
+SOURCES="$ROOT/build-support/sources.json"
+if [[ "${1:-}" == --pin-xcode ]]; then
+    build="$(xcodebuild -version | sed -n 's/^Build version //p')"
+    [[ -n "$build" ]] || { echo "FAIL no Xcode (xcodebuild -version) -"; exit 2; }
+    sed -i '' "s/\"build\": \"[^\"]*\"/\"build\": \"$build\"/" "$SOURCES"
+    echo "pinned Xcode $build in $SOURCES: commit it"
+    exit 0
+fi
+
+NOTES=""; TITLE=""; REV="origin/main"; DRY=0; ARCHIVE=""
+pre() { echo "FAIL preflight: $* -"; exit 2; }
+while (($#)); do
+    case "$1" in
+        --notes) NOTES="${2:-}"; shift ;;
+        --title) TITLE="${2:-}"; shift ;;
+        --commit) REV="${2:-}"; shift ;;
+        --archive) ARCHIVE="${2:-}"; shift ;;
+        --dry-run) DRY=1 ;;
+        *) pre "unknown argument $1 (usage: scripts/ship --notes notes.md [--title T] [--commit REV] [--archive X.xcarchive] [--dry-run], or scripts/ship --pin-xcode)" ;;
+    esac
+    shift
+done
+[[ -n "$NOTES" ]] || pre "--notes path/to/notes.md is required"
+why="$(notes_problem "$NOTES")"; [[ -z "$why" ]] || pre "$why"
+NOTES="$(cd "$(dirname "$NOTES")" && pwd)/$(basename "$NOTES")"
+if [[ -n "$ARCHIVE" ]]; then
+    [[ -d "$ARCHIVE" ]] || pre "no archive at $ARCHIVE"
+    ARCHIVE="$(cd "$(dirname "$ARCHIVE")" && pwd)/$(basename "$ARCHIVE")"
+fi
+SKIP_PREPARE="${LTM_RELEASE_SKIP_PREPARE:-0}"
+[[ "$SKIP_PREPARE" != 1 ]] || ((DRY)) || pre "LTM_RELEASE_SKIP_PREPARE=1 is for --dry-run only; a release runs the prepare matrix"
+why="$(xcode_problem "$SOURCES" "$(xcodebuild -version 2>/dev/null)")"; [[ -z "$why" ]] || pre "$why"
+why="$(notary_config)" || pre "$why"
+notary_config  # again in this shell for NOTARY; the subshell above only caught the message
+RELDIR="${LTM_RELEASE_DIR:-$HOME/Developer/ltm-int-rel}"
+mkdir -p "$RELDIR"
+git -C "$ROOT" fetch -q origin || pre "git fetch origin"
+SHA="$(git -C "$ROOT" rev-parse --verify -q "$REV^{commit}")" || pre "no commit $REV"
+SHORT="${SHA:0:8}"
+WORK="$RELDIR/ship-$SHORT-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$WORK"
+LOG="$WORK/ship.log"
+
+main() {
+    set -e  # the pipeline into tee below runs main with errexit off
+    fail() { echo "FAIL $1: $2 $LOG"; exit "${3:-1}"; }
+    step() { echo "== $*"; }
+    echo "ship $SHA$( ((DRY)) && echo " (dry run)") into $RELDIR"
+
+    step "preflight"
+    [[ -z "$(git -C "$ROOT" status --porcelain)" ]] || fail preflight "the tree has changes (git status)" 2
+    [[ "$(git -C "$ROOT" rev-parse HEAD)" == "$SHA" ]] || fail preflight "HEAD is not $REV ($SHA)" 2
+    echo "xcode: $(xcodebuild -version | paste -sd ' ' -), as pinned"
+    echo "notary: API key from $NOTARY_FROM"
+    local team identities
+    team="$(plutil -extract teamID raw -o - "$ROOT/Configuration/ExportOptions.plist")"
+    identities="$(security find-identity -v -p codesigning)"
+    [[ "$identities" == *"Developer ID Application: "*"($team)"* ]] || fail preflight "no Developer ID Application identity for team $team in the keychain" 2
+    amore whoami > /dev/null 2>&1 || fail preflight "amore is not logged in (amore login)" 2
+    gh auth status > /dev/null 2>&1 || fail preflight "gh is not logged in (gh auth login)" 2
+    local free_gb min_gb="${LTM_SHIP_MIN_DISK_GB:-80}"
+    free_gb="$(df -Pk "$RELDIR" | awk 'NR == 2 { print int($4 / 1048576) }')"
+    ((free_gb >= min_gb)) || fail preflight "$free_gb GB free in $RELDIR (want $min_gb)" 2
+    local waited=0 ready last=""
+    until ready="$("$ROOT/scripts/host-ready")"; do
+        [[ "$ready" == "$last" ]] || echo "$ready"
+        last="$ready"
+        ((waited < ${LTM_SHIP_HOST_WAIT:-3600})) || fail preflight "host not ready after ${waited}s: $ready" 2
+        sleep 60; waited=$((waited + 60))
+    done
+    echo "$ready"
+
+    step "IPSWs"
+    local boots="$ROOT/Packages/ReleaseChecks/boots.json" routes line
+    BUILT_IN="$(plutil -extract builtIn raw -o - "$boots")" || fail IPSWs "no builtIn in $boots"
+    routes="$(plutil -extract routes json -o - "$boots" | tr -d '[]"' | tr ',' ' ')" || fail IPSWs "no routes in $boots"
+    [[ -n "$BUILT_IN" && -n "${routes// /}" ]] || fail IPSWs "$boots names no built-in iPod or no routes"
+    local cache="$HOME/Library/Caches/gold.samhenri.LightTouchMac/IPSW"
+    "$ROOT/scripts/ltm-build" release catalog "$ROOT/LightTouchMac/Resources/firmware-catalog.json" \
+        $(printf '%s\n' "$BUILT_IN" $routes | sort -u) > "$WORK/ipsws.txt" || fail IPSWs "the catalog has no source for one of them"
+    while read -r -a line; do
+        fill_ipsw "$cache" "${line[@]}" || fail IPSWs "${line[0]} (SHA-1 ${line[1]}) is in no local directory and no download matched"
+    done < "$WORK/ipsws.txt"
+
+    local archive="$ARCHIVE"
+    if [[ -n "$archive" ]]; then
+        echo "== vendor, archive: skipped (--archive $archive)"
+    else
+        step "vendor"
+        "$ROOT/scripts/vendor" --release > "$WORK/vendor.log" 2>&1 || { tail -20 "$WORK/vendor.log"; fail vendor "scripts/vendor --release (its log: $WORK/vendor.log)"; }
+        [[ -z "$(git -C "$ROOT" status --porcelain)" ]] || fail vendor "scripts/vendor changed the tree (git status): commit what it wrote and ship that"
+
+        step "archive"
+        archive="$RELDIR/release-$SHORT.xcarchive"
+        rm -rf "$archive"
+        xcodebuild archive -skipMacroValidation -onlyUsePackageVersionsFromResolvedFile -project "$ROOT/LightTouchMac.xcodeproj" \
+            -scheme LightTouchMac -configuration Release -destination 'generic/platform=macOS' -archivePath "$archive" \
+            LTM_HELPER_SANDBOX="${LTM_HELPER_SANDBOX:-YES}" \
+            > "$WORK/archive.log" 2>&1 \
+            || { grep -E "error:" "$WORK/archive.log" | head -20; fail archive "xcodebuild archive (its log: $WORK/archive.log)"; }
+    fi
+
+    step "export"
+    local out app
+    out="$(dirname "$archive")/$(basename "$archive" .xcarchive)-export"
+    rm -rf "$out"
+    xcodebuild -exportArchive -archivePath "$archive" -exportPath "$out" \
+        -exportOptionsPlist "$ROOT/Configuration/ExportOptions.plist" > "$WORK/export.log" 2>&1 \
+        || { tail -20 "$WORK/export.log"; fail export "xcodebuild -exportArchive (its log: $WORK/export.log)"; }
+    app="$(find "$out" -maxdepth 1 -name '*.app' | head -1)"
+    [[ -d "$app" ]] || fail export "no app in $out"
+    ditto -c -k --keepParent "$app" "$WORK/submit.zip"
+
+    # notarize FILE NAME: submit and wait; anything but Accepted prints the log and fails.
+    local notary_ids=""
+    notarize() {
+        xcrun notarytool submit "$1" "${NOTARY[@]}" --wait --output-format json > "$WORK/$2.json" || true
+        local id status
+        id="$(plutil -extract id raw -o - "$WORK/$2.json" 2>/dev/null || true)"
+        status="$(plutil -extract status raw -o - "$WORK/$2.json" 2>/dev/null || true)"
+        echo "submission $id: $status"
+        [[ "$status" != Accepted ]] || notary_ids="${notary_ids:+$notary_ids,}$id"
+        if [[ "$status" != "Accepted" ]]; then
+            [[ -n "$id" ]] && xcrun notarytool log "$id" "${NOTARY[@]}"
+            fail notarize "notarization of $2 ${status:-did not complete} ($(cat "$WORK/$2.json"))"
+        fi
+    }
+    if ((DRY)); then
+        echo "== notarize, staple: skipped (--dry-run)"
+    else
+        step "notarize"
+        notarize "$WORK/submit.zip" app
+        step "staple"
+        xcrun stapler staple "$app" > /dev/null || fail staple "stapler staple"
+        xcrun stapler validate "$app" > /dev/null || fail staple "stapler validate"
+    fi
+
+    step "release zip"
+    local zip="$out/LightTouchMac-universal.zip"
+    rm -f "$zip"
+    ditto -c -k --keepParent "$app" "$zip"
+    (cd "$out" && shasum -a 256 "$(basename "$zip")" > SHA256SUMS)
+    cat "$out/SHA256SUMS"
+
+    # release_tests NAME TEST: the Release plan's TEST on the app; on failure, the failures from the result bundle
+    # (without one, the build failed: the log's errors).
+    release_tests() {
+        TEST_RUNNER_LTM_RELEASE_APP="$app" TEST_RUNNER_LTM_RELEASE_EXPORTED=$((1 - DRY)) \
+            TEST_RUNNER_LTM_RELEASE_SKIP_PREPARE="$SKIP_PREPARE" \
+            TEST_RUNNER_LTM_RELEASE_HELPER_SANDBOX="${LTM_HELPER_SANDBOX:-YES}" \
+            xcodebuild -quiet -skipMacroValidation -project "$ROOT/LightTouchMac.xcodeproj" -scheme LightTouchMac -testPlan Release \
+            -only-testing:"ReleaseChecksTests/$2" -derivedDataPath "$WORK/dd" \
+            -resultBundlePath "$WORK/$1.xcresult" test > "$WORK/$1.log" 2>&1 \
+            || {
+                xcrun xcresulttool get test-results summary --path "$WORK/$1.xcresult" 2>/dev/null \
+                    | plutil -extract testFailures json -r -o - - \
+                    || grep -E "recorded an issue|error:" "$WORK/$1.log" | head -20
+                return 1
+            }
+    }
+    step "static checks"
+    release_tests static ReleaseAppStaticTests || fail "static checks" "the Release plan's ReleaseAppStaticTests ($WORK/static.log)"
+    step "boots: the built-in iPod and the prepare matrix"
+    [[ "$SKIP_PREPARE" == 1 ]] && echo "== prepare matrix: SKIPPED (LTM_RELEASE_SKIP_PREPARE=1, dry run)"
+    release_tests boot ReleaseBootTests || {
+        echo "== boots failed; running them once more (the failures above, the log $WORK/boot.log)"
+        release_tests boot-retry ReleaseBootTests || fail boots "the Release plan's ReleaseBootTests, twice ($WORK/boot-retry.log)"
+    }
+    if ((!DRY)); then
+        local gk
+        gk=$(spctl -a -vv -t exec "$app" 2>&1) || true  # read whole: grep -q closing the pipe early fails it under pipefail
+        [[ "$gk" == *'source=Notarized Developer ID'* ]] || fail Gatekeeper "$gk"
+    fi
+
+    local info="$app/Contents/Info.plist" build version bundle_id identity amore_id="" zip_sum
+    build="$(plutil -extract CFBundleVersion raw -o - "$info")"
+    version="$(plutil -extract CFBundleShortVersionString raw -o - "$info")"
+    bundle_id="$(plutil -extract CFBundleIdentifier raw -o - "$info")"
+    identity="${LTM_SIGN_IDENTITY:-$(codesign -dvv "$app" 2>&1 | sed -n 's/^Authority=//p')}"
+    identity="${identity%%$'\n'*}"  # the leaf: the first Authority
+    [[ -n "$identity" ]] || fail Amore "no signing identity for the DMG (the app has no Authority; set LTM_SIGN_IDENTITY)"
+    if ((DRY)); then
+        echo "== Amore: skipped (--dry-run): build $build's DMG, signed by $identity, notarized, a draft with $NOTES, published, the appcast checked"
+    else
+        step "Amore DMG"
+        local dmg_dir="$out/amore" dmg url local_sum feed key try cached=()
+        rm -rf "$dmg_dir"
+        amore release "$app" -o "$dmg_dir" --skip-notarization --non-interactive > "$WORK/amore-dmg.log" 2>&1 \
+            || { tail -20 "$WORK/amore-dmg.log"; fail Amore "amore release -o"; }
+        dmg="$(find "$dmg_dir" -maxdepth 1 -name '*.dmg' | head -1)"
+        [[ -f "$dmg" ]] || fail Amore "no DMG in $dmg_dir"
+        codesign --sign "$identity" --timestamp "$dmg" || fail Amore "codesign the DMG"
+        notarize "$dmg" dmg
+        xcrun stapler staple "$dmg" > /dev/null || fail Amore "stapler staple the DMG"
+        spctl -a -t open --context context:primary-signature "$dmg" 2> "$WORK/dmg-spctl.log" \
+            || fail Amore "Gatekeeper rejects the DMG: $(cat "$WORK/dmg-spctl.log")"
+
+        step "Amore upload (draft)"
+        # No --format json: amore 0.1 with it checks for a notarization profile before honoring --skip-notarization
+        # and refuses ("notarization_not_configured"), as the 10-22 release did.
+        amore release "$dmg" --draft --skip-notarization --non-interactive --release-notes "$(cat "$NOTES")" \
+            > "$WORK/amore.json" 2>&1 || { tail -20 "$WORK/amore.json"; fail Amore "amore release --draft"; }
+        # The id: from the upload's answer if it carries one, else from the CLI's cache of the app's releases (which
+        # the list refreshes).
+        amore releases list --bundle-id "$bundle_id" > /dev/null 2>&1 || true
+        while IFS= read -r f; do cached+=("$f"); done < <(ls -t "$HOME/Library/Caches/amore/fsCachedData/"* 2>/dev/null || true)
+        read -r amore_id url < <("$ROOT/scripts/ltm-build" release amore-id "$build" "$bundle_id" "$WORK/amore.json" ${cached[@]+"${cached[@]}"}) \
+            || fail Amore "no Amore release id for build $build"
+        echo "Amore release $amore_id: $url"
+        curl -fsSL --retry 3 -o "$WORK/cdn.dmg" "$url" || fail Amore "download $url"
+        local_sum="$(shasum -a 256 "$dmg" | cut -d' ' -f1)"
+        [[ "$(shasum -a 256 "$WORK/cdn.dmg" | cut -d' ' -f1)" == "$local_sum" ]] || fail Amore "the CDN's DMG is not $dmg"
+        spctl -a -t open --context context:primary-signature "$WORK/cdn.dmg" 2> "$WORK/cdn-spctl.log" \
+            || fail Amore "Gatekeeper rejects the CDN's DMG: $(cat "$WORK/cdn-spctl.log")"
+        echo "CDN DMG sha256 $local_sum, accepted by Gatekeeper"
+
+        step "Amore publish"
+        amore releases update "$amore_id" --bundle-id "$bundle_id" --published true > "$WORK/publish.log" 2>&1 \
+            || { cat "$WORK/publish.log"; fail Amore "amore releases update --published true"; }
+        feed="$(plutil -extract SUFeedURL raw -o - "$info")"
+        key="$(plutil -extract SUPublicEDKey raw -o - "$info")"
+        # The appcast can lag the publish by a little.
+        for try in 1 2 3 4 5 6; do
+            curl -fsSL -o "$WORK/appcast.xml" "$feed" \
+                && "$ROOT/scripts/ltm-build" release appcast "$WORK/appcast.xml" "$build" "$key" "$WORK/cdn.dmg" "$NOTES" 2> "$WORK/appcast.log" \
+                && break
+            ((try < 6)) || fail Amore "appcast: $(cat "$WORK/appcast.log")"
+            sleep 10
+        done
+    fi
+    zip_sum="$(shasum -a 256 "$zip" | cut -d' ' -f1)"
+
+    step "GitHub"
+    local base tag suffix
+    base="v$version-$(date +%Y.%m.%d)"
+    tag="$(next_tag "$base" $(git -C "$ROOT" ls-remote --tags origin "refs/tags/$base*" | sed 's#.*refs/tags/##'))" \
+        || fail GitHub "no free tag after ${base}z"
+    suffix="${tag#"$base"}"
+    [[ -n "$TITLE" ]] || TITLE="Light Touch — $(date '+%B %-d')${suffix:+ ($suffix)}"
+    if ((DRY)); then
+        echo "would run: gh release create $tag --target $SHA --title \"$TITLE\" --notes-file $NOTES $zip $out/SHA256SUMS"
+    else
+        gh release create "$tag" --target "$SHA" --title "$TITLE" --notes-file "$NOTES" "$zip" "$out/SHA256SUMS" \
+            || fail GitHub "gh release create $tag"
+    fi
+
+    step "record"
+    local record="${LTM_RELEASE_LOG:-$RELDIR/releases.log}"
+    local entry
+    entry="$(date -u +%Y-%m-%dT%H:%M:%SZ) build=$build commit=$SHA tag=$tag zip_sha256=$zip_sum notary=${notary_ids:-none} amore=${amore_id:-none}"
+    if ((DRY)); then echo "would append to $record: $entry"; else echo "$entry" >> "$record"; fi
+    prune_releases "$RELDIR" 2 "$DRY"
+
+    if ((DRY)); then
+        echo "PASS dry run build $build (would be $tag) $LOG"
+    else
+        echo "PASS released build $build ($tag) $LOG"
+    fi
+}
+
+set +e
+main 2>&1 | tee "$LOG"
+exit "${PIPESTATUS[0]}"

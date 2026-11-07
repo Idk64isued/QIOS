@@ -1,0 +1,85 @@
+{
+  "configurations": [
+    {
+      "id": "6B4C9F3A-2D1E-4F7A-9C3B-1A2B3C4D5E6F",
+      "name": "Default",
+      "options": {}
+    }
+  ],
+  "defaultOptions": {},
+  "testTargets": [
+    {
+      "parallelizable": false,
+      "target": {
+        "containerPath": "container:Packages\/LightTouchCore",
+        "identifier": "LightTouchCoreTests",
+        "name": "LightTouchCoreTests"
+      }
+    },
+    {
+      "target": {
+        "containerPath": "container:Packages\/HostRuntime",
+        "identifier": "HostRuntimeTests",
+        "name": "HostRuntimeTests"
+      }
+    },
+    {
+      "target": {
+        "containerPath": "container:Packages\/DeviceRuntime",
+        "identifier": "DeviceRuntimeTests",
+        "name": "DeviceRuntimeTests"
+      }
+    },
+    {
+      "target": {
+        "containerPath": "container:Packages\/FirmwareKit",
+        "identifier": "FirmwareKitTests",
+        "name": "FirmwareKitTests"
+      }
+    },
+    {
+      "target": {
+        "containerPath": "container:Packages\/DeviceServices",
+        "identifier": "HostServiceWireTests",
+        "name": "HostServiceWireTests"
+      }
+    },
+    {
+      "target": {
+        "containerPath": "container:Packages\/DeviceServices",
+        "identifier": "HostServiceClientTests",
+        "name": "HostServiceClientTests"
+      }
+    },
+    {
+      "target": {
+        "containerPath": "container:Packages\/ReleaseChecks",
+        "identifier": "ReleaseChecksTests",
+        "name": "ReleaseChecksTests"
+      }
+    },
+    {
+      "target": {
+        "containerPath": "container:tests\/sessions",
+        "identifier": "SessionKitTests",
+        "name": "SessionKitTests"
+      }
+    },
+    {
+      "target": {
+        "containerPath": "container:Packages\/BuildTools",
+        "identifier": "BuildToolsTests",
+        "name": "BuildToolsTests"
+      }
+    },
+    {
+      "parallelizable": false,
+      "target": {
+        "containerPath": "container:tests\/offline",
+        "identifier": "OfflineTests",
+        "name": "OfflineTests"
+      }
+    }
+  ],
+  "version": 1
+}

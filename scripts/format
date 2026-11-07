@@ -1,0 +1,116 @@
+#!/bin/bash
+# Formats our Swift with swift-format (.swift-format) and our C, Objective-C and C++ with clang-format
+# (.clang-format), both the selected Xcode's (xcrun), never Homebrew's.
+#
+#     scripts/format <path>...    these files, in place
+#     scripts/format --all        every tracked file, in place (the one-time whole-repository reformat)
+#     scripts/format --check      prints each tracked file that isn't formatted and each lint finding; exit 1 if any
+#     scripts/format --staged     the pre-commit hook (scripts/hooks/pre-commit): formats each staged file in place
+#                                 and stages it again; refuses a partly staged file whose staged text isn't formatted
+#
+# Code from upstream projects, generated files and symlinks are left alone (skip below).
+set -uo pipefail
+ROOT="$(git rev-parse --show-toplevel)" || exit 2
+cd "$ROOT" || exit 2
+
+tool() {
+    xcrun --find "$1" 2>/dev/null && return
+    echo "format: xcrun finds no $1 in $(xcode-select -p 2>/dev/null); select Xcode 27 or later: sudo xcode-select -s" >&2
+    exit 2
+}
+swift_format="$(tool swift-format)" || exit 2
+swiftfmt() { "$swift_format" format --configuration "$ROOT/.swift-format" "$@"; }
+clang_format="$(tool clang-format)" || exit 2
+
+# The formatter for a path: swift, c, or nothing for a file we don't format.
+kind() {
+    case "$1" in
+        build-support/patches/*) ;;                                    # upstream diffs
+        tests/offline/fixtures/*) ;;                                   # GPL, tests the vendored iBoot32Patcher
+        *.swift) echo swift ;;
+        *.c | *.h | *.m | *.mm | *.cc | *.cpp | *.hpp) echo c ;;
+    esac
+}
+
+# Formats files in place; exit status nonzero when a formatter fails.
+format_files() {
+    local swift=() c=() f status=0
+    for f in "$@"; do
+        [[ -L "$f" ]] && continue
+        case "$(kind "$f")" in
+            swift) swift+=("$f") ;;
+            c) c+=("$f") ;;
+        esac
+    done
+    ((${#swift[@]})) && { swiftfmt -i --parallel -- "${swift[@]}" || status=1; }
+    ((${#c[@]})) && { "$clang_format" -i --style=file -- "${c[@]}" || status=1; }
+    return $status
+}
+
+tracked() { git -c core.quotePath=false ls-files | while IFS= read -r f; do [[ -n "$(kind "$f")" ]] && echo "$f"; done; }
+
+case "${1:-}" in
+    --all)
+        files=()
+        while IFS= read -r f; do files+=("$f"); done < <(tracked)
+        format_files "${files[@]}"
+        ;;
+    --check)
+        # Formats a copy of every tracked file and compares it with the original.
+        copy="$(mktemp -d "${TMPDIR:-/tmp}/ltm-format-check.XXXXXX")" || exit 2
+        trap 'rm -rf "$copy"' EXIT
+        cp .swift-format .clang-format "$copy/"
+        files=()
+        while IFS= read -r f; do
+            [[ -L "$f" ]] && continue
+            mkdir -p "$copy/$(dirname "$f")" && cp "$f" "$copy/$f" && files+=("$f")
+        done < <(tracked)
+        (cd "$copy" && ROOT="$copy" format_files "${files[@]}") || exit 1
+        unformatted=0 swift=()
+        for f in "${files[@]}"; do
+            cmp -s "$f" "$copy/$f" || { echo "$f"; unformatted=1; }
+            [[ $f == *.swift ]] && swift+=("$f")
+        done
+        # Then the lint rules the formatter can't apply (ReplaceForEachWithForLoop, OnlyOneTrailingClosureArgument…).
+        if ((${#swift[@]})); then
+            "$swift_format" lint --strict --parallel --configuration .swift-format -- "${swift[@]}" || unformatted=1
+        fi
+        exit $unformatted
+        ;;
+    --staged)
+        status=0 whole=()
+        while IFS= read -r -d '' f; do
+            k="$(kind "$f")"
+            [[ -n "$k" && "$(git ls-files -s -- "$f" | cut -c1-6)" != 120000 ]] || continue
+            if git diff --quiet -- "$f"; then
+                whole+=("$f")
+                continue
+            fi
+            # Partly staged: format the staged text alone and leave both copies as they are.
+            staged="$(mktemp "${TMPDIR:-/tmp}/ltm-format-staged.XXXXXX")" || exit 2
+            if [[ $k == swift ]]; then
+                git show ":$f" | swiftfmt --assume-filename "$f" - >"$staged"
+            else
+                git show ":$f" | "$clang_format" --style=file --assume-filename="$f" >"$staged"
+            fi || { echo "format: $f: the formatter failed on the staged text" >&2; rm -f "$staged"; status=1; continue; }
+            if ! git show ":$f" | cmp -s - "$staged"; then
+                echo "format: $f is partly staged and its staged text isn't formatted; format it, then stage again:" >&2
+                echo "    scripts/format '$f' && git add -p '$f'" >&2
+                status=1
+            fi
+            rm -f "$staged"
+        done < <(git diff --cached --name-only --diff-filter=ACMR -z)
+        if ((${#whole[@]})); then
+            format_files "${whole[@]}" || { echo "format: a formatter failed; nothing was committed" >&2; exit 1; }
+            git add -- "${whole[@]}" || exit 1
+        fi
+        exit $status
+        ;;
+    "" | -*)
+        sed -n '2,11s/^# \{0,1\}//p' "$0" >&2
+        exit 2
+        ;;
+    *)
+        format_files "$@"
+        ;;
+esac

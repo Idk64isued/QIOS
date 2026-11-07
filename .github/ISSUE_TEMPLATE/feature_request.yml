@@ -1,0 +1,19 @@
+name: Idea
+description: A change to Light Touch on the Mac for a device it already runs
+labels: [enhancement]
+body:
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      description: Light Touch is a Mac app for the devices listed in the [README](https://github.com/samhenrigold/LightTouchMac#scope). Requests for other platforms (Windows, Linux, Android, iOS, the web) or other devices (iPod classic, newer iPhones and iPads) will be closed.
+      options:
+        - label: This is for Light Touch on the Mac, for a device and iOS version it already supports.
+          required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      description: What you'd like, and what it would let you do.
+    validations:
+      required: true

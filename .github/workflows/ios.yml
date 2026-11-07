@@ -1,0 +1,49 @@
+name: iOS build
+on:
+  workflow_dispatch:
+  push:
+    paths: ["ios/**", ".github/workflows/ios.yml"]
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch qemu-ios at the commit build-support/sources.json pins
+        run: |
+          URL=$(jq -r '."qemu-ios".repository' build-support/sources.json)
+          REF=$(jq -r '."qemu-ios".commit' build-support/sources.json)
+          git clone "$URL" "$RUNNER_TEMP/qemu-ios"
+          git -C "$RUNNER_TEMP/qemu-ios" checkout "$REF"
+      - name: Tools
+        run: brew install meson ninja pkg-config jq xcodegen ldid
+      - name: Apply the HostRuntime iOS patch
+        run: patch -p1 < ios/patches/0001-hostruntime-ios.patch
+      - name: Cache dependencies
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ios-deps
+          key: ios-deps-${{ hashFiles('build-support/dependencies.json', 'ios/scripts/build-deps.sh') }}
+      - name: Build dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: ios/scripts/build-deps.sh "$RUNNER_TEMP/qemu-ios" "$RUNNER_TEMP/ios-deps"
+      - name: Build emulator libraries (JIT + interpreter)
+        run: ios/scripts/build-qemu.sh "$RUNNER_TEMP/qemu-ios" "$RUNNER_TEMP/ios-deps/prefix" "$RUNNER_TEMP/qemu-out"
+      - name: Build the app
+        working-directory: ios/App
+        run: |
+          xcodegen generate
+          xcodebuild -project LightTouchiOS.xcodeproj -scheme LightTouchiOS -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO
+      - name: Package IPA
+        run: |
+          APP="ios/App/build/Build/Products/Release-iphoneos/LightTouch.app"
+          mkdir -p "$APP/Frameworks" && cp "$RUNNER_TEMP"/qemu-out/*.dylib "$APP/Frameworks/"
+          ldid -Sios/App/LightTouchiOS.entitlements "$APP/LightTouch"
+          mkdir Payload && cp -R "$APP" Payload/ && zip -qry LightTouch.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with: { name: LightTouch-ipa, path: LightTouch.ipa }
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with: { name: build-logs, path: "${{ runner.temp }}/ios-deps/logs" }

@@ -1,0 +1,1 @@
+../../../../Packages/LightTouchCore/Tests/TestIsolation/TestIsolation.c

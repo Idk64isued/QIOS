@@ -1,0 +1,3 @@
+#!/bin/bash
+# Git's pre-commit hook (scripts/vendor sets core.hooksPath to this directory): formats the staged Swift and C.
+exec scripts/format --staged

@@ -1,0 +1,1 @@
+../../../../LightTouchMac/UI/HelpWindowController.swift

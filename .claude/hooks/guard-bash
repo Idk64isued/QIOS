@@ -1,0 +1,45 @@
+#!/bin/bash
+# A PreToolUse hook on Bash (.claude/settings.json): refuses the commands that have hurt a shared Mac, and says the
+# right way. Reads the hook's JSON on stdin; exit 2 with the reason on stderr refuses, exit 0 allows.
+# Command words are matched with quoted strings removed, so a grep or a commit message naming one is not refused.
+set -uo pipefail
+input="$(cat)"
+field() { plutil -extract "$1" raw -o - - <<<"$input" 2>/dev/null; }
+cmd="$(field tool_input.command)"
+cwd="$(field cwd)"
+[[ -n "$cmd" ]] || exit 0
+[[ -n "${LTM_GUARD_OFF:-}" || "$cmd" == *LTM_GUARD_OFF=1* ]] && exit 0
+
+# the command with '...' and "..." emptied, one line
+bare="$(perl -0pe 's/\x27[^\x27]*\x27/\x27\x27/g; s/"(\\.|[^"\\])*"/""/g; s/\\\n/ /g; s/\n/; /g' <<<"$cmd")"
+# a command word: at the start, after ; & | ( or $( or a backtick, past VAR=value assignments, sudo, env, exec,
+# time, nohup, command, while, until, if, do, then and !
+at() { grep -Eq "(^|[;&|(\`]|\\\$\\()[[:space:]]*((sudo|env|exec|time|nohup|command|while|until|if|do|then|!)[[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*($1)([[:space:]]|$|[;&|)])" <<<"$bare"; }
+deny() { echo "refused: $1" >&2; exit 2; }
+emulator='qemu|emulat|LightTouch|Light Touch|Light\\ Touch|usbmuxd|ipod-helper'
+agent=0
+[[ "$cwd" == */.claude/worktrees/* || "$cwd" == "${LTM_WORKTREE_ROOT:-$HOME/Developer/ltm-worktrees.noindex}"/* ]] && agent=1
+
+if at 'pkill|killall' && grep -Eq "$emulator" <<<"$cmd"; then
+    deny "kill emulators and helpers by PID (the one you started, or from its pid file), never by name: pkill and killall hit other agents' runs."
+fi
+if at 'pgrep' && grep -Eq -- '-[a-zA-Z]*f' <<<"$bare" && grep -Eq '(^|[;&|[:space:]])(while|until)[[:space:]]' <<<"$bare" \
+    && grep -Eq "$emulator" <<<"$cmd"; then
+    deny "wait on the PID you started (while kill -0 PID; do sleep 1; done): a pgrep -f loop matches its own shell and other agents' runs."
+fi
+if ((agent)) && at 'git([[:space:]]+-[Cc][[:space:]]+[^[:space:]]+)*[[:space:]]+stash'; then
+    deny "git stash is shared by every worktree of the repository; commit your work in progress on your branch instead."
+fi
+if ((agent)) && at 'git([[:space:]]+-[Cc][[:space:]]+[^[:space:]]+)*[[:space:]]+push'; then
+    deny "agents don't push; commit on your branch and report the hash, and the lead lands it."
+fi
+if at 'open' && grep -Eq 'Light Touch|Light\\ Touch|LightTouch(Mac)?\.app|gold\.samhenri\.LightTouchMac' <<<"$cmd"; then
+    deny "never launch Light Touch.app; Sam runs the app. Check headlessly (sessions, the Unit plan, the Release plan)."
+fi
+if grep -Eq 'Contents/MacOS/LightTouch([[:space:]"]|$)' <<<"$cmd"; then
+    deny "never run the app's own binary; Sam runs the app. The helpers it bundles (LightTouchDevice, LightTouchServices, firmwarekit) are fine."
+fi
+if at '[^[:space:]]*qemu-system-[a-z0-9_]+' && ! grep -Eq -- '-audio[[:space:]]+(driver=)?none|-audiodev[[:space:]]+none|QEMU_AUDIO_DRV=none' <<<"$cmd"; then
+    deny "emulators are silent: add -audio driver=none."
+fi
+exit 0

@@ -1,0 +1,28 @@
+{
+  "configurations": [
+    {
+      "id": "8D2E4A1B-3C5F-4E6A-9B7C-2D1E0F3A4B5C",
+      "name": "Default",
+      "options": {}
+    }
+  ],
+  "defaultOptions": {
+    "environmentVariableEntries": [
+      {
+        "key": "LTM_RELEASE_REQUIRED",
+        "value": "1"
+      }
+    ]
+  },
+  "testTargets": [
+    {
+      "parallelizable": false,
+      "target": {
+        "containerPath": "container:Packages\/ReleaseChecks",
+        "identifier": "ReleaseChecksTests",
+        "name": "ReleaseChecksTests"
+      }
+    }
+  ],
+  "version": 1
+}

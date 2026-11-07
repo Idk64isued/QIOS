@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- The Debug helper: LightTouchDevice.entitlements' allow-jit, and disable-library-validation because it loads a
+     qemu-ios development build's libqemu-arm.dylib (QEMU_BUILD_DIR, or LTM_QEMU_DYLIB), which is not signed with
+     the app's team. Release ships without it. -->
+<dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

@@ -1,0 +1,1 @@
+../../../../LightTouchMac/App/BugReportCopy.swift

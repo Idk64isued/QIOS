@@ -1,0 +1,2 @@
+# Whole-repository reformats (scripts/format --all), skipped by git blame (scripts/vendor sets blame.ignoreRevsFile).
+b387566ecbf78ba7a17c18e92980f77b3fda40c4

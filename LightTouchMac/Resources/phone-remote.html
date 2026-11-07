@@ -1,0 +1,138 @@
+<!doctype html>
+<!-- Play on Phone's page (PhoneRemoteController): the device's screen and Home button, its touches, and the phone's
+     gravity as the device's. Served with its WebSocket from the Mac; the token is the address's fragment, offered to
+     the socket as its subprotocol. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
+<!-- Added to the Home Screen, the page opens full screen, without Safari's bars. -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Light Touch">
+<title>Light Touch</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #fff; font: 17px -apple-system, system-ui, sans-serif; }
+  body { display: flex; align-items: center; justify-content: center; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; }
+  #device { display: none; flex-direction: column; align-items: center; }
+  /* The screen fills what the Home button and the safe area leave; --ratio is the frame's width over its height. */
+  canvas { width: min(100vw, calc((100dvh - 88px - env(safe-area-inset-top) - env(safe-area-inset-bottom)) * var(--ratio, 0.6667))); }
+  #home { width: 56px; height: 56px; margin: 16px; border-radius: 50%; border: 2px solid #333; background: #111; padding: 0; }
+  #home::after { content: ""; display: block; width: 16px; height: 16px; margin: auto; border: 2px solid #555; border-radius: 5px; }
+  #home:active { background: #222; }
+  #status { text-align: center; padding: 24px; }
+  #hint { color: #999; font-size: 15px; max-width: 300px; }
+  #status button { font: inherit; margin-top: 16px; padding: 12px 32px; border-radius: 12px; border: 0; background: #0a84ff; color: #fff; }
+  #turn { display: none; position: fixed; inset: 0; background: #000; align-items: center; justify-content: center; text-align: center; padding: 24px; }
+  @media (orientation: landscape) { #turn { display: flex; } }
+</style>
+</head>
+<body>
+<div id="device"><canvas id="screen"></canvas><button id="home" aria-label="Home"></button></div>
+<div id="status">
+  <button id="start">Start</button>
+  <p id="hint" hidden>For full screen, add this page to your Home Screen: Share, then Add to Home Screen.</p>
+</div>
+<div id="turn">Turn on your phone’s rotation lock, in portrait.</div>
+<script>
+const device = document.getElementById("device");
+const canvas = document.getElementById("screen");
+const statusView = document.getElementById("status");
+const context = canvas.getContext("2d");
+let socket;
+// iOS asks for motion on a tap (and is the only one with requestPermission).
+const iOS = typeof DeviceMotionEvent?.requestPermission === "function";
+
+// Only iOS Safari has navigator.standalone: false in the browser, true once opened from the Home Screen.
+if (navigator.standalone === false) document.getElementById("hint").hidden = false;
+
+// The Home Screen may open the page without its fragment; the token from the scan is remembered. It opens the socket
+// only while the session whose code was scanned lasts.
+const token = location.hash.slice(1) || localStorage.getItem("token");
+if (token) localStorage.setItem("token", token);
+
+// A message in place of the screen; with `action`, a button that reloads the page (a Home Screen app has no reload).
+function show(text, action) {
+  device.style.display = "none";
+  statusView.style.display = "";
+  statusView.replaceChildren(text);
+  if (!action) return;
+  const button = document.createElement("button");
+  button.textContent = action;
+  button.onclick = () => location.reload();
+  statusView.append(document.createElement("br"), button);
+}
+
+function send(message) {
+  // Drop motion rather than queue it behind a slow network (only the newest matters); never a touch, Home or a drawn frame.
+  if (socket?.readyState === WebSocket.OPEN && (!message.gravity || socket.bufferedAmount < 1024)) socket.send(JSON.stringify(message));
+}
+
+document.getElementById("start").onclick = async () => {
+  // Android can keep the page upright, but only in full screen.
+  if (iOS && await DeviceMotionEvent.requestPermission() !== "granted") return show("Light Touch needs motion access to tilt the device.", "Try Again");
+  await document.documentElement.requestFullscreen?.().catch(() => {});
+  await screen.orientation?.lock?.("portrait").catch(() => {});
+  await navigator.wakeLock?.request("screen").catch(() => {});
+
+  show("Connecting…");
+  socket = new WebSocket(`wss://${location.host}/ws`, [token]);
+  socket.binaryType = "blob";
+  // Ready for the first frame (and the Mac's sign that this socket is the phone).
+  let opened = false;
+  socket.onopen = () => {
+    opened = true;
+    send({ drawn: true });
+  };
+  // The Mac sends the next frame once this one is drawn: none wait in the network, none draw out of order.
+  socket.onmessage = async (event) => {
+    try {
+      const frame = await createImageBitmap(event.data);
+      if (canvas.width !== frame.width || canvas.height !== frame.height) {
+        canvas.width = frame.width;
+        canvas.height = frame.height;
+        canvas.style.setProperty("--ratio", frame.width / frame.height);
+      }
+      context.drawImage(frame, 0, 0);
+      frame.close();
+      device.style.display = "flex";
+      statusView.style.display = "none";
+    } finally {
+      send({ drawn: true });
+    }
+  };
+  // Refused before it opened: an earlier session's token. A new code is on the Mac.
+  socket.onclose = () => opened ? show("Disconnected.", "Reconnect") : show("Scan the code on the Mac again.");
+  addEventListener("devicemotion", ({ accelerationIncludingGravity: a }) => {
+    // iOS reports the pull of gravity (flat, face up: z < 0); others the push against it, the other way.
+    if (a?.x != null) send({ gravity: iOS ? [a.x, a.y, a.z] : [-a.x, -a.y, -a.z] });
+  });
+};
+
+document.getElementById("home").onclick = () => send({ home: true });
+
+// Two fingers, as the emulator has: the pointer each one is, by finger. Normalized on the picture: 0 begins, 1 moves,
+// 2 ends.
+const fingers = [null, null];
+function touch(phase) {
+  return (event) => {
+    event.preventDefault();
+    const finger = fingers.indexOf(phase === 0 ? null : event.pointerId);
+    if (finger < 0) return;
+    if (phase === 0) {
+      fingers[finger] = event.pointerId;
+      canvas.setPointerCapture(event.pointerId);
+    }
+    if (phase === 2) fingers[finger] = null;
+    const box = canvas.getBoundingClientRect();
+    send({ touch: [phase, (event.clientX - box.left) / box.width, (event.clientY - box.top) / box.height, finger] });
+  };
+}
+canvas.addEventListener("pointerdown", touch(0));
+canvas.addEventListener("pointermove", touch(1));
+canvas.addEventListener("pointerup", touch(2));
+canvas.addEventListener("pointercancel", touch(2));
+</script>
+</body>
+</html>

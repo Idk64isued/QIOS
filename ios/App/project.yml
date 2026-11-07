@@ -1,0 +1,22 @@
+name: LightTouchiOS
+options:
+  bundleIdPrefix: dev.lighttouch
+  deploymentTarget: { iOS: "16.0" }
+packages:
+  HostRuntime: { path: ../../Packages/HostRuntime }
+targets:
+  LightTouchiOS:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    dependencies:
+      - package: HostRuntime
+    settings:
+      base:
+        PRODUCT_NAME: LightTouch
+        PRODUCT_BUNDLE_IDENTIFIER: dev.lighttouch.ios
+        INFOPLIST_FILE: Info.plist
+        SWIFT_VERSION: "5.0"
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        TARGETED_DEVICE_FAMILY: "1,2"

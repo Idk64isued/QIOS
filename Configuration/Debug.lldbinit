@@ -1,0 +1,3 @@
+# QEMU creates coroutine stacks with SIGUSR2 (util/coroutine-sigaltstack.c).
+# Deliver it to QEMU without pausing every guest operation under Xcode.
+process handle -p true -s false -n false SIGUSR2

@@ -1,0 +1,54 @@
+#!/bin/bash
+# The agent worktree lifecycle hooks (.claude/settings.json), with the hook's JSON on stdin:
+#
+#     worktree create        WorktreeCreate: `git worktree add` under the one managed path,
+#                            $LTM_WORKTREE_ROOT/<repository>/<name> (default ~/Developer/ltm-worktrees.noindex), on a
+#                            new branch worktree-<name> at HEAD; makes its scratch directory
+#                            <scratch root>/<name>/ with a .worktree file naming it (what the worktree owns: scripts/clean
+#                            removes that directory with it); prints the path, the hook's answer.
+#     worktree remove        WorktreeRemove: `scripts/clean --worktree PATH --yes`, detached: removed only if it is
+#                            managed, clean, open in no process and every commit is on a remote (or it is abandoned:
+#                            a .abandoned file in its scratch directory); otherwise it stays.
+#     worktree session-end   SessionEnd: the same for the session's own managed worktree, for the terminal reasons
+#                            only (prompt_input_exit, logout); any other reason leaves it.
+set -uo pipefail
+HERE="$(cd "$(dirname "$0")/../.." && pwd)"
+input="$(cat)"
+field() { plutil -extract "$1" raw -o - - <<<"$input" 2>/dev/null; }
+ROOT="${LTM_WORKTREE_ROOT:-$HOME/Developer/ltm-worktrees.noindex}"
+SCRATCH="${LTM_SCRATCH_ROOT:-$HOME/Developer/ltm-scratch.noindex}"
+LOG="$SCRATCH/.worktree-hooks.log"
+mkdir -p "$SCRATCH"
+
+clean_detached() {  # the deletes can take minutes: run them past the hook's timeout, logged
+    echo "$(date '+%F %T') $1: scripts/clean --worktree $2" >> "$LOG"
+    nohup "$HERE/scripts/clean" --worktree "$2" --yes >> "$LOG" 2>&1 < /dev/null &
+}
+
+case "${1:-}" in
+    create)
+        name="$(field name)"
+        cwd="$(field cwd)"
+        [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "worktree: bad name '$name'" >&2; exit 1; }
+        top="$(git -C "${cwd:-.}" rev-parse --show-toplevel)" || exit 1
+        main="$(cd "$top" && cd "$(git rev-parse --git-common-dir)/.." && pwd -P)"
+        path="$ROOT/$(basename "$main")/$name"
+        mkdir -p "$(dirname "$path")" "$SCRATCH/$name"
+        git -C "$top" worktree add -q -b "worktree-$name" "$path" HEAD >&2 || exit 1
+        echo "$path" > "$SCRATCH/$name/.worktree"
+        echo "$path"
+        ;;
+    remove)
+        path="$(field worktree_path)"
+        [[ -n "$path" ]] && clean_detached remove "$path"
+        ;;
+    session-end)
+        reason="$(field reason)"
+        cwd="$(field cwd)"
+        case "$reason" in prompt_input_exit | logout) ;; *) exit 0 ;; esac
+        top="$(git -C "${cwd:-.}" rev-parse --show-toplevel 2>/dev/null)" || exit 0
+        case "$top/" in "$ROOT/"* | */.claude/worktrees/*) clean_detached "session-end $reason" "$top" ;; esac
+        ;;
+    *) echo "usage: worktree create|remove|session-end < hook.json" >&2; exit 2 ;;
+esac
+exit 0

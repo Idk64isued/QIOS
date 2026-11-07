@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "comment": "The source checkouts the app builds against, by commit. scripts/vendor checks them (QEMU_IOS_DIR and USBMUXD_SOURCE_DIR override the paths) and builds both at their pinned commits, into a vendor directory keyed by this file. The emulator and usbmuxd ship together (usb-zlp <-> qemu-zlp): bump both lines in one commit.",
+  "qemu-ios": {
+    "repository": "https://github.com/samhenrigold/qemu-ios",
+    "branch": "main",
+    "commit": "1ad1c781fe55b933035d6a8b4511c00ccb994f23",
+    "path": "~/Developer/qemu-ios",
+    "build_dir": "build-w1-native",
+    "provides": "contrib/export-guest-artifacts.sh (guest tools, tables, entitlements, headers, dylib); build_dir is the development build (the helper's dylib for Xcode and the checks), never the release's --qemu-build"
+  },
+  "usbmuxd": {
+    "repository": "https://github.com/samhenrigold/usbmuxd",
+    "branch": "idle-poll",
+    "commit": "5cb90897479b9021a69db9698fea071ef7b2eceb",
+    "path": "~/Developer/usbmuxd-qemu/usbmuxd",
+    "provides": "the usbmuxd the bundle ships: real ZLPs after max-packet-multiple writes, 50 ms polling once idle for 1 s, complete EP0 control transfers across NAK pauses, per-transfer log lines only at -v -v, and both listeners on owner-only Unix sockets"
+  },
+  "xcode": {
+    "build": "27B48",
+    "comment": "The Xcode releases are built with, by its build (xcodebuild -version): scripts/ship refuses any other. scripts/ship --pin-xcode records the selected Xcode's here. Development needs Xcode 27 or later."
+  },
+  "iBoot32Patcher": {
+    "pinned_in": "build-support/dependencies.json",
+    "group": "tools"
+  }
+}

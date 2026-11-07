@@ -1,0 +1,12 @@
+{
+  "images" : [
+    {
+      "filename" : "shell-4g.png",
+      "idiom" : "universal"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}

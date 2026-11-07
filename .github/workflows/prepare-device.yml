@@ -1,0 +1,73 @@
+name: Prepare device
+# Runs the Mac app's own preparer (firmwarekit create) on a macOS runner and uploads the finished device folder,
+# ready to copy into the iOS app (Files > LightTouch > Devices). Keep this repository PRIVATE: the result contains
+# Apple firmware, which must not be published. The IPSW comes from the catalog's Apple URL (archive.org mirror as fallback).
+on:
+  workflow_dispatch:
+    inputs:
+      id:
+        description: "Catalog id from LightTouchMac/Resources/firmware-catalog.json, e.g. n72ap-7E18 (iPod touch 2G, iOS 3.1.3)"
+        required: true
+        default: "n72ap-7E18"
+jobs:
+  prepare:
+    runs-on: macos-26
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 27 (the project refuses anything older)
+        run: |
+          X=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1)
+          [ -n "$X" ] || { echo "No Xcode 27 on this runner image. Installed:"; ls /Applications | grep -i xcode; exit 1; }
+          sudo xcode-select -s "$X"; xcodebuild -version
+      - name: Vendor (emulator, usbmuxd, guest tools, boot ROMs)
+        run: scripts/vendor || { echo "scripts/vendor lists what is missing above; see ios/README.md (SecureROMs)"; exit 1; }
+      - name: Build the app (it carries firmwarekit, the helper and the guest tools)
+        run: |
+          xcodebuild -project LightTouchMac.xcodeproj -scheme LightTouchMac -configuration Release \
+            -derivedDataPath build/dd CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES build | tail -40
+      - name: Fetch the IPSW
+        id: ipsw
+        run: |
+          python3 - "${{ inputs.id }}" <<'PY'
+          import json, sys, hashlib, urllib.request, os
+          want = sys.argv[1]
+          cat = json.load(open("LightTouchMac/Resources/firmware-catalog.json"))
+          e = next(x for x in cat["entries"] if x["id"] == want)
+          src = e["source"]
+          urls = [src["url"]] + [m["url"] for m in src.get("mirrors", [])]
+          for u in urls:
+              try:
+                  print("fetching", u, flush=True)
+                  req = urllib.request.Request(u, headers={"User-Agent": "ltm-ios-prepare"})
+                  with urllib.request.urlopen(req) as r, open("fw.ipsw", "wb") as f:
+                      while chunk := r.read(1 << 20): f.write(chunk)
+                  if hashlib.sha1(open("fw.ipsw", "rb").read()).hexdigest() == src["sha1"]: break
+                  print("sha1 mismatch, trying the next source")
+              except Exception as ex: print("failed:", ex)
+          else: sys.exit("no source gave a verified IPSW")
+          PY
+      - name: Prepare
+        run: |
+          APP=$(find build/dd -name "*.app" -path "*Release*" -maxdepth 6 | head -1)
+          FK=$(find "$APP" -name firmwarekit -type f | head -1)
+          [ -n "$FK" ] || { echo "firmwarekit is not in $APP; build it with: swift build -c release --product firmwarekit (Packages/FirmwareKit)"; exit 1; }
+          echo "using $FK"
+          mkdir -p "$RUNNER_TEMP/out"
+          "$FK" create --catalog LightTouchMac/Resources/firmware-catalog.json --id "${{ inputs.id }}" --ipsw fw.ipsw \
+            --out "$RUNNER_TEMP/out" --hfs kernel 2>&1 | tee prepare.log
+      - name: Arrange for the iOS app
+        run: |
+          LOCK=$(find "$RUNNER_TEMP/out" -name device.lock.json | head -1)
+          [ -n "$LOCK" ] || { echo "no device.lock.json produced; layout of the output:"; find "$RUNNER_TEMP/out" -maxdepth 3; exit 1; }
+          DEST="package/Devices/${{ inputs.id }}"; mkdir -p "$DEST"
+          cp -R "$(dirname "$LOCK")" "$DEST/base"
+          du -sh "$DEST"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: device-${{ inputs.id }}
+          path: package
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with: { name: prepare-log, path: prepare.log }

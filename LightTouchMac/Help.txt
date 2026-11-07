@@ -1,0 +1,60 @@
+# Adding and starting devices
+The sidebar lists your devices. File → Add Device (⌘N) chooses iPod and iPad versions to add. Select one and choose Download and Prepare to get its IPSW from Apple, or Import IPSW to use one you have; you can also drop an IPSW onto the window. When it’s ready, Start runs it. File also has Show in Finder and Delete Device. Light Touch → Settings → Storage shows what each device and IPSW takes on disk.
+
+# Using the device
+Click and drag on the screen as you would with a finger. Pinch on a trackpad, or Option-drag on the screen, to use two fingers. Home Screen is ⇧⌘H; Lock is ⌘L. Device → Shut Down (⌘.) asks, then turns the [Device] off the way sliding to power off does; Force Stop stops it at once. Choose Start to start it again.
+
+The toolbar provides Home Screen, Lock, Rotate, Zoom, and capture actions. View → Customize Toolbar lets you rearrange controls or add Files, Motion, and Capture Options. View also shows and hides the sidebar (⌃⌘S), the inspector (⌥⌘I), and the console (⇧⌘Y).
+
+Window → Show Device (⌘1) brings the device forward and focuses its screen. Window → Show [Device] Files (⌘2) opens the separate Files window. ⌘W closes the front window; ⌘M minimizes it. Use ⌘` to cycle through open windows. ⌘Q quits Light Touch.
+
+# Rotating and zooming
+Rotate left with ⌘← or right with ⌘→. The toolbar’s Rotate switches between portrait and landscape; hold Option to turn the other way. Device → Rotate Automatically follows the [Device]’s own orientation. View contains Zoom to Fit, Physical Size, Pixel Accurate, Zoom In and Zoom Out; each kind of device keeps its own zoom. Physical Size uses the current display’s reported measurements. View → Free-Form Screen shows the screen alone: drag its edges or corners to a new size (hold Option to keep it centered), then click Apply or press Return to restart the [Device] at that size, or press Escape to go back. View → Native Size returns to the [Device]’s own size.
+
+# Motion
+Drag the frame side to side to steer tilt games, or up/down to tip the device forward/back. Two-finger scrolling outside the screen does the same and follows Natural Scrolling. Rotate with two fingers outside the screen (or hold Option anywhere) for another way to control roll. Releasing a gesture returns it to rest. Device → Motion contains Upright, Flat, Reset Tilt, and Shake. Device → Play on Phone… shows a QR code: open it on a phone on the same network to see the screen there, touch it with one or two fingers, press its Home button, and tilt the phone to tilt the device. The phone warns once that the connection isn’t private; continue to the page. On iPhone, Share → Add to Home Screen opens it full screen. Settings → General → Reset Phone Access stops every phone from connecting until it scans a new code. Device → Input contains volume and keyboard options.
+
+# Keyboard access
+Turn off Device → Input → Send Keyboard Input, then choose Window → Show Device. Arrow keys move a visible pointer. Hold Space to touch and use arrows to drag; release Space to lift the finger. Shift-arrow also drags until you release the arrow keys or Shift. Tab moves out of the screen; Control-Tab does so even while keyboard input is on. Turn keyboard input back on to type into apps on the device. Mac Command and Control shortcuts, including VoiceOver, stay with macOS.
+
+# Installing apps
+Apps → Install App (⇧⌘I) chooses a decrypted, compatible IPA. You can also drag apps onto the device or find apps in the Store. Find (⌘F) searches apps when the device window is active; in Help and Device Logs, it searches the displayed text.
+
+Select an app for Open, Uninstall, and other actions in Apps or its context menu. Commands that need the device are dimmed while it is unavailable.
+
+# Importing media
+Apps → Import Media accepts MP3, M4A, AAC and WAV audio, JPEG, PNG and HEIC photos, and MP4, M4V and QuickTime videos. You can also drop files onto the device. Songs appear in Music, photos in Saved Photos, and movies in Videos. You can cancel while files are being prepared or copied. If an import fails, its row stays visible with Retry.
+
+# Screenshots and recordings
+Capture → Save Screenshot (⌘S) saves immediately. Save Screenshot As (⇧⌘S) lets you choose a location. Copy Screenshot copies it to the Clipboard; ⌘C does the same when the device screen has focus and no text is selected. Open Screenshot opens a new capture in Preview or your chosen app.
+
+Screenshots include the device, its motion, and the gradient. Turn on Capture → Capture Screen Only to capture just the screen. Recordings show just the screen; turn on Capture → Record Device Bezel to include the device and the gradient. View → Show/Hide Finger Dots controls touch indicators on the device and in captures.
+
+Recordings include device audio. Start/Stop Recording is ⌘R; Escape discards a recording (it asks first). The toolbar shows elapsed time while recording and progress while saving. If saving fails, choose another location; a recording that still can't be saved is shown in the Finder. Hiding or minimizing the app stops recording.
+
+Captures save directly to the Desktop by default. Light Touch → Settings → Capture changes the save folder, screenshot app, automatic copying, Finder reveal, and sounds. You can also choose a Space shortcut. Space goes to the device unless you choose a capture action. Drag a saved capture’s thumbnail into another app or the Finder. Click its arrow to reveal the file.
+
+# Selecting and pasting text
+Edit → Select Text on Screen uses Live Text to select text on the device screen. Use the ordinary Copy command (⌘C) for selected text. Done Selecting Text or Escape returns to the device. Paste Text to [Device] (⌃⌘V) sends Clipboard text to the device; ordinary Paste (⌘V) remains available to Mac text fields.
+
+# Device files
+Window → Show [Device] Files opens the device’s Media folder. File → Copy to [Device] copies a file into the selected folder; Save to Mac saves a selected file. The Files window’s buttons perform the same actions. File also has Refresh Files and Cancel Transfer. Closing the window keeps an active transfer running; reopen it from Window (⌘2). View → Show/Hide Hidden Files is also available from the browser’s options menu.
+
+# Browsing the web
+The first time a device starts, choose Connect or Use Offline. Device → Network → Connect to the Internet, or Light Touch → Settings → General, changes this choice; it takes effect the next time Light Touch opens the device. Offline mode still allows app installation and screen capture.
+
+Device → Network → Proxy selects no proxy, the built-in HTTP proxy (the default), or a dated Internet Archive replay. Archived pages depend on available captures and archive rate limits. A modern site’s scripts or layout may still exceed this old version of Safari.
+
+With the HTTP proxy enabled, Weather uses Open-Meteo forecasts and city search (https://open-meteo.com/, CC BY 4.0). The free service is for noncommercial use.
+
+# Troubleshooting
+Device → Pause freezes the device; Resume continues it.
+
+During startup, progress stays visible until the Home screen responds. If startup takes more than 90 seconds, use Show Logs. A status message above the device explains preparation, saved-state, erase, or shutdown failures. Storage-write failures keep the message visible until you free disk space and reopen Light Touch.
+
+Window → Device Logs shows app events, available device console output, and USB logs, including retained previous files. Help → Export Diagnostics collects the complete retained logs for a bug report, and Help → Copy Bug Report Info copies a short summary to paste into one. Both leave out personal details: your home folder, user and Mac names, serial numbers and device identifiers.
+
+Use Shut Down or Quit when you can, so the device finishes saving. Restart and Erase All Content and Settings ask first. Erase removes installed apps, media, and settings.
+
+# Licenses
+Light Touch includes open-source software. Each component’s license, and for GPL and LGPL components where to get its source, is in Light Touch.app/Contents/Resources/licenses: QEMU and the guest tools (qemu-ios, GPL-2.0), usbmuxd (GPL-3.0), inetcat (GPL-2.0-or-later), iBoot32Patcher (GPL-3.0), libimobiledevice, libimobiledevice-glue, libusbmuxd, libtatsu and libplist (LGPL-2.1), GLib (LGPL-2.1), proxy-libintl (LGPL-2.0), FFmpeg (LGPL-2.1), libslirp (BSD-3-Clause), PCRE2 (BSD-3-Clause), pixman (MIT), OpenSSL (Apache-2.0), Nettle (LGPL-3.0-or-later or GPL-2.0-or-later), ANGLE (BSD-3-Clause) with Abseil (Apache-2.0) and zlib (Zlib) in licenses/angle, and Swift packages from Apple and others (Apache-2.0, MIT) in licenses/swift, among them Unrar.swift (MIT), which includes RARLAB’s UnRAR source under the UnRAR license (licenses/swift/Unrar.swift/UnRAR-license.txt).

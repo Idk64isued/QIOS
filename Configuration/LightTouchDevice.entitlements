@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- The device helper as it ships (Release). allow-jit: QEMU's TCG translates guest code into a MAP_JIT buffer
+     (tcg/region.c; split-wx is off), the only executable memory it makes. Library validation stays on: the helper
+     loads only Contents/Frameworks/libqemu-arm.dylib and the bundle's other dylibs, all signed with the app's team.
+     Debug builds use LightTouchDevice-Debug.entitlements. -->
+<dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+</dict>
+</plist>

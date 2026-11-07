@@ -1,0 +1,7 @@
+// The firmwarekit command-line tool target, on top of Shared.xcconfig (the project's settings).
+
+PRODUCT_BUNDLE_IDENTIFIER = gold.samhenri.LightTouchMac.firmwarekit
+SWIFT_MODULE_NAME = FirmwareKitCLI
+CODE_SIGN_ENTITLEMENTS = Configuration/Tool.entitlements
+SKIP_INSTALL = YES
+ENABLE_DEBUG_DYLIB = NO

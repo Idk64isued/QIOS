@@ -1,0 +1,19 @@
+#!/bin/bash
+# Deprecated: scripts/ship is the only release command, and an archive made before is `scripts/ship --archive`. This
+# runs that, for anyone used to `scripts/release X.xcarchive [--dry-run] --amore --notes notes.md --publish` (ship
+# always uploads to Amore and publishes; --amore and --publish are accepted and do nothing more). It goes once a real
+# release has passed through scripts/ship.
+set -euo pipefail
+ARCHIVE="${1:-}"
+[[ -n "$ARCHIVE" && "$ARCHIVE" != --* ]] || { echo "FAIL no archive (usage: scripts/ship --archive X.xcarchive --notes notes.md [--dry-run]) -"; exit 2; }
+shift
+args=(--archive "$ARCHIVE")
+while (($#)); do
+    case "$1" in
+        --amore | --publish) ;;
+        *) args+=("$1") ;;
+    esac
+    shift
+done
+echo "scripts/release is deprecated: running scripts/ship ${args[*]}" >&2
+exec "$(dirname "$0")/ship" "${args[@]}"
