@@ -19,14 +19,26 @@ unset CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH SDKROOT
 # --- pinned sources -----------------------------------------------------------------------------------------
 fetch() {   # NAME... : download + sha256-verify the dependencies.json entries
 python3 - "$SRC/build-support/dependencies.json" "$ROOT/src" "$@" <<'PY'
-import json, sys, hashlib, urllib.request, os
+import json, sys, hashlib, urllib.request, os, time
 deps = {p["name"]: p for p in json.load(open(sys.argv[1]))["packages"]}
 for name in sys.argv[3:]:
     p = deps[name]; dest = os.path.join(sys.argv[2], p["archive"])
     if not os.path.exists(dest):
-        print("fetch", p["url"], flush=True)
-        req = urllib.request.Request(p["url"], headers={"User-Agent": "ltm-ios-build"})
-        with urllib.request.urlopen(req) as r, open(dest, "wb") as f: f.write(r.read())
+        last = None
+        for attempt in range(1, 7):
+            try:
+                print("fetch", p["url"], f"(attempt {attempt})", flush=True)
+                req = urllib.request.Request(p["url"], headers={"User-Agent": "ltm-ios-build"})
+                with urllib.request.urlopen(req, timeout=120) as r, open(dest + ".part", "wb") as f:
+                    while chunk := r.read(1 << 20): f.write(chunk)
+                os.replace(dest + ".part", dest)
+                break
+            except Exception as ex:
+                last = ex
+                print("  failed:", ex, flush=True)
+                time.sleep(5 * attempt)
+        else:
+            sys.exit(f"{name}: could not download after 6 attempts: {last}")
     h = hashlib.sha256(open(dest, "rb").read()).hexdigest()
     if h != p["sha256"]: sys.exit(f"{name}: sha256 mismatch ({h})")
 PY
@@ -65,7 +77,7 @@ log() { echo "== $*"; }
 log libffi
 LIBFFI=libffi-3.4.8.tar.gz
 LIBFFI_SHA256=bc9842a18898bfacb0ed1252c4febcc7e78fa139fd27fdc7a3e30d9d9356119b
-[ -f "$ROOT/src/$LIBFFI" ] || curl -fsSL -o "$ROOT/src/$LIBFFI" "https://github.com/libffi/libffi/releases/download/v3.4.8/$LIBFFI"
+[ -f "$ROOT/src/$LIBFFI" ] || curl -fsSL --retry 6 --retry-delay 5 --retry-all-errors -o "$ROOT/src/$LIBFFI" "https://github.com/libffi/libffi/releases/download/v3.4.8/$LIBFFI"
 echo "$LIBFFI_SHA256  $ROOT/src/$LIBFFI" | shasum -a 256 -c - || { echo "libffi checksum mismatch" >&2; exit 1; }
 tar -xf "$ROOT/src/$LIBFFI"
 (cd libffi-3.4.8 && CC="$CLANG $FLAGS" ./configure --prefix="$P" --libdir="$P/lib" --host=aarch64-apple-darwin --disable-shared \
