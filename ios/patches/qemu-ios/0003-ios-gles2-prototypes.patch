@@ -1,0 +1,95 @@
+--- a/hw/arm/gles-host.c
++++ b/hw/arm/gles-host.c
+@@ -171,6 +171,92 @@
+ #ifndef GL_RGB565
+ #define GL_RGB565                         0x8D62
+ #endif
++
++/*
++ * The shader/program ("GLES 2") half of the renderer. The ES 1.1 headers do not
++ * declare these, but OpenGLES.framework exports them, so declaring the standard
++ * ES 2.0 prototypes is enough to compile and link. An EAGL ES 1.1 context
++ * rejects them at run time (GL_INVALID_OPERATION), so guests that use shaders
++ * will not render on iOS yet; fixed-function (ES 1.1) guests such as the
++ * iPod touch 2G are unaffected.
++ */
++#ifndef GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS
++#define GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS 0x8B4D
++#endif
++#ifndef GL_POINT_SPRITE
++#define GL_POINT_SPRITE                   0x8861
++#endif
++#ifdef __cplusplus
++extern "C" {
++#endif
++void glAttachShader(GLuint program, GLuint shader);
++void glBindAttribLocation(GLuint program, GLuint index, const char *name);
++void glBlendColor(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha);
++void glBlendEquation(GLenum mode);
++void glBlendEquationSeparate(GLenum modeRGB, GLenum modeAlpha);
++void glBlendFuncSeparate(GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha);
++void glCompileShader(GLuint shader);
++GLuint glCreateProgram(void);
++GLuint glCreateShader(GLenum type);
++void glDeleteProgram(GLuint program);
++void glDeleteShader(GLuint shader);
++void glDetachShader(GLuint program, GLuint shader);
++void glDisableVertexAttribArray(GLuint index);
++void glEnableVertexAttribArray(GLuint index);
++void glGetActiveAttrib(GLuint program, GLuint index, GLsizei bufSize, GLsizei *length, GLint *size, GLenum *type, char *name);
++void glGetActiveUniform(GLuint program, GLuint index, GLsizei bufSize, GLsizei *length, GLint *size, GLenum *type, char *name);
++void glGetAttachedShaders(GLuint program, GLsizei maxCount, GLsizei *count, GLuint *shaders);
++GLint glGetAttribLocation(GLuint program, const char *name);
++void glGetProgramInfoLog(GLuint program, GLsizei bufSize, GLsizei *length, char *infoLog);
++void glGetProgramiv(GLuint program, GLenum pname, GLint *params);
++void glGetShaderInfoLog(GLuint shader, GLsizei bufSize, GLsizei *length, char *infoLog);
++void glGetShaderiv(GLuint shader, GLenum pname, GLint *params);
++GLint glGetUniformLocation(GLuint program, const char *name);
++void glGetVertexAttribiv(GLuint index, GLenum pname, GLint *params);
++GLboolean glIsProgram(GLuint program);
++GLboolean glIsShader(GLuint shader);
++void glLinkProgram(GLuint program);
++void glShaderSource(GLuint shader, GLsizei count, const char *const *string, const GLint *length);
++void glStencilFuncSeparate(GLenum face, GLenum func, GLint ref, GLuint mask);
++void glStencilMaskSeparate(GLenum face, GLuint mask);
++void glStencilOpSeparate(GLenum face, GLenum fail, GLenum zfail, GLenum zpass);
++void glUniform1f(GLint location, GLfloat v0);
++void glUniform2f(GLint location, GLfloat v0, GLfloat v1);
++void glUniform3f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2);
++void glUniform4f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3);
++void glUniform1i(GLint location, GLint v0);
++void glUniform2i(GLint location, GLint v0, GLint v1);
++void glUniform3i(GLint location, GLint v0, GLint v1, GLint v2);
++void glUniform4i(GLint location, GLint v0, GLint v1, GLint v2, GLint v3);
++void glUniform1fv(GLint location, GLsizei count, const GLfloat *value);
++void glUniform2fv(GLint location, GLsizei count, const GLfloat *value);
++void glUniform3fv(GLint location, GLsizei count, const GLfloat *value);
++void glUniform4fv(GLint location, GLsizei count, const GLfloat *value);
++void glUniform1iv(GLint location, GLsizei count, const GLint *value);
++void glUniform2iv(GLint location, GLsizei count, const GLint *value);
++void glUniform3iv(GLint location, GLsizei count, const GLint *value);
++void glUniform4iv(GLint location, GLsizei count, const GLint *value);
++void glUniformMatrix2fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value);
++void glUniformMatrix3fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value);
++void glUniformMatrix4fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value);
++void glUseProgram(GLuint program);
++void glValidateProgram(GLuint program);
++void glVertexAttrib1f(GLuint index, GLfloat x);
++void glVertexAttrib2f(GLuint index, GLfloat x, GLfloat y);
++void glVertexAttrib3f(GLuint index, GLfloat x, GLfloat y, GLfloat z);
++void glVertexAttrib4f(GLuint index, GLfloat x, GLfloat y, GLfloat z, GLfloat w);
++void glVertexAttrib4fv(GLuint index, const GLfloat *v);
++void glVertexAttribPointer(GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const void *pointer);
++#ifdef __cplusplus
++}
++#endif
++/* Desktop glClipPlane takes doubles; ES 1.1 has the float form. */
++static inline void glClipPlane(GLenum plane, const double *equation)
++{
++    GLfloat f[4] = { (GLfloat)equation[0], (GLfloat)equation[1],
++                     (GLfloat)equation[2], (GLfloat)equation[3] };
++    glClipPlanef(plane, f);
++}
+ #endif
+ 
+ /* Framebuffer objects are core in ES 1.1's OES form. Same tokens, same
