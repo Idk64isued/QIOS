@@ -73,6 +73,8 @@ CROSS=(--cross-file "$ROOT/ios-arm64.meson")
 printf "Name: zlib\nDescription: iOS SDK zlib\nVersion: 1.2.12\nLibs: -lz\nCflags:\n" > "$P/lib/pkgconfig/zlib.pc"
 
 log() { echo "== $*"; }
+# whenever a step fails, show the end of the newest per-library log in the Actions output
+trap 'f=$(ls -t "$ROOT"/logs/*.log 2>/dev/null | head -1); [ -n "$f" ] && { echo "--- tail of $f"; tail -60 "$f"; }' ERR
 # --- libffi (not in dependencies.json; pinned here, sha256 recorded when this script was written) ------------
 log libffi
 LIBFFI=libffi-3.4.8.tar.gz
@@ -107,7 +109,7 @@ meson setup slirp-out libslirp-v4.9.4 "${CROSS[@]}" --prefix="$P" --buildtype=re
 ninja -C slirp-out -j"$JOBS" >>"$ROOT/logs/slirp.log" 2>&1 && ninja -C slirp-out install >>"$ROOT/logs/slirp.log" 2>&1
 # --- OpenSSL (the boards' AES/SHA) -------------------------------------------------------------------------
 log openssl
-(cd openssl-3.6.3 && CC="$CLANG" ./Configure ios64-xcrun no-shared no-tests no-docs no-apps --prefix="$P" --openssldir=/var/empty \
+(cd openssl-3.6.3 && ./Configure ios64-xcrun no-shared no-tests no-docs no-apps --prefix="$P" --openssldir=/var/empty \
     "-miphoneos-version-min=$MIN" >"$ROOT/logs/openssl.log" 2>&1 && make -j"$JOBS" build_libs >>"$ROOT/logs/openssl.log" 2>&1 && make install_dev >>"$ROOT/logs/openssl.log" 2>&1)
 # --- nettle (QEMU's cipher backend) -------------------------------------------------------------------------
 log nettle
