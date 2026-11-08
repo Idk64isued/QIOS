@@ -29,8 +29,8 @@ final class AudioPlayer: @unchecked Sendable {
             for i in 0..<Int(frames) {
                 let l: Float = i < n ? Float(self.ring[2 * i]) / 32768 : 0
                 let r: Float = i < n ? Float(self.ring[2 * i + 1]) / 32768 : 0
-                buffers[0].mutableData?.assumingMemoryBound(to: Float.self)[i] = l
-                if buffers.count > 1 { buffers[1].mutableData?.assumingMemoryBound(to: Float.self)[i] = r }
+                buffers[0].mData?.assumingMemoryBound(to: Float.self)[i] = l
+                if buffers.count > 1 { buffers[1].mData?.assumingMemoryBound(to: Float.self)[i] = r }
             }
             if n > 0 { self.ring.removeFirst(n * 2) }
             self.lock.unlock()
