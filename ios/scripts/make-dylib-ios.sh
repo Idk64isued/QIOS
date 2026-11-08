@@ -7,7 +7,7 @@ SRC="$1"; BUILD="$2"; LIBNAME="$3"; OUT="$BUILD/$LIBNAME"
 cd "$BUILD"
 DEP_CFLAGS="$(pkg-config --cflags glib-2.0 pixman-1)"
 eval "CC_ARGV=($(jq -r ".host.c.exelist | @sh" meson-info/intro-compilers.json))"
-if grep -q "CONFIG_TCG_INTERPRETER" config-host.h 2>/dev/null || grep -q "CONFIG_TCG_INTERPRETER" config-target.h 2>/dev/null; then TCG_HOST=tci; else TCG_HOST=aarch64; fi
+if grep -qs "^#define CONFIG_TCG_INTERPRETER" config-host.h config-target.h *-config-target.h; then TCG_HOST=tci; else TCG_HOST=aarch64; fi
 for f in "$SRC/contrib/ios-app/qemu-ios-entry.c" "$SRC/contrib/ios-app/qemu-ios-ui.c" "$SRC/contrib/macos-app/qemu-macos-extras.c"; do
     o="$(basename "${f%.c}").o"
     "${CC_ARGV[@]}" -c "$f" -o "$o" -I. -I.. -Iqapi -Itrace -Iui -I"$SRC/contrib/ios-app" -I"$SRC/contrib/macos-app" $DEP_CFLAGS \

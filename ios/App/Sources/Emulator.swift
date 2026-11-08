@@ -55,7 +55,7 @@ final class Emulator: ObservableObject {
                 cargs.append(nil)
                 let rc = qemu.main(Int32(argv.count), &cargs)
                 NSLog("LightTouch: qemu_ios_main returned \(rc)")
-                DispatchQueue.main.async { [weak self] in self?.state = .failed("The emulator stopped (exit \(rc)).") }
+                Task { @MainActor [weak self] in self?.state = .failed("The emulator stopped (exit \(rc)).") }
             }
             thread.name = "qemu-main"
             thread.stackSize = 16 << 20

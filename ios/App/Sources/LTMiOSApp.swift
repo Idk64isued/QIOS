@@ -46,7 +46,7 @@ struct RootView: View {
                         Text(JIT.ready
                              ? "JIT is on: the fast emulator will load."
                              : "JIT is off: the slow interpreter will load. Enable JIT with StikDebug first (for LiveContainer, use its Launch with JIT).")
-                            .font(.footnote).foregroundStyle(JIT.ready ? .green : .orange)
+                            .font(.footnote).foregroundStyle(JIT.ready ? Color.green : Color.orange)
                         Text("Engine: \(emulator.engine)").font(.footnote)
                     }
                     Section("Devices") {

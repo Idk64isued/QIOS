@@ -61,7 +61,7 @@ final class AudioPlayer: @unchecked Sendable {
             let n = packet.withUnsafeMutableBytes { qemu.audioRead(generation, $0.baseAddress, 16384, &seconds) }
             if n < 0 { break }   // generation expired or failed
             if n == 0 { Thread.sleep(forTimeInterval: 0.01); continue }
-            let count = n / 2
+            let count = Int(n) / 2
             lock.lock()
             packet.withUnsafeBytes { raw in
                 ring.append(contentsOf: raw.bindMemory(to: Int16.self).prefix(count))
