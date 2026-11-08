@@ -72,16 +72,33 @@ index f240bec..fdbf8c5 100644
 +}
 +#endif
 diff --git a/Packages/HostRuntime/Sources/HostRuntime/SandboxExtension.swift b/Packages/HostRuntime/Sources/HostRuntime/SandboxExtension.swift
-index 9471416..d706e79 100644
+index 9471416..e7ba53c 100644
 --- a/Packages/HostRuntime/Sources/HostRuntime/SandboxExtension.swift
 +++ b/Packages/HostRuntime/Sources/HostRuntime/SandboxExtension.swift
-@@ -1,3 +1,4 @@
+@@ -21,6 +21,7 @@
+ 
+ import Foundation
+ 
 +#if os(macOS)
- // A sandboxed LightTouchDevice's files, granted by the unsandboxed process that spawns it (the app's DeviceLink,
- // firmwarekit's one-shots, the harness). Everything that issues or takes a grant is here.
- //
-@@ -234,3 +235,4 @@ public nonisolated struct BootFiles: Codable, Sendable, Equatable {
-             + readOnly.map { .init(URL(fileURLWithPath: $0), .read) }
+ public nonisolated enum SandboxExtension {
+     public enum Access: String, Sendable, Codable {
+         case read = "com.apple.app-sandbox.read"
+@@ -216,6 +217,7 @@ public nonisolated enum SandboxExtension {
+         return (tokens.count, consume(tokens))
      }
  }
 +#endif
+ 
+ /// What a boot's QEMU opens, by role (filled by PreparedDeviceBoot from the device's own paths): the spawner grants
+ /// exactly these to a sandboxed helper (SandboxExtension).
+@@ -229,8 +231,10 @@ public nonisolated struct BootFiles: Codable, Sendable, Equatable {
+         self.readOnly = readOnly
+     }
+ 
++#if os(macOS)
+     public var grants: [SandboxExtension.Grant] {
+         readWrite.map { .init(URL(fileURLWithPath: $0), .readWrite) }
+             + readOnly.map { .init(URL(fileURLWithPath: $0), .read) }
+     }
++#endif
+ }
