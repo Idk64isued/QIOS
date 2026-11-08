@@ -35,10 +35,12 @@ struct RootView: View {
     @State private var devices: [DeviceFolder] = []
     @State private var packed: [URL] = []
     @StateObject private var importer = Importer()
+    @AppStorage("fastGL") private var fastGL = false
+    @AppStorage("codeCacheMB") private var codeCacheMB = 512
     @State private var running: DeviceFolder?
 
     var body: some View {
-        if let running, case .running = emulator.state {
+        if let running, emulator.showsScreen {
             EmulatorScreen(device: running)
         } else {
             NavigationView {
@@ -50,6 +52,21 @@ struct RootView: View {
                              : "JIT is off: the slow interpreter will load. Enable JIT with StikDebug first (for LiveContainer, use its Launch with JIT).")
                             .font(.footnote).foregroundStyle(JIT.ready ? Color.green : Color.orange)
                         Text("Engine: \(emulator.engine)").font(.footnote)
+                    }
+                    Section("Speed") {
+                        Toggle("Faster graphics (skips GL error checks)", isOn: $fastGL)
+                        Picker("Code cache", selection: $codeCacheMB) {
+                            Text("256 MB").tag(256)
+                            Text("512 MB").tag(512)
+                            Text("1 GB").tag(1024)
+                        }
+                        if ProcessInfo.processInfo.isLowPowerModeEnabled {
+                            Text("Low Power Mode is on. It slows the emulator a lot: turn it off.").font(.footnote).foregroundStyle(Color.orange)
+                        }
+                        if ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue {
+                            Text("The phone is hot and throttling. Let it cool down.").font(.footnote).foregroundStyle(Color.orange)
+                        }
+                        Text("Quit with Save & quit: the next launch restores the device in seconds instead of booting.").font(.footnote).foregroundStyle(.secondary)
                     }
                     Section("Devices") {
                         if devices.isEmpty {
@@ -103,10 +120,27 @@ struct EmulatorScreen: View {
                 Button("Power") { emulator.press(1) }
                 Button("Vol +") { emulator.press(2) }
                 Button("Vol -") { emulator.press(3) }
-                Button("Shut down") { emulator.quit() }.tint(.red)
+                Menu("Quit") {
+                    Button("Save & quit") { emulator.saveAndQuit() }
+                    Button("Shut down", role: .destructive) { emulator.quit() }
+                }
             }
             .buttonStyle(.bordered).padding(.vertical, 8)
+            if !emulator.saveMessage.isEmpty, emulator.state == .running {
+                Text(emulator.saveMessage).font(.footnote).foregroundStyle(Color.orange).padding(.bottom, 6)
+            }
         }
         .background(Color.black)
+        .overlay {
+            if emulator.state == .saving || emulator.state == .saved {
+                ZStack {
+                    Color.black.opacity(0.75).ignoresSafeArea()
+                    VStack(spacing: 12) {
+                        ProgressView()
+                        Text(emulator.saveMessage).foregroundStyle(.white)
+                    }
+                }
+            }
+        }
     }
 }

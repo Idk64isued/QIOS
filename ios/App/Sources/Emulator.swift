@@ -8,7 +8,17 @@ final class Emulator: ObservableObject {
     enum State: Equatable {
         case idle
         case running
+        case saving
+        case saved
         case failed(String)
+    }
+
+    /// The emulator screen is up (running, or being saved before the app closes).
+    var showsScreen: Bool {
+        switch state {
+        case .running, .saving, .saved: return true
+        default: return false
+        }
     }
 
     @Published private(set) var state: State = .idle
@@ -17,6 +27,8 @@ final class Emulator: ObservableObject {
     private var started = false
     private var observers: [NSObjectProtocol] = []
     private var audio: AudioPlayer?
+    private var overlayURL: URL?
+    @Published private(set) var saveMessage = ""
 
     /// Loads the library that suits this launch (JIT when StikDebug has enabled it, else the interpreter).
     func load() {
@@ -43,18 +55,38 @@ final class Emulator: ObservableObject {
             var argv = config.argv
             // iOS gives a process no 1 GiB code buffer worth of headroom: ask for a modest one. Split W^X is how
             // JIT works under CS_DEBUGGED/TXM (tcg/region.c); TCI has no code buffer to split.
-            argv += qemu.isJIT ? ["-accel", "tcg,tb-size=192,split-wx=on"] : ["-accel", "tcg,tb-size=32"]
+            // The code cache has to hold the translated guest code or QEMU throws it all away and translates again
+            // ("tb_flush"), which is slow; its pages are only used as they are filled. Settings can change the size.
+            let configured = UserDefaults.standard.integer(forKey: "codeCacheMB")
+            let cacheMB = configured > 0 ? configured : 512
+            argv += qemu.isJIT ? ["-accel", "tcg,tb-size=\(cacheMB),split-wx=on"] : ["-accel", "tcg,tb-size=32"]
+
+            // A saved state (Save & quit) restores in seconds instead of booting again.
+            let overlay = directory.appendingPathComponent("overlay", isDirectory: true)
+            overlayURL = overlay
+            let snaps = Snapshots(overlay: overlay)
+            var resumed = false
+            if snaps.usable(build: qemu.buildString) {
+                argv += ["-incoming", "file:\(snaps.file.path)"]
+                resumed = true
+            } else {
+                snaps.discard()
+            }
+
             config.argv = argv
             for (key, value) in config.environment { setenv(key, value, 1) }
+            // Optional: skip the renderer's per-call GL error checks (each one makes the GPU driver catch up).
+            if UserDefaults.standard.bool(forKey: "fastGL") { setenv("IT_GLES_STRICT", "0", 1) }
             try? FileManager.default.createDirectory(at: directory.appendingPathComponent("logs"), withIntermediateDirectories: true)
             qemu.attach(nil, nil)  // the view polls qemu_ios_ui_frame on its display link; no push callback
             started = true
             state = .running
-            let thread = Thread { [argv] in
+            let thread = Thread { [argv, resumed, snaps] in
                 var cargs: [UnsafeMutablePointer<CChar>?] = argv.map { strdup($0) }
                 cargs.append(nil)
                 let rc = qemu.main(Int32(argv.count), &cargs)
                 NSLog("LightTouch: qemu_ios_main returned \(rc)")
+                if resumed { snaps.discard() }  // a restore that did not take must not be tried again
                 Task { @MainActor [weak self] in self?.state = .failed("The emulator stopped (exit \(rc)).") }
             }
             thread.name = "qemu-main"
@@ -64,6 +96,7 @@ final class Emulator: ObservableObject {
             watchLifecycle(qemu)
             audio = AudioPlayer(qemu: qemu)
             audio?.start()
+            if resumed { retireSnapshot(snaps, qemu: qemu) }
         } catch {
             state = .failed(error.localizedDescription)
         }
@@ -76,6 +109,69 @@ final class Emulator: ObservableObject {
     }
 
     func quit() { qemu?.powerdown() }
+
+    /// A restored snapshot is used once: as soon as the guest is drawing again (so the file has been read), delete it,
+    /// because from here the guest writes to the disk and the old RAM image would no longer match.
+    private func retireSnapshot(_ snaps: Snapshots, qemu: QemuRuntime) {
+        Task.detached {
+            var serial: UInt64 = 0
+            var pixels: UnsafeRawPointer?
+            var w: Int32 = 0, h: Int32 = 0
+            for _ in 0..<2400 {  // up to ten minutes
+                if qemu.ready(), qemu.frame(&pixels, &w, &h, &serial) {
+                    snaps.discard()
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+        }
+    }
+
+    /// Saves the whole machine, then closes the app. The next launch restores it instead of booting.
+    func saveAndQuit() {
+        guard let qemu, let overlay = overlayURL, state == .running else { return }
+        let snaps = Snapshots(overlay: overlay)
+        snaps.discardTemp()
+        state = .saving
+        saveMessage = "Saving the device…"
+        snaps.tmp.path.withCString { qemu.snapshotSave2($0) }
+        Task { [weak self] in
+            var buffer = [CChar](repeating: 0, count: 512)
+            let started = Date()
+            while true {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                let code = qemu.snapshotStatus(&buffer, UInt(buffer.count))
+                if code == 2 {
+                    do {
+                        try snaps.promote(build: qemu.buildString)
+                        self?.state = .saved
+                        self?.saveMessage = "Saved. Closing…"
+                        try? await Task.sleep(nanoseconds: 1_200_000_000)
+                        exit(0)
+                    } catch {
+                        self?.fail(save: error.localizedDescription, qemu: qemu)
+                    }
+                    return
+                }
+                if code == 3 {
+                    let reason = String(cString: buffer)
+                    self?.fail(save: reason.isEmpty ? "the emulator refused" : reason, qemu: qemu)
+                    return
+                }
+                if Date().timeIntervalSince(started) > 180 {
+                    self?.fail(save: "it took too long", qemu: qemu)
+                    return
+                }
+            }
+        }
+    }
+
+    /// A save that did not work: start the guest again so the device is not left frozen.
+    private func fail(save reason: String, qemu: QemuRuntime) {
+        qemu.snapshotResume()
+        state = .running
+        saveMessage = "Could not save (\(reason)). The device keeps running."
+    }
 
     /// iOS kills a process that issues GL commands in the background, so the emulator is told BEFORE it happens.
     private func watchLifecycle(_ qemu: QemuRuntime) {

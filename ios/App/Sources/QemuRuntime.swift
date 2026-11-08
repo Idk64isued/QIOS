@@ -53,6 +53,14 @@ final class QemuRuntime: @unchecked Sendable {
     lazy var quit = sym("qemu_ios_ui_quit", (@convention(c) () -> Void).self)
     lazy var setForeground = optionalSym("qemu_ios_set_foreground", (@convention(c) (Bool) -> Void).self)
     lazy var buildID = optionalSym("qemu_ios_build_id", (@convention(c) () -> UnsafePointer<CChar>?).self)
+    lazy var snapshotSave2 = sym("qemu_ios_snapshot_save2", (@convention(c) (UnsafePointer<CChar>) -> Void).self)
+    lazy var snapshotStatus = sym("qemu_ios_snapshot_status", (@convention(c) (UnsafeMutablePointer<CChar>, UInt) -> Int32).self)
+    lazy var snapshotResume = sym("qemu_ios_snapshot_resume", (@convention(c) () -> Void).self)
+
+    /// Identifies this exact emulator build (a saved state only restores into the build that wrote it).
+    var buildString: String {
+        (buildID?()).map { String(cString: $0) } ?? "\(path)-\(isJIT)"
+    }
     lazy var audioStart = sym("qemu_ios_audio_capture_start", (@convention(c) () -> UInt64).self)
     lazy var audioRead = sym("qemu_ios_audio_capture_read", (@convention(c) (UInt64, UnsafeMutableRawPointer?, Int32, UnsafeMutablePointer<Double>) -> Int32).self)
     lazy var audioStop = sym("qemu_ios_audio_capture_stop", (@convention(c) (UInt64) -> Void).self)
