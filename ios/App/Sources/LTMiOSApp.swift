@@ -33,6 +33,8 @@ enum Library {
 struct RootView: View {
     @EnvironmentObject var emulator: Emulator
     @State private var devices: [DeviceFolder] = []
+    @State private var packed: [URL] = []
+    @StateObject private var importer = Importer()
     @State private var running: DeviceFolder?
 
     var body: some View {
@@ -58,6 +60,20 @@ struct RootView: View {
                             Button(d.name) { running = d; emulator.boot(directory: d.url) }
                         }
                     }
+                    Section("Packed devices") {
+                        if packed.isEmpty {
+                            Text("To get the ready-made iPod touch: copy the Mac app's Contents/Resources/Device folder into Files > LightTouch > Device (it holds n72ap-7E18.itbase and the boot ROMs), then pull to refresh.")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
+                        ForEach(packed, id: \.self) { url in
+                            Button("Unpack \(url.deletingPathExtension().lastPathComponent)") {
+                                importer.unpack(url) { devices = Library.scan(); packed = PackedDevice.find() }
+                            }
+                            .disabled(importer.busy)
+                        }
+                        if importer.busy { ProgressView(value: importer.fraction) }
+                        if !importer.message.isEmpty { Text(importer.message).font(.footnote) }
+                    }
                     Section("SecureROMs") {
                         Text("Put your boot ROM files in Files > LightTouch > Device (bootrom_240_4, and ipod1g/bootrom_s5l8900).")
                             .font(.footnote).foregroundStyle(.secondary)
@@ -67,8 +83,8 @@ struct RootView: View {
                     }
                 }
                 .navigationTitle("Light Touch")
-                .refreshable { devices = Library.scan() }
-                .onAppear { devices = Library.scan(); emulator.load() }
+                .refreshable { devices = Library.scan(); packed = PackedDevice.find() }
+                .onAppear { devices = Library.scan(); packed = PackedDevice.find(); emulator.load() }
             }
             .navigationViewStyle(.stack)
         }
