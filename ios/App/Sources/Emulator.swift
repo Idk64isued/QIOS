@@ -75,6 +75,12 @@ final class Emulator: ObservableObject {
 
             config.argv = argv
             for (key, value) in config.environment { setenv(key, value, 1) }
+            // Diagnostics: the emulator's own log (stderr) goes to lighttouch.log, and IT_VCPU_ACCT=5 makes it report every
+            // five seconds whether the guest CPU is running, halted (waiting for an interrupt) or doing I/O.
+            LTMLog.start()
+            if UserDefaults.standard.object(forKey: "diag") as? Bool ?? true { setenv("IT_VCPU_ACCT", "5", 1) }
+            LTMLog.note("engine \(qemu.isJIT ? "JIT" : "TCI"), \(JIT.summary)")
+            LTMLog.note("args \(argv.joined(separator: " "))")
             // Optional: skip the renderer's per-call GL error checks (each one makes the GPU driver catch up).
             if UserDefaults.standard.bool(forKey: "fastGL") { setenv("IT_GLES_STRICT", "0", 1) }
             try? FileManager.default.createDirectory(at: directory.appendingPathComponent("logs"), withIntermediateDirectories: true)
@@ -93,6 +99,7 @@ final class Emulator: ObservableObject {
             thread.stackSize = 16 << 20
             thread.qualityOfService = .userInteractive
             thread.start()
+            LTMLog.sample { [weak self] in self != nil }
             watchLifecycle(qemu)
             audio = AudioPlayer(qemu: qemu)
             audio?.start()

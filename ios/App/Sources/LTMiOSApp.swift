@@ -36,6 +36,7 @@ struct RootView: View {
     @State private var packed: [URL] = []
     @StateObject private var importer = Importer()
     @AppStorage("fastGL") private var fastGL = false
+    @AppStorage("diag") private var diag = true
     @AppStorage("codeCacheMB") private var codeCacheMB = 512
     @State private var running: DeviceFolder?
 
@@ -55,6 +56,7 @@ struct RootView: View {
                     }
                     Section("Speed") {
                         Toggle("Faster graphics (skips GL error checks)", isOn: $fastGL)
+        Toggle("Write diagnostics (lighttouch.log)", isOn: $diag)
                         Picker("Code cache", selection: $codeCacheMB) {
                             Text("256 MB").tag(256)
                             Text("512 MB").tag(512)

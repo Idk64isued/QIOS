@@ -44,6 +44,8 @@ final class DisplayUIView: UIView {
             shouldInterpolate: true, intent: .defaultIntent) else { return }
         imageSize = CGSize(width: Int(w), height: Int(h))
         layer.contents = image
+        PerfStats.frames += 1
+        if PerfStats.frames == 1 { LTMLog.note("first guest frame \(w)x\(h)") }
     }
 
     /// Where the aspect-fit image sits inside the view.
