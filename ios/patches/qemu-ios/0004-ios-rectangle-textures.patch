@@ -189,7 +189,7 @@
  {
      if (!gles_host_init()) {
          return -1;
-@@ -8220,6 +8379,109 @@
+@@ -8220,6 +8379,114 @@
      }
  }
  
@@ -227,6 +227,11 @@
 +        if (b[0] == GLES_RECT_TARGET) {
 +            b[0] = GL_TEXTURE_2D;
 +            rect = true;
++        }
++        break;
++    case GLES_SLOT_FB_TEXTURE_2D:       /* target, attachment, textarget, texture, level: CoreAnimation renders into rectangles */
++        if (argc >= 3 && b[2] == GLES_RECT_TARGET) {
++            b[2] = GL_TEXTURE_2D;
 +        }
 +        break;
 +    case GLES_SLOT_TEX_PARAMETERI:
