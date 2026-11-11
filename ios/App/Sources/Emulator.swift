@@ -78,11 +78,16 @@ final class Emulator: ObservableObject {
             // Diagnostics: the emulator's own log (stderr) goes to lighttouch.log, and IT_VCPU_ACCT=5 makes it report every
             // five seconds whether the guest CPU is running, halted (waiting for an interrupt) or doing I/O.
             LTMLog.start()
-            if UserDefaults.standard.object(forKey: "diag") as? Bool ?? true { setenv("IT_VCPU_ACCT", "5", 1) }
+            if UserDefaults.standard.object(forKey: "diag") as? Bool ?? true {
+                setenv("IT_VCPU_ACCT", "5", 1)
+                setenv("IT_GLES_PROF", "1", 1)  // where the graphics frame time goes, reported next to the frame rate
+            }
             LTMLog.note("engine \(qemu.isJIT ? "JIT" : "TCI"), \(JIT.summary)")
             LTMLog.note("args \(argv.joined(separator: " "))")
             // Optional: skip the renderer's per-call GL error checks (each one makes the GPU driver catch up).
             if UserDefaults.standard.bool(forKey: "fastGL") { setenv("IT_GLES_STRICT", "0", 1) }
+            // The graphics fix: rectangle textures (what the iPod touch 2G composites with) drawn as plain 2D textures.
+            setenv("IT_GLES_RECT2D", (UserDefaults.standard.object(forKey: "rect2d") as? Bool ?? true) ? "1" : "0", 1)
             try? FileManager.default.createDirectory(at: directory.appendingPathComponent("logs"), withIntermediateDirectories: true)
             qemu.attach(nil, nil)  // the view polls qemu_ios_ui_frame on its display link; no push callback
             started = true

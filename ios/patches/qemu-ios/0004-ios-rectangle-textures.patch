@@ -1,0 +1,301 @@
+--- a/hw/arm/gles-host.c
++++ b/hw/arm/gles-host.c
+@@ -5066,6 +5066,146 @@
+ #endif
+ }
+ 
++#if defined(GLES_HOST_EAGL) && !defined(GLES_HOST_ANGLE)
++/*
++ * Rectangle textures on an ES 1.1 host.
++ *
++ * The iPod touch 2G's QuartzCore composites through GL_TEXTURE_RECTANGLE (target 0x84F5, texture coordinates in
++ * texels, clamp-to-edge only). An iOS GL ES context has no such target, so every bind raised GL_INVALID_ENUM, the
++ * surface attach was refused, and CoreAnimation fell back to a path that drew a frame every few seconds.
++ *
++ * Here a rectangle texture is a plain 2D texture the host remembers the size of. The guest's calls are re-aimed at
++ * GL_TEXTURE_2D (see gles_host_call_1), and a draw that samples such a texture gets the texture matrix
++ * S * M, S = scale(1/width, 1/height): the guest's matrix M still works in texels, and the texture reads normalised
++ * coordinates, which is what a 2D texture wants. A non-power-of-two 2D texture is complete on iOS as long as it
++ * clamps to the edge and has no mipmaps, so those two are forced on rectangles.
++ * IT_GLES_RECT2D=0 turns the whole thing off (the app has a switch for it).
++ */
++#define GLES_RECT_TARGET    0x84F5
++#define GLES_RECT_BINDING   0x84F6
++#define GLES_RECT_MAX_SIZE  0x84F8
++#define GLES_RECT_UNITS     2
++
++static GHashTable *gles_rects;          /* host texture name -> (width << 16) | height; 0 until the size is known */
++
++static bool gles_rect2d_enabled(void)
++{
++    static int on = -1;
++
++    if (on < 0) {
++        const char *v = getenv("IT_GLES_RECT2D");
++        on = v ? atoi(v) != 0 : 1;
++    }
++    return on;
++}
++
++static void gles_rect_note(GLuint name, uint32_t w, uint32_t h)
++{
++    if (!name || w > 0xffff || h > 0xffff) {
++        return;
++    }
++    if (!gles_rects) {
++        gles_rects = g_hash_table_new(g_direct_hash, g_direct_equal);
++    }
++    g_hash_table_insert(gles_rects, GUINT_TO_POINTER(name), GUINT_TO_POINTER((w << 16) | h));
++}
++
++static void gles_rect_note_bound(uint32_t w, uint32_t h)
++{
++    GLint name = 0;
++
++    glGetIntegerv(GL_TEXTURE_BINDING_2D, &name);
++    gles_rect_note(name, w, h);
++}
++
++/* The texture was just bound as a rectangle (new: a rectangle's default state) or as a real 2D texture (forget it). */
++static void gles_rect_bound(uint32_t name, bool rectangle)
++{
++    if (!name) {
++        return;
++    }
++    if (!rectangle) {
++        if (gles_rects) {
++            g_hash_table_remove(gles_rects, GUINT_TO_POINTER(name));
++        }
++        return;
++    }
++    if (!gles_rects || !g_hash_table_contains(gles_rects, GUINT_TO_POINTER(name))) {
++        gles_rect_note(name, 0, 0);
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++    }
++}
++
++/* Before a draw: every unit sampling a rectangle gets S * M. Returns the units changed. */
++static unsigned gles_rect_draw_begin(GLfloat saved[GLES_RECT_UNITS][16], GLint *old_active, GLint *old_mode)
++{
++    unsigned mask = 0;
++
++    if (!gles_rects || !g_hash_table_size(gles_rects)) {
++        return 0;
++    }
++    glGetIntegerv(GL_ACTIVE_TEXTURE, old_active);
++    glGetIntegerv(GL_MATRIX_MODE, old_mode);
++    for (unsigned u = 0; u < GLES_RECT_UNITS; u++) {
++        GLint name = 0;
++        gpointer v;
++        uint32_t w, h;
++
++        glActiveTexture(GL_TEXTURE0 + u);
++        glGetIntegerv(GL_TEXTURE_BINDING_2D, &name);
++        if (!name || !g_hash_table_lookup_extended(gles_rects, GUINT_TO_POINTER(name), NULL, &v)) {
++            continue;
++        }
++        w = GPOINTER_TO_UINT(v) >> 16;
++        h = GPOINTER_TO_UINT(v) & 0xffff;
++        if (!w || !h) {
++            continue;
++        }
++        glMatrixMode(GL_TEXTURE);
++        glGetFloatv(GL_TEXTURE_MATRIX, saved[u]);
++        glLoadIdentity();
++        glScalef(1.0f / w, 1.0f / h, 1.0f);
++        glMultMatrixf(saved[u]);
++        mask |= 1u << u;
++    }
++    glActiveTexture(*old_active);
++    glMatrixMode(*old_mode);
++    return mask;
++}
++
++static void gles_rect_draw_end(unsigned mask, GLfloat saved[GLES_RECT_UNITS][16], GLint old_active, GLint old_mode)
++{
++    for (unsigned u = 0; u < GLES_RECT_UNITS; u++) {
++        if (mask & (1u << u)) {
++            glActiveTexture(GL_TEXTURE0 + u);
++            glMatrixMode(GL_TEXTURE);
++            glLoadMatrixf(saved[u]);
++        }
++    }
++    glActiveTexture(old_active);
++    glMatrixMode(old_mode);
++}
++
++static uint32_t gles_f2u(float f)
++{
++    uint32_t u;
++
++    memcpy(&u, &f, sizeof(u));
++    return u;
++}
++
++static float gles_u2f(uint32_t u)
++{
++    float f;
++
++    memcpy(&f, &u, sizeof(f));
++    return f;
++}
++#endif /* rectangle textures on an ES 1.1 host */
++
+ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a, uint32_t id)
+ {
+     bool window = a[0] & GLES_SURFACE_WINDOW_ORDER;
+@@ -5081,6 +5221,13 @@
+     }
+     GLenum binding = GL_TEXTURE_BINDING_2D;
+     g_autofree uint8_t *pixels = NULL;
++#if defined(GLES_HOST_EAGL) && !defined(GLES_HOST_ANGLE)
++    bool rect2d = false;                /* a rectangle surface, taken as a 2D texture with a size (gles_rect_note) */
++    if (target == 0x84F5 && gles_rect2d_enabled()) {
++        target = GL_TEXTURE_2D;
++        rect2d = true;
++    }
++#endif
+     if (target != GL_TEXTURE_2D) {
+ #if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
+         if (target != GL_TEXTURE_RECTANGLE_ARB) {
+@@ -5115,6 +5262,12 @@
+         gles_debug_texture(target);
+         return -1;
+     }
++#if defined(GLES_HOST_EAGL) && !defined(GLES_HOST_ANGLE)
++    if (rect2d) {
++        gles_rect_bound(texture, true);
++        gles_rect_note(texture, w, h);
++    }
++#endif
+     if (!nv12 && !bpp) {
+         gles_refuse("surface:%s", gles_fourcc(fmt, fourcc));
+         gles_debug_texture(target);
+@@ -6129,8 +6282,14 @@
+     return true;
+ }
+ 
++
++#if defined(GLES_HOST_EAGL) && !defined(GLES_HOST_ANGLE)
++static int64_t gles_host_call_inner(CPUState *cpu, uint32_t slot, uint32_t ctx,
++                                    uint32_t argc, const uint32_t *a)
++#else
+ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
+                                 uint32_t argc, const uint32_t *a)
++#endif
+ {
+     if (!gles_host_init()) {
+         return -1;
+@@ -8220,6 +8379,109 @@
+     }
+ }
+ 
++#if defined(GLES_HOST_EAGL) && !defined(GLES_HOST_ANGLE)
++/* gles_host_call_inner with rectangle textures re-aimed at GL_TEXTURE_2D (see the comment above gles_rect_note). */
++static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
++                                uint32_t argc, const uint32_t *a)
++{
++    uint32_t b[16];
++    bool rect = false;                  /* this call named the rectangle target */
++    GLfloat saved[GLES_RECT_UNITS][16];
++    GLint old_active = 0, old_mode = 0;
++    unsigned mask = 0;
++    int64_t r;
++
++    if (!gles_rect2d_enabled() || argc == 0 || argc > 16) {
++        return gles_host_call_inner(cpu, slot, ctx, argc, a);
++    }
++    memcpy(b, a, argc * sizeof(*b));
++    switch (slot) {
++    case GLES_SLOT_ENABLE:
++    case GLES_SLOT_DISABLE:
++    case GLES_SLOT_IS_ENABLED:
++    case GLES_SLOT_BIND_TEXTURE:
++    case GLES_SLOT_TEX_IMAGE_2D:
++    case GLES_SLOT_TEX_SUB_IMAGE_2D:
++    case GLES_SLOT_COMPRESSED_TEX_IMAGE_2D:
++    case GLES_SLOT_COMPRESSED_TEX_SUB_IMAGE_2D:
++    case GLES_SLOT_COPY_TEX_IMAGE_2D:
++    case GLES_SLOT_COPY_TEX_SUB_IMAGE_2D:
++    case GLES_SLOT_TEX_PARAMETERFV:
++    case GLES_SLOT_TEX_PARAMETERIV:
++    case GLES_SLOT_GET_TEX_PARAMETERFV:
++    case GLES_SLOT_GET_TEX_PARAMETERIV:
++        if (b[0] == GLES_RECT_TARGET) {
++            b[0] = GL_TEXTURE_2D;
++            rect = true;
++        }
++        break;
++    case GLES_SLOT_TEX_PARAMETERI:
++    case GLES_SLOT_TEX_PARAMETERF:
++        if (b[0] == GLES_RECT_TARGET) {
++            b[0] = GL_TEXTURE_2D;
++            rect = true;
++            if (argc >= 3) {
++                bool is_float = slot == GLES_SLOT_TEX_PARAMETERF;
++                uint32_t value = is_float ? (uint32_t)gles_u2f(b[2]) : b[2];
++
++                if (b[1] == GL_TEXTURE_WRAP_S || b[1] == GL_TEXTURE_WRAP_T) {
++                    value = GL_CLAMP_TO_EDGE;                   /* a rectangle only clamps */
++                } else if (b[1] == GL_TEXTURE_MIN_FILTER && value >= 0x2700 && value <= 0x2703) {
++                    value = (value & 1) ? GL_LINEAR : GL_NEAREST;   /* ...and has no mipmaps */
++                }
++                b[2] = is_float ? gles_f2u((float)value) : value;
++            }
++        }
++        break;
++    case GLES_SLOT_GET_INTEGERV:
++    case GLES_SLOT_GET_BOOLEANV:
++    case GLES_SLOT_GET_FLOATV:
++        if (b[0] == GLES_RECT_BINDING) {
++            b[0] = GL_TEXTURE_BINDING_2D;
++        } else if (b[0] == GLES_RECT_MAX_SIZE) {
++            b[0] = GL_MAX_TEXTURE_SIZE;
++        }
++        break;
++    case GLES_SLOT_DRAW_ARRAYS:
++    case GLES_SLOT_DRAW_ELEMENTS:
++        mask = gles_rect_draw_begin(saved, &old_active, &old_mode);
++        break;
++    default:
++        break;
++    }
++
++    r = gles_host_call_inner(cpu, slot, ctx, argc, b);
++
++    if (mask) {
++        gles_rect_draw_end(mask, saved, old_active, old_mode);
++    }
++    if (r >= 0) {
++        switch (slot) {
++        case GLES_SLOT_BIND_TEXTURE:
++            if (argc >= 2) {
++                gles_rect_bound(b[1], rect);
++            }
++            break;
++        case GLES_SLOT_TEX_IMAGE_2D:
++        case GLES_SLOT_COMPRESSED_TEX_IMAGE_2D:
++            if (rect && argc >= 5) {
++                gles_rect_note_bound(b[3], b[4]);
++            }
++            break;
++        case GLES_SLOT_COPY_TEX_IMAGE_2D:
++            if (rect && argc >= 7) {
++                gles_rect_note_bound(b[5], b[6]);
++            }
++            break;
++        default:
++            break;
++        }
++    }
++    return r;
++}
++#endif
++
++
+ /*
+  * Whether the host will accept GL right now.
+  *
