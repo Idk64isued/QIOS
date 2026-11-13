@@ -76,3 +76,4 @@ fi
 echo "==> Upstream synced. Files preserved: ios/, .github/, README.md, LICENSE*"
 echo "    Next: git add -A && git diff --cached --stat"
 echo "    Then: git commit -m 'Sync upstream LightTouchtest' && git pull --rebase && git push"
+echo "    Also set MacFiles.releaseTag (ios/App/Sources/FirmwareLibrary.swift) to the Mac release built from these sources."

@@ -36,12 +36,46 @@ jobs:
           key: ios-deps-${{ hashFiles('build-support/dependencies.json', 'ios/scripts/build-deps.sh') }}
       - name: Build emulator libraries (JIT + interpreter)
         run: bash ios/scripts/build-qemu.sh "$RUNNER_TEMP/qemu-ios" "$RUNNER_TEMP/ios-deps/prefix" "$RUNNER_TEMP/qemu-out"
+      - name: Patch FirmwareKit for iOS (on-device firmware preparation)
+        id: fk
+        run: |
+          # Applies in the CI checkout only. If upstream moved and an edit no longer fits, the app is still built,
+          # without the preparer, and the log says which edit to fix.
+          if python3 ios/scripts/patch-firmwarekit.py 2>&1 | tee "$RUNNER_TEMP/firmwarekit-patch.log"; then
+            echo "patched=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "patched=no" >> "$GITHUB_OUTPUT"
+            echo "::warning::FirmwareKit could not be patched for iOS; building without on-device firmware preparation."
+          fi
       - name: Build the app
         working-directory: ios/App
         run: |
-          xcodegen generate
-          xcodebuild -project LightTouchiOS.xcodeproj -scheme LightTouchiOS -configuration Release \
-            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO
+          set -o pipefail
+          build() {  # SPEC LOG
+            rm -rf LightTouchiOS.xcodeproj
+            xcodegen generate --spec "$1" || return 1
+            xcodebuild -project LightTouchiOS.xcodeproj -scheme LightTouchiOS -configuration Release \
+              -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+              CODE_SIGNING_ALLOWED=NO > "$2" 2>&1
+          }
+          errors() { grep -E "error:|fatal error|BUILD FAILED" "$1" | sort -u | head -80 || true; }
+          FULL="$RUNNER_TEMP/build-full.log"; LITE="$RUNNER_TEMP/build-lite.log"
+          if [ "${{ steps.fk.outputs.patched }}" = "yes" ] && build project.yml "$FULL"; then
+            echo "Built with on-device firmware preparation."
+            echo "### Built with on-device firmware preparation" >> "$GITHUB_STEP_SUMMARY"
+          else
+            if [ -f "$FULL" ]; then
+              echo "::warning::The build with on-device firmware preparation failed; building without it. See the build-logs artifact (build-full.log)."
+              echo "----- errors from the full build -----"; errors "$FULL"
+              { echo "### Built WITHOUT on-device firmware preparation"; echo; echo "The full build failed with:"; echo '```'; errors "$FULL"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            fi
+            if ! build project-lite.yml "$LITE"; then
+              echo "----- errors from the fallback build -----"; errors "$LITE"; tail -40 "$LITE"
+              { echo "### The fallback build failed too"; echo '```'; errors "$LITE"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            echo "Built without on-device firmware preparation."
+          fi
       - name: Package IPA
         run: |
           APP="ios/App/build/Build/Products/Release-iphoneos/LightTouch.app"
@@ -51,37 +85,20 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: LightTouch-ipa, path: LightTouch.ipa }
       - uses: actions/upload-artifact@v4
-        if: failure()
-        with: { name: build-logs, path: "${{ runner.temp }}/ios-deps/logs" }
-
-  # ------------------------------------------------------------------
-  # Non-blocking probe jobs: these run in parallel with the main build
-  # and always succeed (exit 0). They discover what needs fixing for
-  # on-device firmware preparation and the USB install stack.
-  # ------------------------------------------------------------------
-
-  probe-firmwarekit:
-    runs-on: macos-26
-    timeout-minutes: 30
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - name: Apply FirmwareKit iOS patch
-        run: |
-          patch -p1 < ios/patches/0002-firmwarekit-ios.patch || echo "Patch had issues (expected during probe)"
-      - name: Attempt FirmwareKit iOS build
-        run: |
-          # Try to build FirmwareKit for iOS to see how far it gets
-          cd Packages/FirmwareKit
-          swift build --sdk iphoneos 2>&1 | tee "$RUNNER_TEMP/firmwarekit-probe.log" || true
-          echo ""
-          echo "=== FirmwareKit iOS probe complete ==="
-          echo "Check the log for what still needs fixing."
-      - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: firmwarekit-probe-log
-          path: ${{ runner.temp }}/firmwarekit-probe.log
+          name: build-logs
+          if-no-files-found: ignore
+          path: |
+            ${{ runner.temp }}/build-full.log
+            ${{ runner.temp }}/build-lite.log
+            ${{ runner.temp }}/firmwarekit-patch.log
+            ${{ runner.temp }}/ios-deps/logs
+
+  # ------------------------------------------------------------------
+  # Non-blocking probe: runs in parallel with the main build and never fails it.
+  # It finds out what the USB install stack still needs to cross-build for iOS.
+  # ------------------------------------------------------------------
 
   probe-usb:
     runs-on: macos-26

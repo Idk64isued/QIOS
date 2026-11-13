@@ -4,13 +4,25 @@ options:
   deploymentTarget: { iOS: "16.0" }
 packages:
   HostRuntime: { path: ../../Packages/HostRuntime }
+  # Device preparation from an IPSW, in-process (patched for iOS by ios/scripts/patch-firmwarekit.py).
+  FirmwareKit: { path: ../../Packages/FirmwareKit }
+  # Same version FirmwareKit pins: reads the Mac release zip for the boot ROMs and guest tools.
+  ZIPFoundation: { url: "https://github.com/weichsel/ZIPFoundation.git", exactVersion: "0.9.20" }
 targets:
   LightTouchiOS:
     type: application
     platform: iOS
-    sources: [Sources]
+    sources:
+      - Sources
+      # The Mac app's own firmware list and device art, so both apps offer and show the same things.
+      - path: ../../LightTouchMac/Resources/firmware-catalog.json
+        buildPhase: resources
+      - path: ../../LightTouchMac/Assets.xcassets
     dependencies:
       - package: HostRuntime
+      - package: FirmwareKit
+        product: FirmwareKit
+      - package: ZIPFoundation
     settings:
       base:
         PRODUCT_NAME: LightTouch

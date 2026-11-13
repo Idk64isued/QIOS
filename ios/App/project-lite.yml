@@ -1,0 +1,31 @@
+# The fallback build: everything except on-device firmware preparation (used by CI when FirmwareKit does not build for iOS).
+name: LightTouchiOS
+options:
+  bundleIdPrefix: dev.lighttouch
+  deploymentTarget: { iOS: "16.0" }
+packages:
+  HostRuntime: { path: ../../Packages/HostRuntime }
+  # Same version FirmwareKit pins: reads the Mac release zip for the boot ROMs and guest tools.
+  ZIPFoundation: { url: "https://github.com/weichsel/ZIPFoundation.git", exactVersion: "0.9.20" }
+targets:
+  LightTouchiOS:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+      # The Mac app's own firmware list and device art, so both apps offer and show the same things.
+      - path: ../../LightTouchMac/Resources/firmware-catalog.json
+        buildPhase: resources
+      - path: ../../LightTouchMac/Assets.xcassets
+    dependencies:
+      - package: HostRuntime
+      - package: ZIPFoundation
+    settings:
+      base:
+        PRODUCT_NAME: LightTouch
+        PRODUCT_BUNDLE_IDENTIFIER: dev.lighttouch.ios
+        INFOPLIST_FILE: Info.plist
+        SWIFT_VERSION: "5.0"
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        TARGETED_DEVICE_FAMILY: "1,2"

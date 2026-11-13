@@ -26,6 +26,7 @@ enum Library {
     static func scan() -> [DeviceFolder] {
         try? FileManager.default.createDirectory(at: devices, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: documents.appendingPathComponent("Device"), withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: documents.appendingPathComponent("IPSW"), withIntermediateDirectories: true)
         let items = (try? FileManager.default.contentsOfDirectory(at: devices, includingPropertiesForKeys: nil)) ?? []
         return items.filter { FileManager.default.fileExists(atPath: $0.appendingPathComponent("base/device.lock.json").path) }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }.map(DeviceFolder.init)
@@ -144,17 +145,18 @@ struct StatusPill: View {
 struct RootView: View {
     @EnvironmentObject var emulator: Emulator
     @State private var devices: [DeviceFolder] = []
-    @State private var packed: [URL] = []
     @State private var running: DeviceFolder?
     @State private var shareItem: ShareItem?
     @State private var logNote = ""
-    @StateObject private var importer = Importer()
     @AppStorage("fastGL") private var fastGL = false
     @AppStorage("rect2d") private var rect2d = true
     @AppStorage("diag") private var diag = true
+    @AppStorage("bezel") private var bezel = true
     @AppStorage("codeCacheMB") private var codeCacheMB = 512
-    @State private var showIPAPicker = false
-    @State private var ipaInstallMessage = ""
+    @State private var showLegacyStore = false
+    @State private var showAddDevice = false
+    @State private var showStorage = false
+    @State private var swept = false
 
     var body: some View {
         if let running, emulator.showsScreen {
@@ -166,7 +168,6 @@ struct RootView: View {
 
     private func reload() {
         devices = Library.scan()
-        packed = PackedDevice.find()
     }
 
     private func boot(_ device: DeviceFolder) {
@@ -191,14 +192,13 @@ struct RootView: View {
             VStack(spacing: 16) {
                 heroSection
                 statusRow
-                devicesSection
-                appsSection
-                packedSection
-                settingsSection
-                logSection
                 if case .failed(let msg) = emulator.state {
                     errorBanner(msg)
                 }
+                devicesSection
+                librarySection
+                settingsSection
+                logSection
                 footer
             }
             .padding(.horizontal, 16)
@@ -206,48 +206,46 @@ struct RootView: View {
         }
         .background { LTBackground() }
         .refreshable { reload() }
-        .onAppear { reload(); emulator.load() }
+        .onAppear {
+            if !swept {
+                swept = true
+                Library.sweepPreparing()  // a preparation the last launch did not finish
+            }
+            reload()
+            emulator.load()
+        }
         .sheet(item: $shareItem) { item in
             ActivityView(items: [item.url])
         }
-        .sheet(isPresented: $showIPAPicker) {
-            IPAPickerView { url in
-                showIPAPicker = false
-                guard let agent = emulator.agent, let url else { return }
-                Task {
-                    ipaInstallMessage = "Installing…"
-                    let ok = await agent.installIPA(localURL: url)
-                    ipaInstallMessage = ok ? "Installed successfully" : "Install failed — check log"
-                }
+        .sheet(isPresented: $showLegacyStore) {
+            LegacyStoreView(agent: nil, target: devices.first?.storeTarget ?? StoreTarget()) { showLegacyStore = false }
+        }
+        .sheet(isPresented: $showAddDevice) {
+            AddDeviceView { device, start in
+                showAddDevice = false
+                reload()
+                if let device, start { boot(device) }
             }
+        }
+        .sheet(isPresented: $showStorage, onDismiss: { reload() }) {
+            StorageView { showStorage = false }
         }
     }
 
-    // MARK: - Hero (like the Mac app's device content area)
+    // MARK: - Hero
 
     private var heroSection: some View {
         VStack(spacing: 6) {
-            // Device illustration glow
             ZStack {
-                // Ambient glow behind device
                 Circle()
                     .fill(Theme.accentGlow)
-                    .frame(width: 100, height: 100)
-                    .blur(radius: 40)
-
-                // Device icon — the iOS stand-in for the Mac app's 3D RealityKit model
-                Image(systemName: "ipodtouch")
-                    .font(.system(size: 56, weight: .thin))
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: [.white.opacity(0.9), .white.opacity(0.5)],
-                            startPoint: .top, endPoint: .bottom
-                        )
-                    )
-                    .shadow(color: Theme.accent.opacity(0.4), radius: 20)
+                    .frame(width: 120, height: 120)
+                    .blur(radius: 45)
+                // The Mac app's own picture of the iPod touch.
+                DeviceThumbnail(model: DeviceModel(board: "n72ap"), height: 132)
             }
-            .frame(height: 110)
-            .padding(.top, 12)
+            .frame(height: 140)
+            .padding(.top, 14)
 
             Text("Light Touch")
                 .font(.system(size: 32, weight: .bold, design: .rounded))
@@ -260,7 +258,7 @@ struct RootView: View {
         }
     }
 
-    // MARK: - Status Row (horizontal pills, like the Mac app's toolbar chips)
+    // MARK: - Status Row
 
     private var statusRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -271,12 +269,8 @@ struct RootView: View {
                     color: JIT.ready ? Theme.success : Theme.warning
                 )
                 StatusPill(text: emulator.engine, symbol: "cpu", color: Theme.accent)
-                if let agent = emulator.agent {
-                    StatusPill(
-                        text: agent.status == .alive ? "Agent Ready" : "No Agent",
-                        symbol: agent.status == .alive ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash",
-                        color: agent.status == .alive ? Theme.success : Theme.secondaryText
-                    )
+                if !OnDevicePrep.available {
+                    StatusPill(text: "No firmware preparer", symbol: "hammer", color: Theme.secondaryText)
                 }
                 if ProcessInfo.processInfo.isLowPowerModeEnabled {
                     StatusPill(text: "Low Power", symbol: "battery.25", color: Theme.warning)
@@ -289,7 +283,7 @@ struct RootView: View {
         }
     }
 
-    // MARK: - Devices (like the Mac app's source list sidebar, but vertical)
+    // MARK: - Devices
 
     private var devicesSection: some View {
         GlassCard("Devices", symbol: "externaldrive") {
@@ -303,7 +297,20 @@ struct RootView: View {
                 }
             }
 
-            // JIT hint (below devices, less prominent)
+            Button {
+                showAddDevice = true
+            } label: {
+                Label(devices.isEmpty ? "Add your first device" : "Add Device", systemImage: "plus")
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .foregroundStyle(devices.isEmpty ? .white : Theme.accent)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(
+                        devices.isEmpty ? Theme.accent : Theme.accent.opacity(0.12),
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            .buttonStyle(.plain)
+
             if !JIT.ready {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "info.circle.fill")
@@ -322,16 +329,17 @@ struct RootView: View {
 
     private var emptyDevicesHint: some View {
         HStack(spacing: 10) {
-            Image(systemName: "arrow.down.doc")
+            Image(systemName: "sparkles")
                 .font(.system(size: 20))
                 .foregroundStyle(Theme.secondaryText)
             VStack(alignment: .leading, spacing: 3) {
                 Text("No device yet")
                     .font(.system(size: 14, weight: .medium, design: .rounded))
                     .foregroundStyle(.white.opacity(0.7))
-                Text("Unpack an iPod touch below, or add a prepared device to Files \u{203A} LightTouch \u{203A} Devices.")
+                Text("Add Device downloads what it needs and sets one up on this iPhone. Nothing to copy over.")
                     .font(.system(size: 12, design: .rounded))
                     .foregroundStyle(Theme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(12)
@@ -342,23 +350,18 @@ struct RootView: View {
     private func deviceRow(_ device: DeviceFolder) -> some View {
         Button { boot(device) } label: {
             HStack(spacing: 12) {
-                // Device icon with subtle accent ring (echoing the Mac 3D model display)
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Theme.accent.opacity(0.12))
-                        .frame(width: 40, height: 40)
-                    Image(systemName: "ipodtouch")
-                        .font(.system(size: 18))
-                        .foregroundStyle(Theme.accent)
-                }
+                DeviceThumbnail(model: device.model ?? DeviceModel(board: "n72ap"), height: 46)
+                    .frame(width: 40)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(device.name)
                         .font(.system(size: 15, weight: .semibold, design: .rounded))
                         .foregroundStyle(.white)
-                    Text("iPhone OS · Tap to boot")
+                        .lineLimit(1)
+                    Text(device.subtitle)
                         .font(.system(size: 11, design: .rounded))
                         .foregroundStyle(Theme.secondaryText)
+                        .lineLimit(1)
                 }
                 Spacer()
                 Image(systemName: "play.circle.fill")
@@ -376,154 +379,53 @@ struct RootView: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - Apps & Legacy Store
+    // MARK: - Library (apps and storage)
 
-    private var appsSection: some View {
-        GlassCard("Apps", symbol: "square.stack.3d.up") {
-            Text("Install your own legally owned IPAs into the emulated device, or browse the legacy store.")
-                .font(.system(size: 12, design: .rounded))
-                .foregroundStyle(Theme.secondaryText)
-
-            // IPA Install
-            VStack(alignment: .leading, spacing: 10) {
-                Label("Install IPA", systemImage: "doc.zipper")
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.8))
-
-                if emulator.state == .running {
-                    Button {
-                        showIPAPicker = true
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "folder.badge.plus")
-                            Text("Choose IPA file")
-                        }
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 9)
-                        .background(Theme.accent, in: Capsule())
-                        .shadow(color: Theme.accent.opacity(0.3), radius: 8, y: 3)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(emulator.agent?.isBusy ?? false)
-                } else {
-                    Text("Boot a device first, then install apps here.")
-                        .font(.system(size: 12, design: .rounded))
-                        .foregroundStyle(Theme.secondaryText)
+    private var librarySection: some View {
+        GlassCard("Library", symbol: "square.stack.3d.up") {
+            HStack(spacing: 10) {
+                actionButton("Legacy Store", icon: "bag", color: Theme.accent) {
+                    showLegacyStore = true
                 }
-
-                if !ipaInstallMessage.isEmpty {
-                    Text(ipaInstallMessage)
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
-                        .foregroundStyle(ipaInstallMessage.contains("success") ? Theme.success : Theme.warning)
-                }
-
-                if let agent = emulator.agent {
-                    if !agent.hasShell {
-                        Text("A jailbroken guest lets the app install IPAs automatically. Without it, IPAs upload to /tmp for manual install.")
-                            .font(.system(size: 10, design: .rounded))
-                            .foregroundStyle(Theme.tertiaryText)
-                    }
-                    if !agent.lastLog.isEmpty {
-                        Text(agent.lastLog)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(Theme.tertiaryText)
-                            .lineLimit(2)
-                    }
+                actionButton("Storage", icon: "internaldrive", color: Theme.success) {
+                    showStorage = true
                 }
             }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-
-            // Legacy Store
-            VStack(alignment: .leading, spacing: 8) {
-                Label("Legacy Store", systemImage: "storefront")
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.8))
-
-                Text("Coming soon — free, open-source, and abandonware apps compatible with old iPhone OS.")
-                    .font(.system(size: 12, design: .rounded))
-                    .foregroundStyle(Theme.secondaryText)
-
-                HStack(spacing: 6) {
-                    Image(systemName: "lock.shield.fill")
-                        .font(.system(size: 10))
-                        .foregroundStyle(Theme.accent)
-                    Text("Only freely distributable apps will be listed. Your own IPAs stay private.")
-                        .font(.system(size: 10, design: .rounded))
-                        .foregroundStyle(Theme.tertiaryText)
-                }
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        }
-    }
-
-    // MARK: - Packed Devices
-
-    private var packedSection: some View {
-        GlassCard("Setup", symbol: "shippingbox") {
-            if packed.isEmpty {
-                Text("Copy the Mac app's Device folder into Files \u{203A} LightTouch \u{203A} Device, then pull down to refresh.")
-                    .font(.system(size: 12, design: .rounded))
-                    .foregroundStyle(Theme.secondaryText)
-            }
-            ForEach(packed, id: \.self) { url in
-                Button {
-                    importer.unpack(url) { reload() }
-                } label: {
-                    HStack(spacing: 10) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(Theme.accent.opacity(0.12))
-                                .frame(width: 36, height: 36)
-                            Image(systemName: "shippingbox.fill")
-                                .font(.system(size: 16))
-                                .foregroundStyle(Theme.accent)
-                        }
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Unpack \(url.deletingPathExtension().lastPathComponent)")
-                                .font(.system(size: 14, weight: .medium, design: .rounded))
-                                .foregroundStyle(.white)
-                            Text("Prepare for first boot")
-                                .font(.system(size: 11, design: .rounded))
-                                .foregroundStyle(Theme.secondaryText)
-                        }
-                        Spacer()
-                        Image(systemName: "arrow.down.circle.fill")
-                            .font(.system(size: 22))
-                            .foregroundStyle(Theme.accent)
-                    }
-                    .padding(10)
-                    .background(Theme.cardHighlight, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .disabled(importer.busy)
-            }
-            if importer.busy {
-                ProgressView(value: importer.fraction)
-                    .tint(Theme.accent)
-                    .padding(.top, 4)
-            }
-            if !importer.message.isEmpty {
-                Text(importer.message)
-                    .font(.system(size: 12, design: .rounded))
-                    .foregroundStyle(Theme.secondaryText)
-            }
-            Text("Boot ROMs: bootrom_240_4 and ipod1g/bootrom_s5l8900 in the Device folder.")
-                .font(.system(size: 10, design: .rounded))
+            Text("Apps are installed while a device is running: open the \u{2026} menu on its screen for the Legacy Store or your own IPA.")
+                .font(.system(size: 11, design: .rounded))
                 .foregroundStyle(Theme.tertiaryText)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    // MARK: - Settings (Speed & Graphics)
+    private func actionButton(_ title: String, icon: String, color: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 20))
+                    .foregroundStyle(color)
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.85))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(color.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(color.opacity(0.15), lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Settings
 
     private var settingsSection: some View {
         GlassCard("Settings", symbol: "gearshape") {
             VStack(spacing: 0) {
+                settingToggle("Show the device around the screen", icon: "iphone", isOn: $bezel)
+                Divider().overlay(Color.white.opacity(0.04))
                 settingToggle("Rectangle textures \u{2192} 2D", icon: "rectangle.on.rectangle", isOn: $rect2d)
                 Divider().overlay(Color.white.opacity(0.04))
                 settingToggle("Skip GL error checks", icon: "bolt.trianglebadge.exclamationmark", isOn: $fastGL)
@@ -536,7 +438,6 @@ struct RootView: View {
                     .stroke(Color.white.opacity(0.04), lineWidth: 0.5)
             )
 
-            // Code cache picker
             VStack(alignment: .leading, spacing: 8) {
                 Text("Code Cache")
                     .font(.system(size: 13, weight: .medium, design: .rounded))
@@ -623,6 +524,7 @@ struct RootView: View {
             Text(message)
                 .font(.system(size: 13, design: .rounded))
                 .foregroundStyle(Theme.danger.opacity(0.9))
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -708,7 +610,7 @@ struct IPAPickerView: View {
                 }
             }
             .sheet(isPresented: $showPicker) {
-                DocumentPickerView { url in
+                DocumentPickerView(types: [UTType(filenameExtension: "ipa") ?? .archive, .zip]) { url in
                     showPicker = false
                     onPick(url)
                 }
@@ -717,13 +619,15 @@ struct IPAPickerView: View {
     }
 }
 
+/// The Files picker. The chosen file is copied into the app's temporary folder (the original may live in another
+/// app or in iCloud and is only readable while the picker's access lasts); the caller deletes the copy.
 struct DocumentPickerView: UIViewControllerRepresentable {
+    let types: [UTType]
     let onPick: (URL?) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let types = [UTType(filenameExtension: "ipa") ?? .archive]
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: types)
         picker.delegate = context.coordinator
         picker.allowsMultipleSelection = false
@@ -739,8 +643,9 @@ struct DocumentPickerView: UIViewControllerRepresentable {
             guard let url = urls.first else { onPick(nil); return }
             let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(url.lastPathComponent)
             try? FileManager.default.removeItem(at: tmp)
-            guard url.startAccessingSecurityScopedResource() else { onPick(nil); return }
-            defer { url.stopAccessingSecurityScopedResource() }
+            // Not every provider hands out a security scope (a file already inside this app has none): try either way.
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             do {
                 try FileManager.default.copyItem(at: url, to: tmp)
                 onPick(tmp)
@@ -775,48 +680,86 @@ struct ControlButton: View {
     }
 }
 
-// MARK: - Emulator Screen (matches the Mac app's continuous scene view)
+// MARK: - Emulator Screen
 
 struct EmulatorScreen: View {
     @EnvironmentObject var emulator: Emulator
     let device: DeviceFolder
+    @AppStorage("bezel") private var bezel = true
+    @State private var details = DeviceFolder.Details()
     @State private var shareItem: ShareItem?
+    @State private var showStore = false
+    @State private var showIPAPicker = false
+    @State private var installNote = ""
 
     var body: some View {
         ZStack {
-            // Background: same deep gradient, the "stage" for the device
-            LTBackground()
+            stageBackground
 
             VStack(spacing: 0) {
-                Spacer(minLength: 8)
+                Spacer(minLength: 6)
 
-                // The emulator display — clipped like the Mac app's screen-clips-to-bounds
-                DisplayView(qemu: emulator.qemu)
-                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .stroke(Color.white.opacity(0.10), lineWidth: 1)
-                    )
-                    .shadow(color: .black.opacity(0.6), radius: 30, y: 10)
-                    .padding(.horizontal, 12)
+                DeviceStage(board: details.board, qemu: emulator.qemu, bezel: bezel) { emulator.press(0) }
+                    .padding(.horizontal, bezel ? 6 : 0)
 
                 Spacer(minLength: 10)
 
-                // Controls bar — floating glass capsule like the Mac app's bottom bar
                 controls
 
-                if !emulator.saveMessage.isEmpty, emulator.state == .running {
-                    Text(emulator.saveMessage)
+                if !note.isEmpty {
+                    Text(note)
                         .font(.system(size: 12, weight: .medium, design: .rounded))
                         .foregroundStyle(Theme.warning)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 20)
                         .padding(.top, 6)
                 }
             }
             .padding(.bottom, 10)
         }
         .overlay { savingOverlay }
+        .onAppear { details = device.details }
         .sheet(item: $shareItem) { item in
             ActivityView(items: [item.url])
+        }
+        .sheet(isPresented: $showStore) {
+            LegacyStoreView(agent: emulator.agent, target: device.storeTarget) { showStore = false }
+        }
+        .sheet(isPresented: $showIPAPicker) {
+            IPAPickerView { url in
+                showIPAPicker = false
+                guard let url else { return }
+                guard let agent = emulator.agent else {
+                    installNote = "The device is not ready to take apps yet."
+                    return
+                }
+                Task {
+                    installNote = "Installing \(url.lastPathComponent)\u{2026}"
+                    let ok = await agent.installIPA(localURL: url)
+                    try? FileManager.default.removeItem(at: url)
+                    installNote = ok
+                        ? (agent.hasShell ? "Installed." : "Copied to the device. Only a jailbroken device can finish installing it for now.")
+                        : "Could not install it. See the log."
+                }
+            }
+        }
+    }
+
+    private var note: String {
+        if !emulator.saveMessage.isEmpty, emulator.state == .running { return emulator.saveMessage }
+        return installNote
+    }
+
+    /// The Mac app's stage: its black-to-blue gradient picture, when the build carries it.
+    @ViewBuilder private var stageBackground: some View {
+        if let gradient = UIImage(named: "gradient") {
+            // As an overlay the picture takes the screen's size instead of pushing the layout to its own.
+            Color.black
+                .overlay(Image(uiImage: gradient).resizable().aspectRatio(contentMode: .fill))
+                .clipped()
+                .ignoresSafeArea()
+        } else {
+            LTBackground()
         }
     }
 
@@ -827,20 +770,39 @@ struct EmulatorScreen: View {
             ControlButton(symbol: "circle", size: 58) { emulator.press(0) }
             ControlButton(symbol: "power") { emulator.press(1) }
             Menu {
-                Button {
-                    if let url = LTMLog.exportCopy() { shareItem = ShareItem(url: url) }
-                } label: {
-                    Label("Export log", systemImage: "square.and.arrow.up")
+                Section {
+                    Button {
+                        showStore = true
+                    } label: {
+                        Label("Legacy Store", systemImage: "bag")
+                    }
+                    Button {
+                        showIPAPicker = true
+                    } label: {
+                        Label("Install an IPA\u{2026}", systemImage: "doc.zipper")
+                    }
                 }
-                Button {
-                    emulator.saveAndQuit()
-                } label: {
-                    Label("Save & quit", systemImage: "tray.and.arrow.down")
+                Section {
+                    Toggle(isOn: $bezel) {
+                        Label("Show the device", systemImage: "iphone")
+                    }
+                    Button {
+                        if let url = LTMLog.exportCopy() { shareItem = ShareItem(url: url) }
+                    } label: {
+                        Label("Export log", systemImage: "square.and.arrow.up")
+                    }
                 }
-                Button(role: .destructive) {
-                    emulator.quit()
-                } label: {
-                    Label("Shut down", systemImage: "power")
+                Section {
+                    Button {
+                        emulator.saveAndQuit()
+                    } label: {
+                        Label("Save & quit", systemImage: "tray.and.arrow.down")
+                    }
+                    Button(role: .destructive) {
+                        emulator.quit()
+                    } label: {
+                        Label("Shut down", systemImage: "power")
+                    }
                 }
             } label: {
                 Image(systemName: "ellipsis")
