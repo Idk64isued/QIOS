@@ -90,7 +90,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Tools
-        run: brew install automake autoconf libtool pkg-config
+        run: brew install automake autoconf libtool pkg-config meson ninja
       - name: Probe USB stack cross-build
         run: bash ios/scripts/build-usb.sh
       - uses: actions/upload-artifact@v4
