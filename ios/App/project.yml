@@ -17,6 +17,8 @@ targets:
       # The Mac app's own firmware list and device art, so both apps offer and show the same things.
       - path: ../../LightTouchMac/Resources/firmware-catalog.json
         buildPhase: resources
+      # Our own catalog holds the app icon; the Mac's holds the device art (shells, gradient).
+      - Assets.xcassets
       - path: ../../LightTouchMac/Assets.xcassets
     dependencies:
       - package: HostRuntime
@@ -28,6 +30,7 @@ targets:
         PRODUCT_NAME: LightTouch
         PRODUCT_BUNDLE_IDENTIFIER: dev.lighttouch.ios
         INFOPLIST_FILE: Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_VERSION: "5.0"
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGNING_REQUIRED: NO

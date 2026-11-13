@@ -54,8 +54,11 @@ jobs:
           build() {  # SPEC LOG
             rm -rf LightTouchiOS.xcodeproj
             xcodegen generate --spec "$1" || return 1
+            # -skipMacroValidation: FirmwareKit's swift-binary-parsing ships a Swift macro, which Xcode otherwise
+            #   gates behind a trust prompt no CI can answer ("must be enabled before it can be used").
             xcodebuild -project LightTouchiOS.xcodeproj -scheme LightTouchiOS -configuration Release \
               -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+              -skipMacroValidation -skipPackagePluginValidation \
               CODE_SIGNING_ALLOWED=NO > "$2" 2>&1
           }
           errors() { grep -E "error:|fatal error|BUILD FAILED" "$1" | sort -u | head -80 || true; }
