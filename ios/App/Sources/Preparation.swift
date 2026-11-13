@@ -194,8 +194,8 @@ final class DeviceCreator: ObservableObject {
         }
         task = Task { [weak self] in
             do {
-                let device = try await Self.run(plan) { id, mutate in
-                    Task { @MainActor in self?.update(id, mutate) }
+                let device = try await Self.run(plan) { id, update in
+                    Task { @MainActor in self?.apply(id, update) }
                 } warn: { message in
                     Task { @MainActor in self?.warnings.append(message) }
                 }
@@ -213,9 +213,28 @@ final class DeviceCreator: ObservableObject {
         background = .invalid
     }
 
-    private func update(_ id: String, _ mutate: (inout Stage) -> Void) {
+    /// One change to a stage, sent from the work thread (a plain value, so it crosses to the main actor safely).
+    enum StageUpdate: Sendable {
+        case running(detail: String)
+        case progress(fraction: Double?, detail: String)
+        case done(detail: String)
+    }
+
+    private func apply(_ id: String, _ update: StageUpdate) {
         guard running, let index = stages.firstIndex(where: { $0.id == id }) else { return }
-        mutate(&stages[index])
+        switch update {
+        case .running(let detail):
+            stages[index].state = .running
+            stages[index].detail = detail
+            stages[index].fraction = nil
+        case .progress(let fraction, let detail):
+            stages[index].fraction = fraction.map { min(1, max(0, $0)) }
+            stages[index].detail = detail
+        case .done(let detail):
+            stages[index].state = .done
+            stages[index].fraction = nil
+            stages[index].detail = detail
+        }
     }
 
     private func finish(device: DeviceFolder?, error: Error?) {
@@ -237,7 +256,7 @@ final class DeviceCreator: ObservableObject {
 
     // MARK: - The work (off the main thread)
 
-    private typealias Report = @Sendable (String, (inout Stage) -> Void) -> Void
+    private typealias Report = @Sendable (String, StageUpdate) -> Void
 
     /// Calls through at most a few times a second, so progress from a tight loop does not flood the main thread.
     private final class Throttle: @unchecked Sendable {
@@ -268,14 +287,14 @@ final class DeviceCreator: ObservableObject {
         let fm = FileManager.default
         let throttle = Throttle()
         func begin(_ id: String, _ detail: String = "") {
-            report(id) { $0.state = .running; $0.detail = detail; $0.fraction = nil }
+            report(id, .running(detail: detail))
         }
         func progress(_ id: String, _ fraction: Double?, _ detail: String, force: Bool = false) {
             guard force || throttle.pass() else { return }
-            report(id) { $0.fraction = fraction.map { min(1, max(0, $0)) }; $0.detail = detail }
+            report(id, .progress(fraction: fraction, detail: detail))
         }
         func done(_ id: String, _ detail: String = "") {
-            report(id) { $0.state = .done; $0.fraction = nil; $0.detail = detail }
+            report(id, .done(detail: detail))
         }
 
         let free = Transfer.freeSpace()

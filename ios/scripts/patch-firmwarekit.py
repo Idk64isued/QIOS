@@ -124,6 +124,11 @@ wrap_span(
 edit("Sources/FirmwareKit/N72/N72Recipe.swift", "FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(",
      "URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(", marker="URL(fileURLWithPath: NSHomeDirectory())")
 
+# The iOS SDK's Data has an extra sequence initializer, so the bare `Data.init` reference is ambiguous there (it is
+# not on macOS). Naming the element type picks the [UInt8] initializer.
+edit("Sources/FirmwareKit/K48/K48Recipe.swift", ".kernel).map(Data.init)", ".kernel).map { Data($0) }",
+     marker=".kernel).map { Data($0) }")
+
 # --- RAR sources (developer betas): Unrar.swift is left out of the iOS build ---
 rar = ROOT / "Sources/FirmwareKit/Archive/RARSource.swift"
 if rar.exists():
