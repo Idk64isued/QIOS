@@ -1,0 +1,111 @@
+--- a/Packages/FirmwareKit/Package.swift	2026-11-12 20:26:15.565680206 -0700
++++ b/Packages/FirmwareKit/Package.swift	2026-11-12 20:37:25.102282278 -0700
+@@ -14,7 +14,7 @@
+ 
+ let package = Package(
+     name: "FirmwareKit",
+-    platforms: [.macOS(.v13)],
++    platforms: [.macOS(.v13), .iOS(.v16)],
+     products: [
+         .library(name: "FirmwareKit", targets: ["FirmwareKit"]),
+         .library(name: "FirmwareSchema", type: .static, targets: ["FirmwareSchema"]),
+@@ -25,6 +25,7 @@
+     dependencies: [
+         .package(path: "../HostRuntime"),
+         .package(url: "https://github.com/weichsel/ZIPFoundation.git", exact: "0.9.20"),
++        // swift-subprocess declares .iOS("99.0") which blocks iOS — only pull it on macOS.
+         .package(url: "https://github.com/swiftlang/swift-subprocess.git", exact: "1.0.2"),
+         .package(url: "https://github.com/mtgto/Unrar.swift.git", exact: "0.5.4"),
+         .package(url: "https://github.com/apple/swift-argument-parser.git", exact: "1.8.2"),
+@@ -46,7 +47,8 @@
+                 "CActivation", "FirmwareSchema",
+                 .product(name: "HostRuntime", package: "HostRuntime"),
+                 .product(name: "ZIPFoundation", package: "ZIPFoundation"),
+-                .product(name: "Subprocess", package: "swift-subprocess"),
++                .product(name: "Subprocess", package: "swift-subprocess",
++                         condition: .when(platforms: [.macOS, .linux, .windows])),
+                 .product(name: "Unrar", package: "Unrar.swift"),
+                 .product(name: "BinaryParsing", package: "swift-binary-parsing"),
+                 .product(name: "Crypto", package: "swift-crypto"),
+--- a/Packages/FirmwareKit/Sources/FirmwareKit/DiskImage/DiskImage.swift	2026-11-12 20:26:15.566325054 -0700
++++ b/Packages/FirmwareKit/Sources/FirmwareKit/DiskImage/DiskImage.swift	2026-11-12 20:37:45.432446416 -0700
+@@ -16,8 +16,12 @@
+ // FIRMWAREKIT_DISK_IMAGE=hdiutil|diskutil overrides the choice (tests, and a host where one misbehaves).
+ 
+ import Foundation
++#if canImport(Subprocess)
+ import Subprocess
++#endif
++#if canImport(System)
+ import System
++#endif
+ 
+ public enum DiskImage {
+     public enum Backend: String, Sendable { case diskutil, hdiutil }
+@@ -261,6 +265,7 @@
+         return out
+     }
+ 
++    #if canImport(Subprocess)
+     /// (status, stdout then stderr), stdin closed. Suspends while the actual
+     /// library owns and reaps the child; cancellation/spawn failure stay errors.
+     static func exec(_ argv: [String]) async throws -> (Int32, String) {
+@@ -279,4 +284,11 @@
+             }
+         return (status, result.standardOutput + result.standardError)
+     }
++    #else
++    /// iOS stub: Subprocess is not available. Preparation steps that need external
++    /// tools (hdiutil, diskutil, newfs_hfs) must use the in-process HFS writer.
++    static func exec(_ argv: [String]) async throws -> (Int32, String) {
++        throw FirmwareError(.internal, "exec is not available on this platform (no Subprocess). Use --hfs writer or FIRMWAREKIT_HFS=writer.")
++    }
++    #endif
+ }
+--- a/Packages/FirmwareKit/Sources/FirmwareKit/Recipe/Preparer.swift	2026-11-12 20:26:15.569827175 -0700
++++ b/Packages/FirmwareKit/Sources/FirmwareKit/Recipe/Preparer.swift	2026-11-12 20:38:50.091621476 -0700
+@@ -246,6 +246,7 @@
+     /// `executable` with `arguments`, standard input `stdin` (/dev/null when nil), standard output `stdout`, this
+     /// process's standard error, and `inherit`'s descriptors (child's number: this process's), nothing else; its pid.
+     /// (Process passes no descriptor beyond the standard three: a sandboxed one-shot's gdbstub listener is one.)
++    #if os(macOS)
+     static func spawn(
+         _ executable: URL,
+         _ arguments: [String],
+@@ -280,6 +281,14 @@
+         }
+         return pid
+     }
++    #else
++    static func spawn(
++        _ executable: URL, _ arguments: [String],
++        stdin: Int32?, stdout: Int32, inherit: [Int32: Int32]
++    ) throws -> pid_t {
++        throw FirmwareError(.internal, "spawn is not available on iOS. Use the in-process HFS writer.")
++    }
++    #endif
+ 
+     /// The sibling entry's restore ramdisk (Update, else Restore), decrypted with that entry's key into `work`.
+     static func siblingRamdisk(_ sib: FirmwareEntry, ipsw url: URL, work: URL) throws -> URL {
+@@ -324,6 +333,7 @@
+ 
+     // MARK: - Cancel
+ 
++    #if os(macOS)
+     /// SIGTERM: every descendant gets SIGTERM (SIGKILL after 1 s), then disk images under `staging` are
+     /// force-detached before successful return. Child termination is bounded; disk
+     /// query/detach retries may take longer. Failure retains staging for inspection.
+@@ -381,6 +391,13 @@
+         }
+         for process in children where isSameProcess(process) { kill(process.pid, SIGKILL) }
+     }
++    #else
++    // iOS: no libproc, no process tree management
++    public struct ChildProcess: Sendable { let pid: pid_t }
++    public static func childrenForCancellation() -> [ChildProcess] { [] }
++    public static func stopChildren(_ children: [ChildProcess]) async {}
++    public static func cancel(staging: URL) async throws {}
++    #endif
+ 
+     // MARK: - Files
+ 

@@ -24,6 +24,7 @@ final class Emulator: ObservableObject {
     @Published private(set) var state: State = .idle
     @Published private(set) var engine = "not loaded"
     private(set) var qemu: QemuRuntime?
+    @Published private(set) var agent: GuestAgent?
     private var started = false
     private var observers: [NSObjectProtocol] = []
     private var audio: AudioPlayer?
@@ -109,6 +110,15 @@ final class Emulator: ObservableObject {
             audio = AudioPlayer(qemu: qemu)
             audio?.start()
             if resumed { retireSnapshot(snaps, qemu: qemu) }
+            // Start the guest agent bridge — it probes once the emulator is running.
+            let ga = GuestAgent(qemu: qemu)
+            agent = ga
+            Task.detached {
+                // Give the guest a few seconds to boot before probing the agent
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                await ga.probe()
+                await ga.checkShellCapabilities()
+            }
         } catch {
             state = .failed(error.localizedDescription)
         }

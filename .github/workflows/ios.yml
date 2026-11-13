@@ -53,3 +53,48 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: failure()
         with: { name: build-logs, path: "${{ runner.temp }}/ios-deps/logs" }
+
+  # ------------------------------------------------------------------
+  # Non-blocking probe jobs: these run in parallel with the main build
+  # and always succeed (exit 0). They discover what needs fixing for
+  # on-device firmware preparation and the USB install stack.
+  # ------------------------------------------------------------------
+
+  probe-firmwarekit:
+    runs-on: macos-26
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply FirmwareKit iOS patch
+        run: |
+          patch -p1 < ios/patches/0002-firmwarekit-ios.patch || echo "Patch had issues (expected during probe)"
+      - name: Attempt FirmwareKit iOS build
+        run: |
+          # Try to build FirmwareKit for iOS to see how far it gets
+          cd Packages/FirmwareKit
+          swift build --sdk iphoneos 2>&1 | tee "$RUNNER_TEMP/firmwarekit-probe.log" || true
+          echo ""
+          echo "=== FirmwareKit iOS probe complete ==="
+          echo "Check the log for what still needs fixing."
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: firmwarekit-probe-log
+          path: ${{ runner.temp }}/firmwarekit-probe.log
+
+  probe-usb:
+    runs-on: macos-26
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: brew install automake autoconf libtool pkg-config
+      - name: Probe USB stack cross-build
+        run: bash ios/scripts/build-usb.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: usb-probe-logs
+          path: usb-logs/

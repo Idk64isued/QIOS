@@ -66,6 +66,14 @@ final class QemuRuntime: @unchecked Sendable {
     lazy var audioStop = sym("qemu_ios_audio_capture_stop", (@convention(c) (UInt64) -> Void).self)
     lazy var deviceInfoAt = sym("qemu_ios_device_info_at", (@convention(c) (Int32) -> UnsafeRawPointer?).self)
 
+    // Guest agent (contrib/it-agent, optional — absent in old builds)
+    lazy var agentRequest = optionalSym("qemu_ios_agent_request", (@convention(c) (UnsafePointer<CChar>) -> Bool).self)
+    lazy var agentCancel = optionalSym("qemu_ios_agent_cancel", (@convention(c) (UnsafePointer<CChar>) -> Void).self)
+    lazy var agentResult = optionalSym("qemu_ios_agent_result", (@convention(c) () -> UnsafeMutablePointer<CChar>?).self)
+    lazy var agentFreeResult = optionalSym("qemu_ios_agent_free_result", (@convention(c) (UnsafeMutablePointer<CChar>) -> Void).self)
+    lazy var agentStatus = optionalSym("qemu_ios_agent_status", (@convention(c) () -> Int32).self)
+    lazy var agentReport = optionalSym("qemu_ios_agent_report", (@convention(c) (UnsafeMutablePointer<UInt64>) -> UnsafeMutablePointer<CChar>?).self)
+
     private struct InfoC {
         var machine: UnsafePointer<CChar>?
         var board: UnsafePointer<CChar>?
