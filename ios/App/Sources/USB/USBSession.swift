@@ -45,9 +45,12 @@ final class USBSession: ObservableObject {
                     self.device = device
                     self.mux = USBMuxClient(device: device)
                     self.state = .enumerated
+                    // It works on this device, so keep it on for the next boot too.
+                    UserDefaults.standard.set(true, forKey: "enableUSB")
                 }
             } catch {
                 LTMLog.note("usb: enumerate failed: \(error)")
+                LTMLog.note("usb: the bridge is off again for the next boot. If this boot is stuck, close the app fully and reopen it.")
                 await MainActor.run { self.lastError = "\(error)"; self.state = .failed("USB enumeration failed: \(error)") }
             }
         }

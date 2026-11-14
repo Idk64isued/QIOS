@@ -933,7 +933,7 @@ struct EmulatorScreen: View {
                     Toggle(isOn: Binding(
                         get: { UserDefaults.standard.object(forKey: "enableUSB") as? Bool ?? false },
                         set: { UserDefaults.standard.set($0, forKey: "enableUSB") }
-                    )) { Label("USB bridge (next boot)", systemImage: "cable.connector") }
+                    )) { Label("USB bridge (next boot only)", systemImage: "cable.connector") }
                 }
             } label: {
                 Image(systemName: "gearshape")

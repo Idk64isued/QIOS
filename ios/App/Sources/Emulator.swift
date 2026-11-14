@@ -59,6 +59,13 @@ final class Emulator: ObservableObject {
             let usbSession = enableUSB ? (try? USBSession()) : nil
             if enableUSB {
                 if let usbSession { self.usb = usbSession } else { LTMLog.note("usb: bridge not started") }
+                // The bridge is unfinished and a boot with it on can hang at the Apple logo. So the switch counts for
+                // one boot only: it is turned back off here, and turned on again only if the bridge really connects
+                // (USBSession). A hung boot can then never repeat itself on the next launch.
+                UserDefaults.standard.set(false, forKey: "enableUSB")
+                LTMLog.note("usb bridge: ON for this boot only (experimental; if the device hangs, reopen the app and it is off again)")
+            } else {
+                LTMLog.note("usb bridge: off")
             }
             var config = try Self.bootConfig(directory: directory, usbAddress: usbSession?.qemuAddress)
             var argv = config.argv
