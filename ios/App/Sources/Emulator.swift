@@ -53,10 +53,13 @@ final class Emulator: ObservableObject {
             return
         }
         do {
-            // Open the USB bridge listener BEFORE building the boot argv: QEMU dials out to it when the guest's USB
-            // core comes up, so the listener must already be there.
-            let usbSession = try? USBSession()
-            if let usbSession { self.usb = usbSession } else { LTMLog.note("usb: bridge not started") }
+            // USB bridge is opt-in: passing usb-tcp-addr changes how the guest comes up. Without it, boot is exactly
+            // like it was before the USB stack existed. The Settings menu has a toggle.
+            let enableUSB = UserDefaults.standard.object(forKey: "enableUSB") as? Bool ?? false
+            let usbSession = enableUSB ? (try? USBSession()) : nil
+            if enableUSB {
+                if let usbSession { self.usb = usbSession } else { LTMLog.note("usb: bridge not started") }
+            }
             var config = try Self.bootConfig(directory: directory, usbAddress: usbSession?.qemuAddress)
             var argv = config.argv
             // iOS gives a process no 1 GiB code buffer worth of headroom: ask for a modest one. Split W^X is how

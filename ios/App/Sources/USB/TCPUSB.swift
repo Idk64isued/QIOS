@@ -118,13 +118,24 @@ final class TCPUSBTransport: @unchecked Sendable {
             case .ready:
                 if !ready { ready = true; self.listening.signal() }
             case .failed, .cancelled:
+                // Only release the LISTENING semaphore here (the listener never came up). The CONNECTED semaphore
+                // stays untouched so a reader doesn't think a connection exists.
                 self.listening.signal()
-                self.connected.signal()
             default: break
             }
         }
         listener.newConnectionHandler = { [weak self] connection in
-            guard let self, !self.hasConnection else { connection.cancel(); return }
+            guard let self else { connection.cancel(); return }
+            // QEMU dials out on device realize and retries on every USB core soft reset (per the spec). So when the
+            // old connection has closed, accept the new one and reset the stream state. If a live connection is
+            // still open, refuse the duplicate.
+            if self.hasConnection, !self.closed {
+                connection.cancel(); return
+            }
+            self.availableLock.lock()
+            self.available.removeAll(keepingCapacity: true)
+            self.availableLock.unlock()
+            self.closed = false
             self.hasConnection = true
             self.connection = connection
             connection.stateUpdateHandler = { [weak self] state in

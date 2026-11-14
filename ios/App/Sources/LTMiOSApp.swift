@@ -152,6 +152,7 @@ struct RootView: View {
     @AppStorage("rect2d") private var rect2d = true
     @AppStorage("diag") private var diag = true
     @AppStorage("bezel") private var bezel = true
+    @AppStorage("enableUSB") private var enableUSB = false
     @AppStorage("codeCacheMB") private var codeCacheMB = 512
     @State private var showLegacyStore = false
     @State private var showAddDevice = false
@@ -431,6 +432,8 @@ struct RootView: View {
                 settingToggle("Skip GL error checks", icon: "bolt.trianglebadge.exclamationmark", isOn: $fastGL)
                 Divider().overlay(Color.white.opacity(0.04))
                 settingToggle("Diagnostics in log", icon: "stethoscope", isOn: $diag)
+                Divider().overlay(Color.white.opacity(0.04))
+                settingToggle("USB bridge (experimental)", icon: "cable.connector", isOn: $enableUSB)
             }
             .background(Color.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(
@@ -452,6 +455,9 @@ struct RootView: View {
             }
 
             Text("Save & quit is limited while the device uses live GL state (home screen).")
+                .font(.system(size: 10, design: .rounded))
+                .foregroundStyle(Theme.tertiaryText)
+            Text("USB bridge turns on the Mac-style IPA install path. It can confuse the guest at boot on some devices; leave it off for normal use and turn it on just to install an IPA.")
                 .font(.system(size: 10, design: .rounded))
                 .foregroundStyle(Theme.tertiaryText)
         }
@@ -918,6 +924,13 @@ struct EmulatorScreen: View {
                     Toggle(isOn: $startupTone) { Label("Startup tone", systemImage: "speaker.wave.2") }
                     Button { showCarrier = true } label: { Label("Carrier name\u{2026}", systemImage: "antenna.radiowaves.left.and.right") }
                     Button { showHelp = true } label: { Label("Help", systemImage: "questionmark.circle") }
+                }
+                Section("Advanced") {
+                    // Note: takes effect on the next boot; the current emulator keeps whatever it started with.
+                    Toggle(isOn: Binding(
+                        get: { UserDefaults.standard.object(forKey: "enableUSB") as? Bool ?? false },
+                        set: { UserDefaults.standard.set($0, forKey: "enableUSB") }
+                    )) { Label("USB bridge (next boot)", systemImage: "cable.connector") }
                 }
             } label: {
                 Image(systemName: "gearshape")
