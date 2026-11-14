@@ -259,12 +259,24 @@ final class Emulator: ObservableObject {
             let copy = overlay.appendingPathComponent("nor.bin")
             if FileManager.default.fileExists(atPath: source.path) {
                 if !FileManager.default.fileExists(atPath: copy.path) { try FileManager.default.copyItem(at: source, to: copy) }
+                // A device prepared on the phone has a read-only base (so its files can't change), and a copy keeps
+                // that. The emulator opens this copy for writing, so it has to be writable.
+                chmod(copy.path, 0o644)
                 writableNOR = copy
             }
         }
         let prepared = try PreparedDeviceBoot.prepare(
             board: board, base: base, overlay: overlay, writableNOR: writableNOR, storageKey: nil,
             bootrom: BootRecipe.bootrom(board.bootrom, filesRoot: filesRoot))
+        // Everything under overlay/ is this device's own working data, and the emulator writes to it. Copies made
+        // from a read-only base can keep its lock, so unlock them all (folders too) before the boot.
+        chmod(overlay.path, 0o755)
+        if let walker = FileManager.default.enumerator(at: overlay, includingPropertiesForKeys: [.isDirectoryKey]) {
+            for case let item as URL in walker {
+                let isFolder = (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+                chmod(item.path, isFolder ? 0o755 : 0o644)
+            }
+        }
         return try prepared.configuration(
             hardware: hardware, bootArgs: "amfi_allow_any_signature=1 cs_enforcement_disable=1", usbAddress: usbAddress, wifi: false,
             guestPackage: nil, serial: "null", audio: ["-audio", "driver=none"], netdev: nil)
