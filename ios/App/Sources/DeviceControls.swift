@@ -78,7 +78,10 @@ final class DeviceControls: ObservableObject {
         if let sleeping = qemu.displaySleeping?() {
             if sleeping != screenAsleep { screenAsleep = sleeping }
         }
-        if let level = qemu.backlightLevel?(), level != backlight { backlight = level }
+        if let raw = qemu.backlightLevel?() {
+            let level = Int(raw)   // the emulator answers in Int32
+            if level != backlight { backlight = level }
+        }
         if let failed = qemu.storageFailed?(), failed != storageFailed { storageFailed = failed }
         if let confirmed = qemu.shutdownConfirmed?(), confirmed != guestWantsShutdown {
             guestWantsShutdown = confirmed
