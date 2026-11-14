@@ -722,6 +722,9 @@ struct EmulatorScreen: View {
     @State private var toast = ""
     @StateObject private var volume = VolumeWatcher()
     @StateObject private var modem = ModemController()
+    @StateObject private var controls = DeviceControls()
+    @State private var showSettings = false
+    @Environment(\.scenePhase) private var scenePhase
     @State private var keyboardBridge: KeyboardBridge?
     @State private var firstFrameSeen = false
 
@@ -756,10 +759,29 @@ struct EmulatorScreen: View {
         .onAppear {
             details = device.details
             modem.qemu = emulator.qemu
+            controls.start(qemu: emulator.qemu)
             volume.onVolumeUp = { emulator.press(2) }
             volume.onVolumeDown = { emulator.press(3) }
         }
-        .onDisappear { volume.stop() }
+        .onDisappear {
+            volume.stop()
+            controls.stop()
+        }
+        // Stop the emulated CPU while this app is in the background: an old iPhone running in a pocket is just
+        // this phone's battery going down for nothing.
+        .onChange(of: scenePhase) { phase in
+            switch phase {
+            case .active: controls.wake()
+            case .background, .inactive: controls.suspend()
+            @unknown default: break
+            }
+        }
+        .onChange(of: controls.storageFailed) { failed in
+            if failed { toast = "The device\u{2019}s storage stopped answering. Its log has the details." }
+        }
+        .onChange(of: controls.guestWantsShutdown) { confirmed in
+            if confirmed { toast = "The device has shut itself down. Save & quit, or shut the emulator down." }
+        }
         .onChange(of: emulator.state) { state in
             if state == .running && startupTone && !firstFrameSeen {
                 firstFrameSeen = true
@@ -781,6 +803,20 @@ struct EmulatorScreen: View {
             CarrierEditor(agent: emulator.agent, modem: modem) { showCarrier = false }
         }
         .sheet(isPresented: $showHelp) { HelpView { showHelp = false } }
+        .sheet(isPresented: $showSettings) {
+            DeviceSettingsView(
+                device: device, details: details, controls: controls, usb: emulator.usb,
+                onProbeUSB: {
+                    guard let session = emulator.usb else { return }
+                    Task {
+                        installNote = "Asking the device over USB\u{2026}"
+                        let answer = await session.probe()
+                        installNote = answer ?? "The device did not answer over USB. See the log."
+                    }
+                },
+                onShowHelp: { showSettings = false; showHelp = true },
+                onDismiss: { showSettings = false })
+        }
     }
 
     // MARK: - Layouts
@@ -795,6 +831,14 @@ struct EmulatorScreen: View {
                 emulator.press(0)
             }
             Spacer(minLength: 2)
+            // The device turned its own screen off. Worth saying, because a black screen and a wedged device look
+            // identical otherwise.
+            if controls.screenAsleep {
+                Label("Screen off \u{2014} Sleep / Wake brings it back", systemImage: "moon.zzz.fill")
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(Theme.secondaryText)
+                    .padding(.bottom, 6)
+            }
             bottomPill
             if !toastText.isEmpty {
                 Text(toastText)
@@ -809,67 +853,76 @@ struct EmulatorScreen: View {
     }
 
     /// Immersive: the device's screen and its Home button, and nothing else — the phone as it would sit in your
-    /// hand. The screen takes the full width at its own shape and sits under the status bar; the Home button is
-    /// centred in the space below it, where a real one is. A tap anywhere else brings the rest of the controls
-    /// back, and so does the small ⋯ in the corner.
+    /// hand. The screen sits a little below the top, at its own shape, and the Home button is centred in the space
+    /// underneath, sized to whatever room this phone has. Nothing ever covers the Home button: the ⋯ in the corner
+    /// opens a menu, and a tap on the bezel brings up a small bar ABOVE the button rather than over it. Taps near
+    /// the button belong to the button, so aiming for Home never opens the menu by accident.
     private var immersive: some View {
         GeometryReader { proxy in
-            // The guest's screen shape, from the device art (320x480 on these phones, 4:3 on an iPad). Falling
-            // back to 3:2 keeps a board with no art from stretching.
+            // The guest's screen shape, from the device art (320x480 on these phones, 4:3 on an iPad).
             let art = details.board?.facts.art
             let aspect = art.map { $0.screenCutout.height / max($0.screenCutout.width, 1) } ?? 1.5
+            let topGap: CGFloat = 14
             let width = proxy.size.width
-            let screenHeight = min(width * aspect, proxy.size.height - 110)
+            // Leave room underneath for the Home button and its breathing space, scaled to the phone rather than
+            // fixed: a small screen gives up a little screen height, a big one gives the button more room.
+            let reserved = max(96, min(proxy.size.height * 0.17, 150))
+            let screenHeight = min(width * aspect, proxy.size.height - topGap - reserved)
+            let home = max(54, min(reserved * 0.52, 76))
 
-            ZStack {
+            ZStack(alignment: .top) {
                 Color.black.ignoresSafeArea()
 
                 VStack(spacing: 0) {
+                    Spacer().frame(height: topGap)
                     DisplayView(qemu: emulator.qemu, keyboardBridge: keyboardBridge)
                         .frame(width: width, height: max(screenHeight, 1))
                         .clipped()
-                    // Everything below the screen is the "bezel": tapping it brings the controls back, the way
-                    // pressing the frame of a real phone does nothing but is where your thumb already is.
+                    // The bezel. A tap here brings the controls up; the Home button sits on top of it and takes
+                    // any tap near itself first.
                     ZStack {
                         Color.black
                             .contentShape(Rectangle())
                             .onTapGesture { withAnimation(.spring(duration: 0.3)) { showAllControls.toggle() } }
-                        homeButton(diameter: 66)
-                    }
-                }
-                .frame(maxHeight: .infinity, alignment: .top)
-
-                // The way back, for anyone who would rather aim at a button than the bezel.
-                VStack {
-                    HStack {
-                        Spacer()
-                        Button {
-                            withAnimation(.spring(duration: 0.3)) { showAllControls.toggle() }
-                        } label: {
-                            Image(systemName: showAllControls ? "xmark" : "ellipsis")
-                                .font(.system(size: 14, weight: .semibold))
-                                .frame(width: 32, height: 32)
-                                .background(.ultraThinMaterial, in: Circle())
-                                .environment(\.colorScheme, .dark)
-                                .foregroundStyle(.white.opacity(showAllControls ? 1 : 0.45))
+                        VStack(spacing: 0) {
+                            if showAllControls {
+                                bottomPill
+                                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                                Spacer(minLength: 6)
+                            }
+                            homeButton(diameter: home)
+                                // A generous ring of padding around the button: this is the area the user said
+                                // should never open the menu, and giving it to the button is how.
+                                .padding(home * 0.26)
+                                .contentShape(Circle())
+                            Spacer(minLength: 0)
                         }
-                        .buttonStyle(.plain)
-                        .padding(.trailing, 12)
-                        .padding(.top, 4)
+                        .padding(.top, 6)
                     }
-                    Spacer()
                 }
 
-                // Revealed: the same top bar and pill the windowed modes use, over the device.
-                if showAllControls {
-                    VStack {
-                        topBar
-                            .background(.ultraThinMaterial)
+                // The corner dot. A menu, not a takeover.
+                HStack {
+                    Spacer()
+                    Menu {
+                        emulatorMenuContents
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 14, weight: .semibold))
+                            .frame(width: 32, height: 32)
+                            .background(.ultraThinMaterial, in: Circle())
                             .environment(\.colorScheme, .dark)
-                        Spacer()
-                        bottomPill.padding(.bottom, 10)
+                            .foregroundStyle(.white.opacity(0.5))
                     }
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .padding(.trailing, 12)
+                }
+
+                // The way back and the log, only while the controls are up, and only across the very top.
+                if showAllControls {
+                    topBar
+                        .background(.ultraThinMaterial)
+                        .environment(\.colorScheme, .dark)
+                        .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
         }
@@ -937,58 +990,67 @@ struct EmulatorScreen: View {
         .padding(.bottom, 6)
     }
 
-    /// Floating pill: settings (view mode / startup tone / carrier / help), Home (big, centred), and sliders (the full
-    /// menu of actions: Legacy Store, Apps, Files, IPA, Screenshot, Save & quit, Shut down).
+    /// What the controls offer in the moment: actions, not settings. Anything you set once lives in Settings.
+    @ViewBuilder private var emulatorMenuContents: some View {
+        Section("Device") {
+            Button { controls.rotate(clockwise: false) } label: { Label("Rotate left", systemImage: "rotate.left") }
+            Button { controls.rotate(clockwise: true) } label: { Label("Rotate right", systemImage: "rotate.right") }
+            Button { controls.shake() } label: { Label("Shake", systemImage: "waveform") }
+            Button { emulator.press(1) } label: { Label("Sleep / Wake", systemImage: "power.circle") }
+        }
+        Section("Apps") {
+            Button { showStore = true } label: { Label("Legacy Store", systemImage: "bag") }
+            if emulator.agent != nil {
+                Button { showApps = true } label: { Label("Apps on the device", systemImage: "square.grid.2x2") }
+                Button { showFiles = true } label: { Label("Files on the device", systemImage: "folder") }
+            }
+            Button { showIPAPicker = true } label: { Label("Install an IPA\u{2026}", systemImage: "doc.zipper") }
+        }
+        Section("Clipboard") {
+            Button {
+                toast = controls.pasteIntoDevice() ? "Pasted into the device." : "Nothing on the clipboard."
+            } label: { Label("Paste into the device", systemImage: "doc.on.clipboard") }
+            if controls.guestCopied != nil {
+                Button {
+                    toast = controls.copyFromDevice() ? "Copied from the device." : "Nothing copied there yet."
+                } label: { Label("Copy from the device", systemImage: "doc.on.doc") }
+            }
+        }
+        Section("Capture") {
+            Button { takeScreenshot() } label: { Label("Save screenshot", systemImage: "camera") }
+            Button {
+                if let url = LTMLog.exportCopy() { shareItem = ShareItem(url: url) }
+            } label: { Label("Export log", systemImage: "square.and.arrow.up") }
+        }
+        Section {
+            if details.isPhone {
+                Button { showCarrier = true } label: {
+                    Label("Carrier, calls and texts\u{2026}", systemImage: "antenna.radiowaves.left.and.right")
+                }
+            }
+            Button { showSettings = true } label: { Label("Settings\u{2026}", systemImage: "gearshape") }
+        }
+        Section("Power") {
+            Button { controls.restartDevice() } label: { Label("Restart the device", systemImage: "arrow.clockwise") }
+            Button {
+                if !controls.powerOffDevice() { emulator.press(1) }
+            } label: { Label("Power off", systemImage: "power") }
+            Button { emulator.saveAndQuit() } label: { Label("Save & quit", systemImage: "tray.and.arrow.down") }
+            Button(role: .destructive) { emulator.quit() } label: { Label("Shut down the emulator", systemImage: "xmark.circle") }
+        }
+    }
+
+    /// Floating pill: Settings on the left, Home in the middle, and the actions menu on the right.
     private var bottomPill: some View {
         HStack(spacing: 18) {
-            Menu {
-                Section("View") {
-                    Picker("View mode", selection: $viewModeRaw) {
-                        ForEach(ViewMode.allCases, id: \.self) { m in
-                            Label(m.title, systemImage: m.symbol).tag(m.rawValue)
-                        }
-                    }
-                }
-                Section {
-                    Toggle(isOn: $startupTone) { Label("Startup tone", systemImage: "speaker.wave.2") }
-                    // Only the iPhones have a modem; an iPod touch or iPad has no carrier in its status bar.
-                    if details.isPhone {
-                        Button { showCarrier = true } label: { Label("Carrier name\u{2026}", systemImage: "antenna.radiowaves.left.and.right") }
-                    }
-                    Button { showHelp = true } label: { Label("Help", systemImage: "questionmark.circle") }
-                }
-                Section("Advanced") {
-                    // The modem is an iPhone thing, and turning it off is the first thing to try when a phone
-                    // reaches the Home screen and then locks up.
-                    if details.isPhone {
-                        Toggle(isOn: Binding(
-                            get: { UserDefaults.standard.object(forKey: "cellularModem") as? Bool ?? true },
-                            set: { UserDefaults.standard.set($0, forKey: "cellularModem") }
-                        )) { Label("Cellular modem (next boot)", systemImage: "antenna.radiowaves.left.and.right") }
-                    }
-                    // Note: takes effect on the next boot; the current emulator keeps whatever it started with.
-                    Toggle(isOn: Binding(
-                        get: { UserDefaults.standard.object(forKey: "enableUSB") as? Bool ?? false },
-                        set: { UserDefaults.standard.set($0, forKey: "enableUSB") }
-                    )) { Label("USB bridge (next boot)", systemImage: "cable.connector") }
-                    if let session = emulator.usb {
-                        Label("USB: " + session.state.text, systemImage: "cable.connector.horizontal")
-                        Button {
-                            Task {
-                                installNote = "Asking the device over USB\u{2026}"
-                                let answer = await session.probe()
-                                installNote = answer ?? "The device did not answer over USB. See the log."
-                            }
-                        } label: { Label("Ask the device over USB", systemImage: "questionmark.app") }
-                    }
-                }
-            } label: {
+            Button { showSettings = true } label: {
                 Image(systemName: "gearshape")
                     .font(.system(size: 17, weight: .semibold))
                     .frame(width: 44, height: 44)
                     .background(Color.white.opacity(0.08), in: Circle())
                     .foregroundStyle(.white)
             }
+            .buttonStyle(.plain)
 
             Button {
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
@@ -1006,25 +1068,7 @@ struct EmulatorScreen: View {
             .buttonStyle(.plain)
 
             Menu {
-                Section("Apps") {
-                    Button { showStore = true } label: { Label("Legacy Store", systemImage: "bag") }
-                    if emulator.agent != nil {
-                        Button { showApps = true } label: { Label("Apps on the device", systemImage: "square.grid.2x2") }
-                        Button { showFiles = true } label: { Label("Files on the device", systemImage: "folder") }
-                    }
-                    Button { showIPAPicker = true } label: { Label("Install an IPA\u{2026}", systemImage: "doc.zipper") }
-                }
-                Section("Capture") {
-                    Button { takeScreenshot() } label: { Label("Save screenshot", systemImage: "camera") }
-                    Button {
-                        if let url = LTMLog.exportCopy() { shareItem = ShareItem(url: url) }
-                    } label: { Label("Export log", systemImage: "square.and.arrow.up") }
-                }
-                Section("Power") {
-                    Button { emulator.press(1) } label: { Label("Sleep / Wake", systemImage: "power.circle") }
-                    Button { emulator.saveAndQuit() } label: { Label("Save & quit", systemImage: "tray.and.arrow.down") }
-                    Button(role: .destructive) { emulator.quit() } label: { Label("Shut down", systemImage: "power") }
-                }
+                emulatorMenuContents
             } label: {
                 Image(systemName: "slider.horizontal.3")
                     .font(.system(size: 17, weight: .semibold))

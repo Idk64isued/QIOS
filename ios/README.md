@@ -41,6 +41,28 @@ except prepare firmware. The `build-logs` artifact has the compiler's errors.
 On a PC you can also unpack a packed device with `ios/tools/unpack_itbase.py` (a copied NAND image loses its holes
 and gets big, so unpacking on the phone is better).
 
+## What the device can be told, and what it reports
+
+The emulator exposes the same set of host calls the Mac app drives, and the app now uses them:
+
+* **Rotation** (quarter turns, so landscape works), **shake**, and a **second finger** — a pinch lands on the
+  device's own screen rather than zooming this app's view of it.
+* **This phone stands in for the hardware**: its battery shows in the old status bar, a charger is reported (which
+  is also what stops iOS idle-sleeping), tilting this phone tilts the device and its compass follows, and when the
+  device buzzes this phone buzzes.
+* **The clipboard** goes both ways.
+* **The device's own answers**: whether it has turned its screen off (so a sleeping device doesn't look like a
+  wedged one), whether its storage has stopped answering, and whether it has shut itself down.
+* **Pause and resume**: the emulated CPU stops while the app is in the background instead of quietly draining
+  this phone in a pocket.
+* **Restart and power off** properly, rather than pulling the plug.
+* **Network policy**: restrict the device to this app's services, or let it see the local network.
+
+All of it is optional at run time: an older emulator library simply lacks a call, and the app does without it.
+
+Anything you set once lives in **Settings** (the gear on the controls). The menu beside it holds only things you do
+in the moment.
+
 ## Carrier, calls and messages
 
 The emulated iPhones carry a fake cellular baseband, and the emulator lets the app set its properties by name. The

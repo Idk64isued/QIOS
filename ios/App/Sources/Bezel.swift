@@ -94,26 +94,10 @@ struct DeviceStage: View {
     let keyboardBridge: UIView?
     let onHome: () -> Void
 
-    @State private var scale: CGFloat = 1
-    @State private var lastScale: CGFloat = 1
-
     var body: some View {
+        // No pinch on the stage any more: two fingers belong to the device's own screen, so Photos, Safari and
+        // Maps pinch the way they did. The bezel and plain views already show the screen at its full size.
         stage
-            .scaleEffect(scale)
-            // Pinch only. A drag gesture here would take one-finger swipes away from the device's own screen
-            // (slide to unlock, scrolling), so there is no panning: zoom grows from the centre.
-            .gesture(
-                MagnificationGesture()
-                    .onChanged { value in scale = min(max(lastScale * value, 1.0), 3.0) }
-                    .onEnded { _ in
-                        if scale < 1.05 {
-                            withAnimation(.easeOut(duration: 0.2)) { scale = 1 }
-                            lastScale = 1
-                        } else {
-                            lastScale = scale
-                        }
-                    }
-            )
     }
 
     @ViewBuilder private var stage: some View {

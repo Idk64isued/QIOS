@@ -66,6 +66,44 @@ final class QemuRuntime: @unchecked Sendable {
     lazy var audioStop = sym("qemu_ios_audio_capture_stop", (@convention(c) (UInt64) -> Void).self)
     lazy var deviceInfoAt = sym("qemu_ios_device_info_at", (@convention(c) (Int32) -> UnsafeRawPointer?).self)
 
+    // The rest of the host API the Mac app drives. All optional: an older emulator build simply lacks them, and
+    // every caller checks for nil rather than crashing.
+    //
+    // Input
+    lazy var touch2 = optionalSym("qemu_ios_ui_touch2", (@convention(c) (Int32, Double, Double) -> Void).self)
+    lazy var manualTouch2 = optionalSym("qemu_ios_ui_manual_touch2", (@convention(c) (Bool) -> Void).self)
+    lazy var rotate = optionalSym("qemu_ios_ui_rotate", (@convention(c) (Bool) -> Void).self)
+    lazy var orientation = optionalSym("qemu_ios_ui_orientation", (@convention(c) (Int32) -> Bool).self)
+    lazy var shake = optionalSym("qemu_ios_ui_shake", (@convention(c) () -> Void).self)
+    lazy var keyMac = optionalSym("qemu_ios_ui_key_mac", (@convention(c) (Int32, Bool) -> Void).self)
+    lazy var hardwareKeyboard = optionalSym("qemu_ios_ui_hardware_keyboard", (@convention(c) (Bool) -> Bool).self)
+    lazy var cancelInput = optionalSym("qemu_ios_ui_cancel_input", (@convention(c) () -> Void).self)
+    // Sensors the real phone can stand in for
+    lazy var attitude = optionalSym("qemu_ios_ui_attitude", (@convention(c) (Double, Double, Int32) -> Void).self)
+    lazy var compass = optionalSym("qemu_ios_ui_compass", (@convention(c) (Int32) -> Bool).self)
+    lazy var battery = optionalSym("qemu_ios_ui_battery", (@convention(c) (Int32, Int32) -> Bool).self)
+    lazy var usbConnection = optionalSym("qemu_ios_ui_usb_connection", (@convention(c) (Bool) -> Bool).self)
+    lazy var usbCharger = optionalSym("qemu_ios_ui_usb_charger", (@convention(c) (Bool) -> Bool).self)
+    lazy var vibrator = optionalSym("qemu_ios_ui_vibrator", (@convention(c) (UnsafeMutablePointer<UInt64>) -> Bool).self)
+    // What the device is doing
+    lazy var displaySleeping = optionalSym("qemu_ios_ui_display_sleeping", (@convention(c) () -> Bool).self)
+    lazy var backlightLevel = optionalSym("qemu_ios_ui_backlight_level", (@convention(c) () -> Int32).self)
+    lazy var storageFailed = optionalSym("qemu_ios_ui_storage_failed", (@convention(c) () -> Bool).self)
+    lazy var shutdownConfirmed = optionalSym("qemu_ios_ui_guest_shutdown_confirmed", (@convention(c) () -> Bool).self)
+    // Running state
+    lazy var pause = optionalSym("qemu_ios_ui_pause", (@convention(c) () -> Void).self)
+    lazy var resume = optionalSym("qemu_ios_ui_resume", (@convention(c) () -> Void).self)
+    lazy var reset = optionalSym("qemu_ios_ui_reset", (@convention(c) () -> Void).self)
+    lazy var shutdown = optionalSym("qemu_ios_ui_shutdown", (@convention(c) () -> Int32).self)
+    // Pasteboard: paste takes UTF-8, the guest's copy comes back malloc'd and is freed with free().
+    lazy var paste = optionalSym("qemu_ios_ui_paste", (@convention(c) (UnsafePointer<CChar>) -> Void).self)
+    lazy var guestPasteboard = optionalSym(
+        "qemu_ios_ui_guest_pasteboard",
+        (@convention(c) (UnsafeMutablePointer<UInt64>) -> UnsafeMutablePointer<CChar>?).self)
+    // Networking policy
+    lazy var netRestrict = optionalSym("qemu_ios_ui_net_restrict", (@convention(c) (UnsafePointer<CChar>, Bool) -> Void).self)
+    lazy var netLAN = optionalSym("qemu_ios_ui_net_lan", (@convention(c) (UnsafePointer<CChar>, Bool) -> Void).self)
+
     // The fake cellular baseband (hw/misc/ios_baseband.c), on the iPhones only. Properties are set by name:
     // carrier, signal-dbm, registered, sim-present, incoming-call, incoming-sms ("<number>|<text>"),
     // remote-answer, remote-hangup. modem_status hands back a JSON snapshot (and refreshes it for next time).

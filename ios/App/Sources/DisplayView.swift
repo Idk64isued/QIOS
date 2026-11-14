@@ -20,7 +20,9 @@ final class DisplayUIView: UIView {
         backgroundColor = .black
         layer.contentsGravity = .resizeAspect
         layer.magnificationFilter = .linear
-        isMultipleTouchEnabled = false
+        // Two fingers, so a pinch lands on the device's own screen (Photos, Safari, Maps) instead of zooming
+        // this app's view of it.
+        isMultipleTouchEnabled = true
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -62,21 +64,57 @@ final class DisplayUIView: UIView {
         return CGRect(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2, width: size.width, height: size.height)
     }
 
-    private func send(_ touch: UITouch, phase: Int32) {
+    private func send(_ touch: UITouch, phase: Int32, slot: Int = 0) {
         guard let qemu else { return }
         let r = imageRect, p = touch.location(in: self)
         let nx = min(max((p.x - r.minX) / r.width, 0), 1), ny = min(max((p.y - r.minY) / r.height, 0), 1)
-        qemu.touch(0, phase, nx, ny)
+        qemu.touch(Int32(slot), phase, nx, ny)
+    }
+
+    /// Which finger is which. The guest takes two slots; the first touch down owns slot 0 and the second owns
+    /// slot 1, and they keep those slots until they lift, so a pinch stays a pinch.
+    private var slots: [UITouch?] = [nil, nil]
+
+    private func slot(for touch: UITouch, claiming: Bool) -> Int? {
+        if let index = slots.firstIndex(where: { $0 === touch }) { return index }
+        guard claiming, let free = slots.firstIndex(where: { $0 == nil }) else { return nil }
+        slots[free] = touch
+        if free == 1 { qemu?.manualTouch2?(true) }
+        return free
+    }
+
+    private func release(_ touch: UITouch) {
+        guard let index = slots.firstIndex(where: { $0 === touch }) else { return }
+        slots[index] = nil
+        if index == 1 { qemu?.manualTouch2?(false) }
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        if let t = touches.first { send(t, phase: 0) }
+        for touch in touches {
+            guard let index = slot(for: touch, claiming: true) else { continue }
+            send(touch, phase: 0, slot: index)
+        }
         // Any tap puts focus back on the hardware-keyboard bridge, so a connected keyboard keeps typing into the guest.
         keyboardBridge?.becomeFirstResponder()
     }
-    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) { if let t = touches.first { send(t, phase: 1) } }
-    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) { if let t = touches.first { send(t, phase: 2) } }
-    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) { if let t = touches.first { send(t, phase: 2) } }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        for touch in touches {
+            guard let index = slot(for: touch, claiming: false) else { continue }
+            send(touch, phase: 1, slot: index)
+        }
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        for touch in touches {
+            if let index = slot(for: touch, claiming: false) { send(touch, phase: 2, slot: index) }
+            release(touch)
+        }
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        touchesEnded(touches, with: event)
+    }
 }
 
 struct DisplayView: UIViewRepresentable {

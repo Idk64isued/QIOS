@@ -120,8 +120,8 @@ final class GuestAgent: ObservableObject {
             guard let result = await pollResult(id: id, timeout: 30.0) else {
                 log("put timed out"); return false
             }
-            let success = result.hasPrefix("ok") || result.hasPrefix("put")
-            log(success ? "Put \(guestPath) ok (\(data.count) bytes)" : "Put failed: \(result)")
+            let success = Self.succeeded(result)
+            log(success ? "Put \(guestPath) ok (\(data.count) bytes)" : "Put failed: \(Self.failureText(result))")
             return success
         } else {
             // Multi-part put
@@ -137,8 +137,8 @@ final class GuestAgent: ObservableObject {
                 guard let result = await pollResult(id: id, timeout: 30.0) else {
                     log("putpart timed out at offset \(offset)"); return false
                 }
-                if !result.hasPrefix("ok") && !result.hasPrefix("put") {
-                    log("putpart error: \(result)"); return false
+                if !Self.succeeded(result) {
+                    log("putpart failed at \(offset): \(Self.failureText(result))"); return false
                 }
                 offset = end
                 log("Uploaded \(end)/\(data.count) bytes")
@@ -176,7 +176,7 @@ final class GuestAgent: ObservableObject {
         guard let result = await pollResult(id: id, timeout: 10.0) else {
             log("launch timed out"); return false
         }
-        let success = result.hasPrefix("ok") || result.hasPrefix("launch")
+        let success = Self.succeeded(result)
         log(success ? "Launched \(bundleID)" : "Launch failed: \(result)")
         return success
     }
@@ -187,7 +187,7 @@ final class GuestAgent: ObservableObject {
         let ok = agentRequest("\(id) chown \(uid) \(gid) \(path)\n")
         guard ok else { return false }
         guard let result = await pollResult(id: id, timeout: 10.0) else { return false }
-        return result.hasPrefix("ok") || result.hasPrefix("chown")
+        return Self.succeeded(result)
     }
 
     // MARK: - Typing (hardware keyboard bridge)
@@ -298,7 +298,7 @@ final class GuestAgent: ObservableObject {
         let ok = agentRequest("\(id) unlink \(path)\n")
         guard ok else { return false }
         guard let result = await pollResult(id: id, timeout: 10.0) else { return false }
-        return result.hasPrefix("ok") || result.hasPrefix("unlink")
+        return Self.succeeded(result)
     }
 
     /// Check whether /bin/mkdir exists (rough proxy for jailbroken with shell tools).
@@ -387,6 +387,24 @@ final class GuestAgent: ObservableObject {
     }
 
     // MARK: - Internals
+
+    /// The agent's status line, as its README defines it: 0 is success, a negative number is -errno, anything
+    /// else is a child's exit status. Everything here used to look for the words "ok" or "put", which the agent
+    /// never sends — so a perfectly good upload came back as "putpart error: 0" and the install gave up.
+    static func succeeded(_ result: String) -> Bool {
+        let status = (result.components(separatedBy: "\n").first ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let code = Int(status) { return code == 0 }
+        return status.hasPrefix("ok")
+    }
+
+    /// What went wrong, for the log: the errno where there is one.
+    static func failureText(_ result: String) -> String {
+        let status = (result.components(separatedBy: "\n").first ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let code = Int(status), code < 0 { return "error \(-code) (\(String(cString: strerror(Int32(-code)))))" }
+        return status.isEmpty ? "no answer" : status
+    }
 
     private func pollResult(id: String, timeout: TimeInterval) async -> String? {
         let deadline = Date().addingTimeInterval(timeout)
