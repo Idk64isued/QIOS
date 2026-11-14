@@ -278,7 +278,7 @@ final class TCPUSBTransport: @unchecked Sendable {
         throws -> (status: Int, data: Data)
     {
         do {
-            return try send(ep: ep, flags: flags, out: out, inLength: inLength, timeout: timeout)
+            return try transact(ep: ep, flags: flags, out: out, inLength: inLength, timeout: timeout)
         } catch let error as TCPUSBError {
             // The link is gone. Forget the socket as well, so isConnected answers honestly and the caller waits for
             // the emulator to dial again instead of retrying into a dead descriptor as fast as it can.
@@ -287,7 +287,8 @@ final class TCPUSBTransport: @unchecked Sendable {
         }
     }
 
-    private func send(ep: UInt8, flags: UInt8, out: Data, inLength: Int, timeout: TimeInterval)
+    /// Not named `send`: that is Darwin's socket call, which this method would shadow inside the class.
+    private func transact(ep: UInt8, flags: UInt8, out: Data, inLength: Int, timeout: TimeInterval)
         throws -> (status: Int, data: Data)
     {
         let incoming = ep & TCPUSB.directionIn != 0
