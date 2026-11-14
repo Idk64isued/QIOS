@@ -129,6 +129,128 @@ edit("Sources/FirmwareKit/N72/N72Recipe.swift", "FileManager.default.homeDirecto
 edit("Sources/FirmwareKit/K48/K48Recipe.swift", ".kernel).map(Data.init)", ".kernel).map { Data($0) }",
      marker=".kernel).map { Data($0) }")
 
+# --- Autorelease pools in the streaming loops ----------------------------------------------------------------
+# FileHandle.read(upToCount:) returns an autoreleased buffer. On macOS that's harmless; on iOS a loop that reads
+# a 7 GB volume without draining the pool accumulates all of it as dead memory, and jetsam kills the app (seen as
+# "preparation crashes at Writing the NAND"). Each loop body goes inside autoreleasepool so every chunk is freed
+# as soon as it has been used.
+
+# Preparer.digest: hashes the IPSW copy and, at the lock step, every (2 GB sparse) NAND chip file.
+edit(
+    "Sources/FirmwareKit/Recipe/Preparer.swift",
+    """        while let chunk = try f.read(upToCount: 1 << 22), !chunk.isEmpty {
+            h.update(data: chunk)
+            count?(chunk.count)
+        }""",
+    """        while true {
+            let next = try autoreleasepool { try f.read(upToCount: 1 << 22) }
+            guard let chunk = next, !chunk.isEmpty else { break }
+            h.update(data: chunk)
+            count?(chunk.count)
+        }""",
+    marker="let next = try autoreleasepool { try f.read(upToCount: 1 << 22) }",
+)
+
+# N72NAND.write: streams the 7 GB system volume into the NAND store (the step that died on the phone).
+edit(
+    "Sources/FirmwareKit/N72/N72NAND.swift",
+    """        while n < blocks {
+            var data = try f.read(upToCount: chunk * page) ?? Data()
+            if data.count < chunk * page { data.append(Data(count: chunk * page - data.count)) }
+            let bytes = [UInt8](data)
+            for i in 0..<min(chunk, blocks - n) {
+                let blk = bytes[i * page..<(i + 1) * page]
+                if blk.allSatisfy({ $0 == 0 }) { continue }
+                try store.write(predict(n + i), Array(blk) + blankSpare)
+                written += 1
+            }
+            n += chunk
+        }""",
+    """        while n < blocks {
+            try autoreleasepool {
+                var data = try f.read(upToCount: chunk * page) ?? Data()
+                if data.count < chunk * page { data.append(Data(count: chunk * page - data.count)) }
+                let bytes = [UInt8](data)
+                for i in 0..<min(chunk, blocks - n) {
+                    let blk = bytes[i * page..<(i + 1) * page]
+                    if blk.allSatisfy({ $0 == 0 }) { continue }
+                    try store.write(predict(n + i), Array(blk) + blankSpare)
+                    written += 1
+                }
+            }
+            n += chunk
+        }""",
+    marker="N72NAND autoreleasepool" if False else "            try autoreleasepool {\n                var data = try f.read(upToCount: chunk * page)",
+)
+
+# N45NAND.write: the iPod touch 1G / original iPhone equivalent (why those crashed too).
+edit(
+    "Sources/FirmwareKit/N45/N45NAND.swift",
+    """            try f.seek(toOffset: UInt64((first + skip - firstLBA) * page))
+            var data = try f.read(upToCount: (pagesPerSuperblock - skip) * page) ?? Data()
+            data.append(Data(count: (pagesPerSuperblock - skip) * page - data.count))
+            let bytes = [UInt8](data)
+            for i in 0..<pagesPerSuperblock - skip {
+                let lpn = first + skip + i
+                try store.write(
+                    location(lpn: lpn, banks: banks),
+                    Array(bytes[i * page..<(i + 1) * page]) + dataSpare(lpn)
+                )
+                written += 1
+            }""",
+    """            try f.seek(toOffset: UInt64((first + skip - firstLBA) * page))
+            try autoreleasepool {
+                var data = try f.read(upToCount: (pagesPerSuperblock - skip) * page) ?? Data()
+                data.append(Data(count: (pagesPerSuperblock - skip) * page - data.count))
+                let bytes = [UInt8](data)
+                for i in 0..<pagesPerSuperblock - skip {
+                    let lpn = first + skip + i
+                    try store.write(
+                        location(lpn: lpn, banks: banks),
+                        Array(bytes[i * page..<(i + 1) * page]) + dataSpare(lpn)
+                    )
+                    written += 1
+                }
+            }""",
+    marker="            try autoreleasepool {\n                var data = try f.read(upToCount: (pagesPerSuperblock - skip) * page)",
+)
+
+# UDIF.extractRootfs: copies the HFS partition (up to the volume's size) out of the raw disk.
+edit(
+    "Sources/FirmwareKit/UDIF/UDIF.swift",
+    """        var left = len
+        while left > 0 {
+            guard let chunk = try f.read(upToCount: min(left, 1 << 24)), !chunk.isEmpty else {
+                throw FirmwareError(.unsupported, "\\(raw.lastPathComponent) ends inside its HFS partition")
+            }
+            try o.write(contentsOf: chunk)
+            left -= chunk.count
+        }""",
+    """        var left = len
+        while left > 0 {
+            try autoreleasepool {
+                guard let chunk = try f.read(upToCount: min(left, 1 << 24)), !chunk.isEmpty else {
+                    throw FirmwareError(.unsupported, "\\(raw.lastPathComponent) ends inside its HFS partition")
+                }
+                try o.write(contentsOf: chunk)
+                left -= chunk.count
+            }
+        }""",
+    marker="            try autoreleasepool {\n                guard let chunk = try f.read(upToCount: min(left, 1 << 24))",
+)
+
+# HFSPlusWriter.put(contentsOf:): file copies into the volume (the kernelcache among them).
+edit(
+    "Sources/FirmwareKit/HFSPlus/HFSPlusWriter.swift",
+    """            while let chunk = try h.read(upToCount: 1 << 22), !chunk.isEmpty { try body(chunk) }""",
+    """            while true {
+                let next = try autoreleasepool { try h.read(upToCount: 1 << 22) }
+                guard let chunk = next, !chunk.isEmpty else { break }
+                try body(chunk)
+            }""",
+    marker="let next = try autoreleasepool { try h.read(upToCount: 1 << 22) }",
+)
+
 # Cydia uses /usr/bin/tar for two listings (member paths; set-uid/set-gid files). iOS has no tar binary. Route both
 # listings through the in-process TarArchive reader instead. The extract path already uses TarArchive via the
 # HFSPlusWriter backend, so with these two swaps the jailbreak option works on iOS too.

@@ -922,7 +922,10 @@ struct EmulatorScreen: View {
                 }
                 Section {
                     Toggle(isOn: $startupTone) { Label("Startup tone", systemImage: "speaker.wave.2") }
-                    Button { showCarrier = true } label: { Label("Carrier name\u{2026}", systemImage: "antenna.radiowaves.left.and.right") }
+                    // Only the iPhones have a modem; an iPod touch or iPad has no carrier in its status bar.
+                    if details.isPhone {
+                        Button { showCarrier = true } label: { Label("Carrier name\u{2026}", systemImage: "antenna.radiowaves.left.and.right") }
+                    }
                     Button { showHelp = true } label: { Label("Help", systemImage: "questionmark.circle") }
                 }
                 Section("Advanced") {

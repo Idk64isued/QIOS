@@ -86,8 +86,7 @@ enum ViewMode: String, CaseIterable {
 /// The running screen, in whichever view mode is active. The bezel mode falls back to the plain stage when the build
 /// has no art for this board, so a missing asset never leaves a black rectangle.
 ///
-/// Pinch zooms the whole stage (and a two-finger drag pans while zoomed). Zoom resets to 1 when the user pinches back
-/// past 1.0, so going "flat" is one gesture away.
+/// Pinch zooms the whole stage; pinching back to normal size snaps it to 1.
 struct DeviceStage: View {
     let board: Board?
     let qemu: QemuRuntime?
@@ -97,35 +96,23 @@ struct DeviceStage: View {
 
     @State private var scale: CGFloat = 1
     @State private var lastScale: CGFloat = 1
-    @State private var offset: CGSize = .zero
-    @State private var lastOffset: CGSize = .zero
 
     var body: some View {
         stage
             .scaleEffect(scale)
-            .offset(offset)
+            // Pinch only. A drag gesture here would take one-finger swipes away from the device's own screen
+            // (slide to unlock, scrolling), so there is no panning: zoom grows from the centre.
             .gesture(
                 MagnificationGesture()
-                    .onChanged { value in
-                        let proposed = lastScale * value
-                        scale = min(max(proposed, 0.5), 4.0)
-                    }
+                    .onChanged { value in scale = min(max(lastScale * value, 1.0), 3.0) }
                     .onEnded { _ in
                         if scale < 1.05 {
-                            withAnimation(.spring(duration: 0.3)) { scale = 1; offset = .zero }
-                            lastScale = 1; lastOffset = .zero
-                        } else { lastScale = scale }
-                    }
-                    // Two-finger drag at the same time as the pinch would be awkward — a simultaneous drag gesture
-                    // with a minimum distance makes panning work only while the pinch isn't moving the scale.
-                    .simultaneously(with: DragGesture(minimumDistance: 20)
-                        .onChanged { value in
-                            // Only pan while zoomed in; a drag at 1.0 is usually a touch meant for the guest.
-                            guard scale > 1.05 else { return }
-                            offset = CGSize(width: lastOffset.width + value.translation.width,
-                                height: lastOffset.height + value.translation.height)
+                            withAnimation(.easeOut(duration: 0.2)) { scale = 1 }
+                            lastScale = 1
+                        } else {
+                            lastScale = scale
                         }
-                        .onEnded { _ in lastOffset = offset })
+                    }
             )
     }
 
@@ -179,17 +166,19 @@ private struct BezelView: View {
             let width = pixels.width * scale
             let height = pixels.height * scale
             ZStack(alignment: .topLeading) {
-                // The live screen sits inside the shell's cutout. It's drawn first, below the chrome, so the
-                // bezel's rounded corners and chrome mask it instead of a white rectangle poking out at the edges.
-                DisplayView(qemu: qemu, keyboardBridge: keyboardBridge)
-                    .frame(width: cut.width * scale, height: cut.height * scale)
-                    .offset(x: cut.minX * scale, y: cut.minY * scale)
+                // The shell goes UNDERNEATH. Its screen area is opaque (shell_opaque.png is named for it: the
+                // cutout is solid #0E1216, not transparent), so anything drawn over it hides the live screen.
                 Image(uiImage: shell)
                     .resizable()
                     .interpolation(.high)
                     .frame(width: width, height: height)
-                    .allowsHitTesting(false)   // the display underneath takes taps
+                    .allowsHitTesting(false)   // the display on top takes the taps
                     .shadow(color: .black.opacity(0.55), radius: 24, y: 10)
+                // The live screen on top of it, clipped to the cutout so it can't bleed over the chrome.
+                DisplayView(qemu: qemu, keyboardBridge: keyboardBridge)
+                    .frame(width: cut.width * scale, height: cut.height * scale)
+                    .clipped()
+                    .offset(x: cut.minX * scale, y: cut.minY * scale)
                 // The Home button drawn on the shell IS the Home button.
                 Button {
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
@@ -218,4 +207,9 @@ extension DeviceFolder {
             arch: ["n72ap", "n45ap", "m68ap"].contains(board.rawValue) ? "armv6" : "armv7",
             name: DeviceModel(board: board.rawValue).shortName)
     }
+}
+
+extension DeviceFolder.Details {
+    /// The device has a modem, so a carrier name means something (the iPhones; not an iPod touch or iPad).
+    var isPhone: Bool { board?.facts.kind == .iPhone }
 }

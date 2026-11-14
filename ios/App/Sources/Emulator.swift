@@ -122,10 +122,18 @@ final class Emulator: ObservableObject {
             let ga = GuestAgent(qemu: qemu)
             agent = ga
             Task.detached {
-                // Give the guest a few seconds to boot before probing the agent
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
-                await ga.probe()
-                await ga.checkShellCapabilities()
+                // The guest takes ~10 s to reach a lit frame and its agent starts later still, so one probe three
+                // seconds in always misses. Keep asking (slowly) until it answers or five minutes have passed.
+                for attempt in 0..<60 {
+                    try? await Task.sleep(nanoseconds: attempt < 6 ? 3_000_000_000 : 6_000_000_000)
+                    if Task.isCancelled { return }
+                    await ga.probe()
+                    let status = await ga.status
+                    if status == .alive {
+                        await ga.checkShellCapabilities()
+                        return
+                    }
+                }
             }
             // The USB bridge too — the guest's USB core comes up ~100 s after boot.
             usb?.waitForGuest()

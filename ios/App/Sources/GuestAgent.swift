@@ -59,14 +59,24 @@ final class GuestAgent: ObservableObject {
     // MARK: - Public operations
 
     /// Polls the agent status and runs a ping to discover version + ops.
+    /// probe() is called every few seconds until the agent answers, so a "not here yet" is only logged once.
+    private var loggedAbsent = false
+
     func probe() async {
         let raw = agentStatusRaw()
         switch raw {
-        case 0: status = .absent; log("Agent not running in guest"); return
+        case 0:
+            status = .absent
+            if !loggedAbsent { loggedAbsent = true; log("Agent not running in guest yet; still watching") }
+            return
         case 1: status = .alive
-        case 2: status = .stale; log("Agent stale"); return
-        default: status = .unknown; log("Agent API not available"); return
+        case 2: status = .stale; if !loggedAbsent { loggedAbsent = true; log("Agent stale") }; return
+        default:
+            status = .unknown
+            if !loggedAbsent { loggedAbsent = true; log("Agent API not available in this emulator build") }
+            return
         }
+        loggedAbsent = false
 
         // Send a ping to get version and supported ops
         let id = UUID().uuidString
