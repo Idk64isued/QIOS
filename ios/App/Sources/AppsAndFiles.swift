@@ -353,76 +353,220 @@ struct HelpView: View {
     }
 }
 
-// MARK: - Carrier editor (sends via the agent's write-prefs, where it works)
+// MARK: - Carrier, calls and messages (the emulated baseband)
 
+/// The iPhones carry a fake cellular modem the emulator drives by property name, so the carrier in the status bar,
+/// the signal, an incoming call and an incoming text are all real to the guest rather than a picture of one. An
+/// iPod touch has no modem, which is why this screen only appears for a phone.
 struct CarrierEditor: View {
     let agent: GuestAgent?
+    let modem: ModemController
     let onDismiss: () -> Void
-    @State private var carrier = UserDefaults.standard.string(forKey: "carrier") ?? "LightTouch"
+
+    @State private var carrier = UserDefaults.standard.string(forKey: "carrier") ?? "Light Touch"
+    @State private var bars = UserDefaults.standard.object(forKey: "carrierBars") as? Int ?? 4
+    @State private var callNumber = UserDefaults.standard.string(forKey: "callNumber") ?? "+15551234567"
+    @State private var textNumber = UserDefaults.standard.string(forKey: "textNumber") ?? "+15551234567"
+    @State private var textBody = "Sent from the other side."
     @State private var message = ""
     @State private var busy = false
+    @StateObject private var keyboard = KeyboardInset()
 
     var body: some View {
         NavigationView {
             ZStack {
                 LTBackground()
-                VStack(spacing: 14) {
-                    ZStack {
-                        Circle().fill(Theme.accentGlow).frame(width: 90, height: 90).blur(radius: 28)
-                        Image(systemName: "antenna.radiowaves.left.and.right")
-                            .font(.system(size: 36, weight: .thin))
-                            .foregroundStyle(.white.opacity(0.9))
+                ScrollView {
+                    VStack(spacing: 18) {
+                        header
+                        networkCard
+                        if modem.isAvailable {
+                            callCard
+                            textCard
+                        } else {
+                            unavailableCard
+                        }
+                        if !message.isEmpty {
+                            Text(message)
+                                .font(.system(size: 12, design: .rounded))
+                                .foregroundStyle(Theme.secondaryText)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 24)
+                        }
+                        Spacer(minLength: 24)
                     }
-                    .padding(.top, 24)
-                    Text("Carrier Name")
-                        .font(.system(size: 20, weight: .bold, design: .rounded)).foregroundStyle(.white)
-                    Text("Shown in the status bar of the device. Takes effect on the next reboot.")
-                        .font(.system(size: 12, design: .rounded))
-                        .foregroundStyle(Theme.secondaryText)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
-                    TextField("", text: $carrier)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 15, design: .rounded))
-                        .foregroundStyle(.white)
-                        .padding(10)
-                        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        .padding(.horizontal, 24)
-                    Button {
-                        apply()
-                    } label: {
-                        Text(busy ? "Saving\u{2026}" : "Save")
-                            .font(.system(size: 15, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .background(Theme.accent, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 24)
-                    .disabled(busy || carrier.isEmpty)
-                    if !message.isEmpty {
-                        Text(message).font(.system(size: 12, design: .rounded)).foregroundStyle(Theme.secondaryText)
-                            .multilineTextAlignment(.center).padding(.horizontal, 32)
-                    }
-                    Spacer()
+                    .padding(.top, 12)
+                    .padding(.bottom, keyboard.height)
                 }
+                .scrollDismissesKeyboard(.interactively)
             }
             .navigationTitle("Carrier")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { onDismiss() }.foregroundStyle(Theme.accent)
+                    Button("Done") { onDismiss() }.foregroundStyle(Theme.accent)
                 }
             }
         }
         .navigationViewStyle(.stack)
+        .onAppear { modem.startPolling() }
+        .onDisappear { modem.stopPolling() }
     }
 
+    // MARK: Pieces
+
+    private var header: some View {
+        VStack(spacing: 8) {
+            ZStack {
+                Circle().fill(Theme.accentGlow).frame(width: 80, height: 80).blur(radius: 26)
+                Image(systemName: "antenna.radiowaves.left.and.right")
+                    .font(.system(size: 32, weight: .thin))
+                    .foregroundStyle(.white.opacity(0.9))
+            }
+            Text(modem.status?.summary ?? "No modem on this device")
+                .font(.system(size: 13, weight: .medium, design: .rounded))
+                .foregroundStyle(Theme.secondaryText)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+        }
+    }
+
+    private var networkCard: some View {
+        card("NETWORK", icon: "dot.radiowaves.up.forward") {
+            field("Name in the status bar", text: $carrier)
+            HStack {
+                Text("Signal")
+                    .font(.system(size: 13, design: .rounded))
+                    .foregroundStyle(Theme.secondaryText)
+                Spacer()
+                ForEach(1...5, id: \.self) { step in
+                    Button {
+                        bars = step
+                        UserDefaults.standard.set(step, forKey: "carrierBars")
+                        if modem.isAvailable { _ = modem.setSignal(bars: step) }
+                    } label: {
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill(step <= bars ? Color.white.opacity(0.9) : Color.white.opacity(0.16))
+                            .frame(width: 7, height: CGFloat(6 + step * 3))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.top, 2)
+            Button {
+                apply()
+            } label: {
+                Text(busy ? "Applying\u{2026}" : "Apply")
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 11)
+                    .background(Theme.accent, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(busy || carrier.isEmpty)
+            .padding(.top, 4)
+        }
+    }
+
+    private var callCard: some View {
+        card("CALLING", icon: "phone.fill") {
+            field("Calling from", text: $callNumber, keyboard: .phonePad)
+            HStack(spacing: 10) {
+                action("Ring the device", icon: "phone.arrow.down.left", tint: Theme.accent) {
+                    UserDefaults.standard.set(callNumber, forKey: "callNumber")
+                    message = modem.call(from: callNumber)
+                }
+                action("Hang up", icon: "phone.down.fill", tint: Color.white.opacity(0.12)) {
+                    message = modem.hangUpRemotely()
+                }
+            }
+            action("Answer from the other end", icon: "phone.fill", tint: Color.white.opacity(0.12)) {
+                message = modem.answerRemotely()
+            }
+            Text("The device has to be on the network before it can ring. Answer on the device itself, or use the button above to have the caller pick up.")
+                .font(.system(size: 11, design: .rounded))
+                .foregroundStyle(Theme.secondaryText)
+        }
+    }
+
+    private var textCard: some View {
+        card("TEXTING", icon: "message.fill") {
+            field("From", text: $textNumber, keyboard: .phonePad)
+            field("Message", text: $textBody)
+            action("Send to the device", icon: "paperplane.fill", tint: Theme.accent) {
+                UserDefaults.standard.set(textNumber, forKey: "textNumber")
+                message = modem.text(from: textNumber, body: textBody)
+            }
+        }
+    }
+
+    private var unavailableCard: some View {
+        card("CALLS AND MESSAGES", icon: "exclamationmark.circle") {
+            Text("This device has no modem, so calls and texts aren\u{2019}t available. The name above is still written to the device for its status bar.")
+                .font(.system(size: 12, design: .rounded))
+                .foregroundStyle(Theme.secondaryText)
+        }
+    }
+
+    // MARK: Building blocks
+
+    @ViewBuilder
+    private func card<Content: View>(_ title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(title, systemImage: icon)
+                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .foregroundStyle(Theme.secondaryText)
+            content()
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(.horizontal, 18)
+    }
+
+    private func field(_ title: String, text: Binding<String>, keyboard: UIKeyboardType = .default) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 11, design: .rounded))
+                .foregroundStyle(Theme.secondaryText)
+            TextField("", text: text)
+                .textFieldStyle(.plain)
+                .keyboardType(keyboard)
+                .autocorrectionDisabled()
+                .font(.system(size: 15, design: .rounded))
+                .foregroundStyle(.white)
+                .padding(10)
+                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+    }
+
+    private func action(_ title: String, icon: String, tint: Color, run: @escaping () -> Void) -> some View {
+        Button(action: run) {
+            Label(title, systemImage: icon)
+                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 11)
+                .background(tint, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(!modem.isAvailable)
+    }
+
+    // MARK: Applying the carrier
+
+    /// Sets it on the modem now (the status bar changes within a second) and, where the agent can write files,
+    /// also leaves it in the device's preferences so it survives a reboot.
     private func apply() {
         UserDefaults.standard.set(carrier, forKey: "carrier")
-        message = "Saved. The new carrier shows up after the next reboot."
-        // If the agent has shell tools we also write com.apple.carrier.plist right now.
+        if modem.isAvailable, modem.setCarrier(carrier) {
+            _ = modem.setSignal(bars: bars)
+            _ = modem.setRegistered(true)
+            modem.refresh()
+            message = "Applied. The status bar updates in a moment."
+        } else {
+            message = "Saved. The new carrier shows up after the next reboot."
+        }
         if let agent, agent.hasShell {
             busy = true
             Task {
@@ -435,10 +579,33 @@ struct CarrierEditor: View {
                         localURL: tmp,
                         guestPath: "/var/mobile/Library/Preferences/com.apple.carrier.plist")
                     try? FileManager.default.removeItem(at: tmp)
-                    message = "Saved and uploaded. The status bar updates after the next reboot."
                 }
                 busy = false
             }
         }
+    }
+}
+
+/// Lifts a scrolling form above the software keyboard.
+@MainActor
+final class KeyboardInset: ObservableObject {
+    @Published var height: CGFloat = 0
+    private var observers: [NSObjectProtocol] = []
+
+    init() {
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(forName: UIResponder.keyboardWillChangeFrameNotification, object: nil, queue: .main) { note in
+            let frame = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue ?? .zero
+            let screen = UIScreen.main.bounds.height
+            let visible = max(0, screen - frame.origin.y)
+            Task { @MainActor in self.height = visible }
+        })
+        observers.append(center.addObserver(forName: UIResponder.keyboardWillHideNotification, object: nil, queue: .main) { _ in
+            Task { @MainActor in self.height = 0 }
+        })
+    }
+
+    deinit {
+        for observer in observers { NotificationCenter.default.removeObserver(observer) }
     }
 }

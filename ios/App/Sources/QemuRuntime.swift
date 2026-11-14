@@ -66,6 +66,16 @@ final class QemuRuntime: @unchecked Sendable {
     lazy var audioStop = sym("qemu_ios_audio_capture_stop", (@convention(c) (UInt64) -> Void).self)
     lazy var deviceInfoAt = sym("qemu_ios_device_info_at", (@convention(c) (Int32) -> UnsafeRawPointer?).self)
 
+    // The fake cellular baseband (hw/misc/ios_baseband.c), on the iPhones only. Properties are set by name:
+    // carrier, signal-dbm, registered, sim-present, incoming-call, incoming-sms ("<number>|<text>"),
+    // remote-answer, remote-hangup. modem_status hands back a JSON snapshot (and refreshes it for next time).
+    lazy var modemSet = optionalSym(
+        "qemu_ios_ui_modem_set", (@convention(c) (UnsafePointer<CChar>, UnsafePointer<CChar>) -> Bool).self)
+    lazy var modemStatus = optionalSym(
+        "qemu_ios_ui_modem_status", (@convention(c) () -> UnsafeMutablePointer<CChar>?).self)
+    lazy var modemFree = optionalSym(
+        "qemu_ios_ui_modem_free", (@convention(c) (UnsafeMutablePointer<CChar>) -> Void).self)
+
     // Guest agent (contrib/it-agent, optional — absent in old builds)
     lazy var agentRequest = optionalSym("qemu_ios_agent_request", (@convention(c) (UnsafePointer<CChar>) -> Bool).self)
     lazy var agentCancel = optionalSym("qemu_ios_agent_cancel", (@convention(c) (UnsafePointer<CChar>) -> Void).self)

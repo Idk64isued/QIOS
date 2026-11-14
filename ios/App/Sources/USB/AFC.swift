@@ -41,7 +41,7 @@ enum AFCOp: UInt64 {
     case fileWrite = 16
     case fileClose = 20
     case makeDir = 9
-    case unlink = 24
+    case unlink = 8        // AFC_OP_REMOVE_PATH
 }
 
 enum AFCMode: UInt64 {

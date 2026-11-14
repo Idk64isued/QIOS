@@ -1,92 +1,99 @@
 import Foundation
 
-/// One USB session per emulator launch. Opens a TCP listener on 127.0.0.1 before the guest boots; the emulator is
-/// passed `usb-tcp-addr=127.0.0.1:<port>` in its machine options and dials in when its USB core comes up.
-/// Then the app can use this session to run USB operations on the device.
+/// One USB session per emulator launch: a listener the emulator dials into, and the host that drives whatever
+/// answers. The listener has to exist before the emulator starts, because `usb-tcp-addr` is a machine option.
 @MainActor
 final class USBSession: ObservableObject {
-    @Published private(set) var state: State = .waiting
-    @Published private(set) var lastError: String?
-
     enum State: Equatable {
-        case waiting           // listener up, guest hasn't connected yet
-        case connected         // QEMU dialled in; USB bridge running
-        case enumerated        // device descriptors read, mux interface found
-        case failed(String)
-    }
+        case waiting                // listening; the emulator has not dialled in
+        case bringingUp             // driving reset and enumeration (normal while the guest boots)
+        case ready                  // device configured and the mux is up
+        case retrying(String)       // last attempt failed; the bridge keeps trying
 
-    let transport: TCPUSBTransport
-    /// The address to pass to QEMU in its machine options (`usb-tcp-addr=`).
-    let qemuAddress: String
-    private var device: USBDevice?
-    private var mux: USBMuxClient?
-
-    init() throws {
-        let transport = try TCPUSBTransport()
-        self.transport = transport
-        let port = try transport.start()
-        self.qemuAddress = "127.0.0.1:\(port)"
-        LTMLog.note("usb: listening on \(qemuAddress)")
-    }
-
-    /// Call after the emulator has started. Blocks on a background thread until QEMU connects or times out.
-    func waitForGuest() {
-        Task.detached(priority: .utility) { [weak self] in
-            guard let self else { return }
-            // The guest needs ~100 s to program its USB core; be patient.
-            let ok = self.transport.waitForConnection(timeout: 180)
-            await MainActor.run { self.state = ok ? .connected : .failed("Guest never dialled the USB bridge.") }
-            guard ok else { return }
-            // Try enumeration — on a cold boot it may NAK for a while.
-            let device = USBDevice(transport: self.transport)
-            do {
-                try device.enumerate(timeout: 120)
-                await MainActor.run {
-                    self.device = device
-                    self.mux = USBMuxClient(device: device)
-                    self.state = .enumerated
-                    // It works on this device, so keep it on for the next boot too.
-                    UserDefaults.standard.set(true, forKey: "enableUSB")
-                }
-            } catch {
-                LTMLog.note("usb: enumerate failed: \(error)")
-                LTMLog.note("usb: the bridge is off again for the next boot. If this boot is stuck, close the app fully and reopen it.")
-                await MainActor.run { self.lastError = "\(error)"; self.state = .failed("USB enumeration failed: \(error)") }
+        var text: String {
+            switch self {
+            case .waiting: return "Waiting for the device"
+            case .bringingUp: return "Bringing the device up"
+            case .ready: return "Connected"
+            case .retrying: return "Trying again"
             }
         }
     }
 
-    func stop() {
-        transport.stop()
+    @Published private(set) var state: State = .waiting
+    @Published private(set) var detail: String?
+
+    let bridge: USBHostBridge
+    /// What the emulator is told to dial.
+    let qemuAddress: String
+
+    init() throws {
+        let bridge = try USBHostBridge()
+        self.bridge = bridge
+        self.qemuAddress = bridge.qemuAddress
+        bridge.onStatus = { [weak self] status in
+            Task { @MainActor in self?.apply(status) }
+        }
+    }
+
+    private func apply(_ status: USBHostBridge.Status) {
+        switch status {
+        case .waiting: state = .waiting
+        case .bringingUp: state = .bringingUp
+        case .running:
+            state = .ready
+            detail = bridge.deviceSummary
+            // The device came up, so this boot was not a strike (see Emulator.boot).
+            UserDefaults.standard.set(0, forKey: "usbStrikes")
+        case .retrying(let why):
+            state = .retrying(why)
+            detail = why
+        }
+    }
+
+    /// Starts listening and driving. Safe to call before the emulator exists.
+    func start() { bridge.start() }
+
+    func stop() { bridge.stop() }
+
+    /// Asks the device who it is over lockdown. Proves the whole path end to end.
+    func probe() async -> String? {
+        let bridge = self.bridge
+        return await Task.detached(priority: .utility) { () -> String? in
+            do {
+                return try bridge.probeLockdown()
+            } catch {
+                LTMLog.note("usb: lockdown probe failed: \(error)")
+                return nil
+            }
+        }.value
     }
 
     // MARK: - IPA install over USB
 
-    /// Install an IPA, no guest agent needed. Uploads via AFC to PublicStaging/<name>.ipa, then calls
-    /// installation_proxy. Returns once the device reports Status=Complete.
-    nonisolated func install(ipa url: URL, onProgress: @escaping @Sendable (Double, String) -> Void) async throws {
-        try await Task.detached { [weak self] in
-            guard let self else { throw USBInstallerError.sessionGone }
-            guard let device = await self.device, let mux = await self.mux else {
-                throw USBInstallerError.notReady
-            }
-
-            // 1. lockdown on 62078
+    /// Uploads an IPA with AFC and installs it with installation_proxy, the way libimobiledevice does it.
+    ///
+    /// lockdown gates most services behind a pairing record and, from iOS 4 on, an SSL session. A prepared image
+    /// here has never been paired with anything, so when the device asks for that this throws and the caller falls
+    /// back to the guest agent. A jailbroken image is the good case: its afc2 service runs at / and takes an
+    /// unauthenticated channel.
+    func install(ipa url: URL, onProgress: @escaping @Sendable (Double, String) -> Void) async throws {
+        let bridge = self.bridge
+        try await Task.detached(priority: .userInitiated) {
             onProgress(0.02, "Opening lockdown\u{2026}")
-            let lockdownPipe = try mux.connect(toPort: 62078)
+            let lockdownPipe = try bridge.mux.connect(toPort: 62078, timeout: 30)
+            defer { lockdownPipe.close() }
             let lockdown = LockdownClient(pipe: lockdownPipe)
             try lockdown.query()
 
-            // 2. afc service
+            // afc2 (the jailbreak's, rooted at /) if it is there, else the stock one.
             onProgress(0.05, "Starting afc\u{2026}")
-            let afcService = try lockdown.startService("com.apple.afc")
+            let afcService = try lockdown.startAnyService(["com.apple.afc2", "com.apple.afc"])
             if afcService.enableSSL { throw USBInstallerError.needsSSL(afcService.name) }
-            // Each service goes on its own mux channel.
-            let afcPipe = try mux.connect(toPort: afcService.port)
+            let afcPipe = try bridge.mux.connect(toPort: afcService.port, timeout: 30)
+            defer { afcPipe.close() }
             let afc = AFCClient(pipe: afcPipe)
-            _ = device  // keep the handle alive for the duration
 
-            // 3. upload to PublicStaging/<name>.ipa
             let remote = "PublicStaging/" + url.lastPathComponent
             try? afc.makeDir("PublicStaging")
             onProgress(0.10, "Uploading \(url.lastPathComponent)\u{2026}")
@@ -94,11 +101,11 @@ final class USBSession: ObservableObject {
                 onProgress(0.10 + fraction * 0.6, "Uploading " + String(format: "%.0f", fraction * 100) + "%")
             }
 
-            // 4. installation_proxy
             onProgress(0.72, "Starting installation_proxy\u{2026}")
             let proxyService = try lockdown.startService("com.apple.mobile.installation_proxy")
             if proxyService.enableSSL { throw USBInstallerError.needsSSL(proxyService.name) }
-            let proxyPipe = try mux.connect(toPort: proxyService.port)
+            let proxyPipe = try bridge.mux.connect(toPort: proxyService.port, timeout: 30)
+            defer { proxyPipe.close() }
             let proxy = InstallProxyClient(pipe: proxyPipe)
             try proxy.install(afcPath: remote) { fraction, status in
                 onProgress(0.75 + fraction * 0.25, status ?? "Installing\u{2026}")
@@ -109,15 +116,15 @@ final class USBSession: ObservableObject {
 }
 
 enum USBInstallerError: Error, CustomStringConvertible {
-    case sessionGone
     case notReady
     case needsSSL(String)
+    case needsPairing(String)
 
     var description: String {
         switch self {
-        case .sessionGone: return "The USB session ended."
-        case .notReady: return "The USB bridge isn\u{2019}t ready yet. Give the device a minute after boot."
-        case .needsSSL(let n): return "\(n) needs an SSL-paired channel; this device needs to be paired on a Mac first."
+        case .notReady: return "The USB bridge isn\u{2019}t up yet. Give the device a minute after boot."
+        case .needsSSL(let name): return "\(name) wants an SSL-paired channel, which this bridge can\u{2019}t do yet."
+        case .needsPairing(let m): return "The device wants to be paired first (\(m))."
         }
     }
 }

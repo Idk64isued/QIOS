@@ -1,151 +1,563 @@
 import Foundation
 
-// usbmux over the two bulk endpoints exposed by USBDevice.
+// usbmux as the DEVICE speaks it, over the two bulk endpoints.
 //
-// usbmux's wire protocol (per libusbmuxd / libimobiledevice):
-//   struct usbmux_header {
-//       uint32_t length;    // includes this header
-//       uint32_t version;   // 1 = XML-plist body, 2 = binary-plist body
-//       uint32_t message;   // 8 = plist
-//       uint32_t tag;       // caller-chosen correlation id
-//   } __attribute__((packed));
+// This is not the protocol a program speaks to a usbmuxd daemon on a desktop (length/version/message/tag plus a
+// plist). On the wire to the device it is Apple's multiplexer: a header, a version handshake, and then real TCP
+// segments carrying each service's bytes.
 //
-// On top of that: plist messages. We stay on binary plist (version 2).
-// Commands we actually need:
-//   MessageType=Connect, DeviceID=<id>, PortNumber=<big-endian port>
-//     Opens a channel; after SUCCESS, the mux pipe IS the service pipe (no more mux framing).
-//   MessageType=ReadBUID, ReadPairRecord — not needed for unauthenticated services.
+//     struct mux_header { uint32 protocol; uint32 length; uint32 magic; uint16 tx_seq; uint16 rx_seq; }
 //
-// On this USB transport there is no DeviceID (the mux is the device itself). We send 0 for DeviceID, which is what
-// the spec calls "the device on this channel".
+// All of it big-endian. `length` counts the header too. The magic and the two sequence numbers exist only once the
+// device has agreed to protocol version 2; before that the header is the first 8 bytes alone. The host opens with a
+// version packet (major 2, minor 0), the device answers with the version it wants, and for version 2 the host then
+// sends a one-byte setup packet (0x07). After that each connection is a TCP stream: SYN, SYN|ACK, ACK, then data
+// with the usual sequence and acknowledgement bookkeeping, and a window the device advertises in units of 256 bytes.
+//
+// The guest also matters to the bridge's health: AppleUSBDeviceMux restarts the whole USB stack a few seconds after
+// activation if the host never says anything, so the version packet and then continuous polling of the bulk IN
+// endpoint are not optional extras — they are what keeps the link up. USBHostBridge does the polling; this file
+// does the framing.
 
 enum USBMuxError: Error, CustomStringConvertible {
+    case notReady
     case badFrame(String)
-    case notConnected
-    case serverError(code: Int, message: String)
+    case versionRejected(UInt32)
+    case refused(String)
+    case closed
+    case timeout(String)
+
     var description: String {
         switch self {
-        case .badFrame(let m): return "usbmux: \(m)"
-        case .notConnected: return "usbmux: connect refused"
-        case .serverError(let c, let m): return "usbmux: server returned \(c) \(m)"
+        case .notReady: return "the mux is not up yet"
+        case .badFrame(let m): return "mux: \(m)"
+        case .versionRejected(let v): return "mux: the guest asked for protocol v\(v)"
+        case .refused(let m): return "mux: connection refused (\(m))"
+        case .closed: return "mux: the channel closed"
+        case .timeout(let m): return "mux: timed out \(m)"
         }
     }
 }
 
-final class USBMuxClient {
-    let device: USBDevice
-    private var nextTag: UInt32 = 1
-
-    init(device: USBDevice) { self.device = device }
-
-    /// Builds a usbmux frame around a plist body.
-    static func frame(message: UInt32 = 8, version: UInt32 = 1, tag: UInt32, body: Data) -> Data {
-        var header = Data(count: 16)
-        let length = UInt32(16 + body.count)
-        header.withUnsafeMutableBytes { bytes in
-            bytes.storeBytes(of: length.littleEndian, toByteOffset: 0, as: UInt32.self)
-            bytes.storeBytes(of: version.littleEndian, toByteOffset: 4, as: UInt32.self)
-            bytes.storeBytes(of: message.littleEndian, toByteOffset: 8, as: UInt32.self)
-            bytes.storeBytes(of: tag.littleEndian, toByteOffset: 12, as: UInt32.self)
-        }
-        header.append(body)
-        return header
-    }
-
-    /// Sends one usbmux request + reads one reply. Used for the pre-Connect commands. After Connect succeeds the
-    /// `Pipe` below takes over the two endpoints and no more mux framing is used.
-    func request(_ plist: [String: Any]) throws -> (header: (version: UInt32, message: UInt32, tag: UInt32), body: Data) {
-        let bodyData: Data
-        // The guest's usbmuxd expects plist version 1 (XML) for most requests — binary plist is fine too on 3.x+.
-        // We use XML for maximum compatibility.
-        bodyData = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
-        let tag = nextTag; nextTag &+= 1
-        let out = Self.frame(message: 8, version: 1, tag: tag, body: bodyData)
-        try device.bulkOut(out)
-        // Mux writes expect a ZLP after any OUT whose length is a multiple of wMaxPacketSize (iOS 4's reassembler needs it).
-        if out.count % Int(device.mux?.maxPacketOut ?? 64) == 0 { try? device.bulkOutZLP() }
-
-        // Read one frame. Payload can arrive over several bulk IN packets.
-        var buffer = Data()
-        let want = 16
-        while buffer.count < want {
-            let next = try device.bulkIn(size: 16384)
-            if next.isEmpty { break }
-            buffer.append(next)
-        }
-        guard buffer.count >= want else { throw USBMuxError.badFrame("short header") }
-        let length = buffer.withUnsafeBytes { $0.load(fromByteOffset: 0, as: UInt32.self).littleEndian }
-        let version = buffer.withUnsafeBytes { $0.load(fromByteOffset: 4, as: UInt32.self).littleEndian }
-        let message = buffer.withUnsafeBytes { $0.load(fromByteOffset: 8, as: UInt32.self).littleEndian }
-        let replyTag = buffer.withUnsafeBytes { $0.load(fromByteOffset: 12, as: UInt32.self).littleEndian }
-        while buffer.count < Int(length) {
-            let next = try device.bulkIn(size: 16384)
-            if next.isEmpty { break }
-            buffer.append(next)
-        }
-        let payload = Data(buffer.dropFirst(16).prefix(Int(length) - 16))
-        return ((version, message, replyTag), payload)
-    }
-
-    /// Opens a TCP-like channel to `port` on the guest. Returns a pipe that reads/writes raw bytes; usbmux framing
-    /// is gone from this point on.
-    func connect(toPort port: UInt16) throws -> USBMuxPipe {
-        // PortNumber must be sent in big-endian inside the plist (usbmuxd quirk from the days when it was a straight
-        // uint16 on the wire).
-        let beSwap = Int((UInt16(port) >> 8) | (UInt16(port) << 8) & 0xFF00)
-        let request: [String: Any] = [
-            "MessageType": "Connect",
-            "DeviceID": 0,
-            "PortNumber": beSwap,
-            "ProgName": "LightTouch",
-            "ClientVersionString": "LightTouch-iOS"
-        ]
-        let (_, body) = try self.request(request)
-        guard let plist = try PropertyListSerialization.propertyList(from: body, format: nil) as? [String: Any] else {
-            throw USBMuxError.badFrame("reply not a plist")
-        }
-        let number = (plist["Number"] as? Int) ?? ((plist["Number"] as? NSNumber)?.intValue ?? -1)
-        if number != 0 {
-            let message = (plist["ErrorMessage"] as? String) ?? "connect failed"
-            throw USBMuxError.serverError(code: number, message: message)
-        }
-        return USBMuxPipe(device: device)
-    }
+private enum MuxProtocol: UInt32 {
+    case version = 0
+    case control = 1
+    case setup = 2
+    case tcp = 6
 }
 
-/// A duplex byte pipe over the mux IN/OUT bulk endpoints after a successful Connect. Reads and writes raw bytes with
-/// no framing of their own.
-final class USBMuxPipe {
-    let device: USBDevice
-    private var pending = Data()
-    private var closed = false
+private struct TCPFlags {
+    static let fin: UInt8 = 0x01
+    static let syn: UInt8 = 0x02
+    static let rst: UInt8 = 0x04
+    static let ack: UInt8 = 0x10
+}
 
-    init(device: USBDevice) { self.device = device }
+/// The multiplexer. One per device. Fed by the bridge thread, used from service threads.
+final class MuxDevice: @unchecked Sendable {
+    /// What a connection's bytes are read and written through; the shape Lockdown/AFC/InstallProxy expect.
+    typealias Pipe = USBMuxPipe
 
-    /// Blocks until `count` bytes have been read (or the stream closes short).
-    func read(_ count: Int, timeout: TimeInterval = 20) throws -> Data {
-        while pending.count < count, !closed {
-            let next = try device.bulkIn(size: 16384, timeout: timeout)
-            if next.isEmpty { closed = true; break }
-            pending.append(next)
+    private let condition = NSCondition()
+    private var version: UInt32 = 0
+    private var active = false
+    private var failure: Error?
+    private var inbound = Data()
+    private var outbound: [Data] = []
+    private var txSeq: UInt16 = 0
+    private var rxSeq: UInt16 = 0xFFFF
+    private var connections: [UInt16: USBMuxPipe] = [:]
+    private var nextSourcePort: UInt16 = 49152
+    /// Biggest TCP payload we put in one mux packet. Must leave room for the headers inside one transaction.
+    private var payloadLimit = 16384
+
+    /// How much the device will take in one transaction (from the transport's hello).
+    func setTransactionLimit(_ bytes: Int) {
+        condition.lock()
+        payloadLimit = max(512, min(bytes - 64, 16384))
+        condition.unlock()
+    }
+
+    // MARK: - Lifecycle
+
+    /// Clears everything for a fresh link and queues the opening version packet.
+    func restart() {
+        condition.lock()
+        version = 0
+        active = false
+        failure = nil
+        inbound.removeAll(keepingCapacity: true)
+        outbound.removeAll(keepingCapacity: true)
+        txSeq = 0
+        rxSeq = 0xFFFF
+        let open = connections
+        connections.removeAll()
+        condition.broadcast()
+        condition.unlock()
+        for (_, pipe) in open { pipe.linkDropped() }
+
+        // The version request: major 2, minor 0, padding 0. This is also the packet QEMU's own built-in host sends,
+        // so it is exactly what the guest's mux expects to hear first.
+        var body = Data()
+        body.appendBig(UInt32(2))
+        body.appendBig(UInt32(0))
+        body.appendBig(UInt32(0))
+        enqueue(packet(.version, extra: Data(), payload: body))
+    }
+
+    /// True once the version handshake is done and connections can be opened.
+    var isActive: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return active
+    }
+
+    func waitUntilActive(timeout: TimeInterval) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        condition.lock()
+        defer { condition.unlock() }
+        while !active {
+            if let failure { throw failure }
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining <= 0 { throw USBMuxError.timeout("waiting for the guest's mux") }
+            condition.wait(until: Date(timeIntervalSinceNow: min(remaining, 0.25)))
         }
-        let take = min(count, pending.count)
-        let out = Data(pending.prefix(take))
-        pending.removeFirst(take)
+    }
+
+    /// Marks the link as gone: every pipe fails, and the next restart() starts over.
+    func linkDropped(_ error: Error) {
+        condition.lock()
+        active = false
+        failure = error
+        let open = connections
+        connections.removeAll()
+        outbound.removeAll(keepingCapacity: true)
+        inbound.removeAll(keepingCapacity: true)
+        condition.broadcast()
+        condition.unlock()
+        for (_, pipe) in open { pipe.linkDropped() }
+    }
+
+    // MARK: - The bridge's two entry points
+
+    /// The next complete bulk packet to write, or nil when there is nothing to send.
+    func nextOutbound() -> Data? {
+        condition.lock()
+        defer { condition.unlock() }
+        return outbound.isEmpty ? nil : outbound.removeFirst()
+    }
+
+    /// Bytes that came back from a bulk IN poll. A mux packet can span several polls and a poll can carry several
+    /// packets, so this buffers and parses by the header's length.
+    func feed(_ data: Data) {
+        condition.lock()
+        inbound.append(data)
+        var packets: [(UInt32, Data)] = []
+        while inbound.count >= 8 {
+            let proto = inbound.readBig32(0)
+            let length = Int(inbound.readBig32(4))
+            // A length that cannot be right means the stream is misframed; nothing good comes of guessing.
+            if length < 8 || length > 1 << 20 {
+                let bad = USBMuxError.badFrame("a packet claims \(length) bytes")
+                condition.unlock()
+                LTMLog.note("usb: \(bad)")
+                linkDropped(bad)
+                return
+            }
+            if inbound.count < length { break }
+            let body = Data(inbound.prefix(length))
+            inbound.removeFirst(length)
+            packets.append((proto, body))
+        }
+        condition.unlock()
+        for (proto, body) in packets { handle(muxProtocol: proto, packet: body) }
+    }
+
+    // MARK: - Inbound
+
+    private func handle(muxProtocol proto: UInt32, packet: Data) {
+        condition.lock()
+        let headerLength = version >= 2 ? 16 : 8
+        if version >= 2, packet.count >= 16 {
+            rxSeq = UInt16(truncatingIfNeeded: packet.readBig32(12) >> 16)
+        }
+        condition.unlock()
+        guard packet.count >= headerLength else { return }
+        let payload = Data(packet.dropFirst(headerLength))
+
+        switch MuxProtocol(rawValue: proto) {
+        case .version:
+            handleVersion(payload)
+        case .control:
+            // The device's own log line. Worth seeing once, not worth flooding the log with.
+            let text = String(data: payload, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let text, !text.isEmpty { LTMLog.note("usb: guest mux says: \(text.prefix(200))") }
+        case .tcp:
+            handleTCP(payload)
+        case .setup, .none:
+            break
+        }
+    }
+
+    private func handleVersion(_ payload: Data) {
+        guard payload.count >= 4 else { return }
+        let major = payload.readBig32(0)
+        guard major == 1 || major == 2 else {
+            LTMLog.note("usb: \(USBMuxError.versionRejected(major))")
+            linkDropped(USBMuxError.versionRejected(major))
+            return
+        }
+        condition.lock()
+        version = major
+        active = true
+        condition.broadcast()
+        condition.unlock()
+        // Version 2 wants a one-byte setup packet before anything else, and it resets both sequence counters.
+        if major >= 2 {
+            condition.lock()
+            txSeq = 0
+            rxSeq = 0xFFFF
+            condition.unlock()
+            enqueue(packet(.setup, extra: Data(), payload: Data([0x07])))
+        }
+        LTMLog.note("usb: mux up (protocol v\(major))")
+    }
+
+    private func handleTCP(_ payload: Data) {
+        guard payload.count >= 20 else { return }
+        // The device's destination port is our source port.
+        let ourPort = UInt16(truncatingIfNeeded: payload.readBig32(0) & 0xffff)
+        let deviceSeq = payload.readBig32(4)
+        let deviceAck = payload.readBig32(8)
+        let flags = payload[payload.startIndex + 13]
+        let window = UInt32(UInt16(truncatingIfNeeded: payload.readBig32(12) & 0xffff)) << 8
+        let body = Data(payload.dropFirst(20))
+
+        condition.lock()
+        guard let pipe = connections[ourPort] else {
+            condition.unlock()
+            return
+        }
+        condition.unlock()
+
+        if flags & TCPFlags.rst != 0 {
+            pipe.remoteReset()
+            removeConnection(ourPort)
+            return
+        }
+        if pipe.connecting {
+            guard flags & (TCPFlags.syn | TCPFlags.ack) == (TCPFlags.syn | TCPFlags.ack) else {
+                pipe.remoteReset()
+                removeConnection(ourPort)
+                return
+            }
+            pipe.accepted(deviceSeq: deviceSeq, deviceAck: deviceAck, window: window)
+            sendTCP(pipe, flags: TCPFlags.ack, payload: Data())
+            return
+        }
+        pipe.noteRemote(deviceSeq: deviceSeq, deviceAck: deviceAck, window: window)
+        if !body.isEmpty {
+            pipe.received(body)
+            // Acknowledge at once: the device's window does not reopen until we do, and a stalled window looks
+            // exactly like a hung service.
+            sendTCP(pipe, flags: TCPFlags.ack, payload: Data())
+        }
+        if flags & TCPFlags.fin != 0 {
+            pipe.remoteClosed()
+        }
+    }
+
+    // MARK: - Outbound
+
+    /// Opens a TCP channel to `port` on the guest and returns its byte pipe.
+    func connect(toPort port: UInt16, timeout: TimeInterval = 20) throws -> USBMuxPipe {
+        try waitUntilActive(timeout: timeout)
+        condition.lock()
+        let source = nextSourcePort
+        nextSourcePort = nextSourcePort == 65535 ? 49152 : nextSourcePort + 1
+        let pipe = USBMuxPipe(device: self, sourcePort: source, devicePort: port)
+        connections[source] = pipe
+        condition.unlock()
+
+        sendTCP(pipe, flags: TCPFlags.syn, payload: Data())
+        do {
+            try pipe.waitUntilConnected(timeout: timeout)
+        } catch {
+            removeConnection(source)
+            throw error
+        }
+        return pipe
+    }
+
+    func close(_ pipe: USBMuxPipe) {
+        guard pipe.isOpen else { return }
+        sendTCP(pipe, flags: TCPFlags.fin | TCPFlags.ack, payload: Data())
+        pipe.localClosed()
+        removeConnection(pipe.sourcePort)
+    }
+
+    private func removeConnection(_ port: UInt16) {
+        condition.lock()
+        connections.removeValue(forKey: port)
+        condition.unlock()
+    }
+
+    /// Writes `data` to a connected pipe, in chunks that respect both the transaction limit and the device's window.
+    func send(_ pipe: USBMuxPipe, data payload: Data, timeout: TimeInterval) throws {
+        // Re-index: a Data that arrived as a slice has a non-zero startIndex, and subdata(in:) takes absolute
+        // indices, so slicing one without this reads the wrong bytes.
+        let data = payload.startIndex == 0 ? payload : Data(payload)
+        var offset = 0
+        let deadline = Date().addingTimeInterval(timeout)
+        while offset < data.count {
+            condition.lock()
+            let limit = payloadLimit
+            condition.unlock()
+            // Wait for room in the device's receive window.
+            while !pipe.canSend(bytes: 1) {
+                if !pipe.isOpen { throw USBMuxError.closed }
+                if Date() > deadline { throw USBMuxError.timeout("waiting for the guest's window") }
+                usleep(2000)
+            }
+            let room = max(1, min(limit, pipe.sendableBytes()))
+            let end = min(offset + room, data.count)
+            let chunk = data.subdata(in: offset..<end)
+            sendTCP(pipe, flags: TCPFlags.ack, payload: chunk)
+            pipe.didSend(chunk.count)
+            offset = end
+        }
+    }
+
+    private func sendTCP(_ pipe: USBMuxPipe, flags: UInt8, payload: Data) {
+        let state = pipe.sequenceState()
+        var header = Data()
+        header.appendBig(UInt16(pipe.sourcePort))
+        header.appendBig(UInt16(pipe.devicePort))
+        header.appendBig(state.sequence)
+        header.appendBig(state.acknowledgement)
+        header.append(0x50)                      // data offset 5 words, no options
+        header.append(flags)
+        header.appendBig(UInt16(truncatingIfNeeded: USBMuxPipe.receiveWindow >> 8))
+        header.appendBig(UInt16(0))              // checksum: the mux does not use one
+        header.appendBig(UInt16(0))              // urgent pointer
+        enqueue(packet(.tcp, extra: header, payload: payload))
+    }
+
+    /// Builds one complete mux packet.
+    private func packet(_ proto: MuxProtocol, extra: Data, payload: Data) -> Data {
+        condition.lock()
+        let useSequences = version >= 2
+        let headerLength = useSequences ? 16 : 8
+        let sequence = txSeq
+        let acknowledgement = rxSeq
+        if useSequences { txSeq = txSeq &+ 1 }
+        condition.unlock()
+
+        var out = Data()
+        out.appendBig(proto.rawValue)
+        out.appendBig(UInt32(headerLength + extra.count + payload.count))
+        if useSequences {
+            out.appendBig(UInt32(0xfeed_face))
+            out.appendBig(sequence)
+            out.appendBig(acknowledgement)
+        }
+        out.append(extra)
+        out.append(payload)
         return out
     }
 
-    /// Writes `data` as one or more bulk packets; appends a ZLP when the total is a multiple of the OUT endpoint's
-    /// wMaxPacketSize (iOS 4's mux needs it as a message terminator).
-    func write(_ data: Data, timeout: TimeInterval = 20) throws {
-        guard let mux = device.mux else { throw USBEnumError.noMuxInterface }
-        let max = Int(mux.maxPacketOut)
-        var off = 0
-        while off < data.count {
-            let end = min(off + Int(device.transport.hellomax), data.count)
-            try device.bulkOut(data.subdata(in: off..<end), timeout: timeout)
-            off = end
+    private func enqueue(_ data: Data) {
+        condition.lock()
+        outbound.append(data)
+        condition.broadcast()
+        condition.unlock()
+    }
+}
+
+/// One TCP-over-mux channel, as a blocking byte pipe. Lockdown, AFC and installation_proxy all talk through this.
+final class USBMuxPipe: @unchecked Sendable {
+    /// What we advertise to the device; it is sent in units of 256 bytes, as the mux expects.
+    static let receiveWindow: UInt32 = 131_072
+
+    let sourcePort: UInt16
+    let devicePort: UInt16
+    private weak var device: MuxDevice?
+    private let condition = NSCondition()
+    private var buffer = Data()
+    private var sequence: UInt32 = 0
+    private var acknowledgement: UInt32 = 0
+    private var deviceAcknowledged: UInt32 = 0
+    private var deviceWindow: UInt32 = 32768
+    private enum State { case connecting, open, closedByPeer, closed, reset }
+    private var state: State = .connecting
+
+    init(device: MuxDevice, sourcePort: UInt16, devicePort: UInt16) {
+        self.device = device
+        self.sourcePort = sourcePort
+        self.devicePort = devicePort
+    }
+
+    var connecting: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return state == .connecting
+    }
+
+    var isOpen: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return state == .open || state == .connecting
+    }
+
+    func sequenceState() -> (sequence: UInt32, acknowledgement: UInt32) {
+        condition.lock()
+        defer { condition.unlock() }
+        return (sequence, acknowledgement)
+    }
+
+    func canSend(bytes: Int) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        guard state == .open else { return state == .connecting }
+        let outstanding = sequence &- deviceAcknowledged
+        return UInt32(bytes) + outstanding <= max(deviceWindow, 1024)
+    }
+
+    func sendableBytes() -> Int {
+        condition.lock()
+        defer { condition.unlock() }
+        let outstanding = sequence &- deviceAcknowledged
+        let window = max(deviceWindow, 1024)
+        return window > outstanding ? Int(window - outstanding) : 0
+    }
+
+    func didSend(_ count: Int) {
+        condition.lock()
+        sequence = sequence &+ UInt32(count)
+        condition.unlock()
+    }
+
+    // MARK: - Events from the mux
+
+    func accepted(deviceSeq: UInt32, deviceAck: UInt32, window: UInt32) {
+        condition.lock()
+        sequence = sequence &+ 1
+        acknowledgement = deviceSeq &+ 1
+        deviceAcknowledged = deviceAck
+        deviceWindow = window
+        state = .open
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func noteRemote(deviceSeq: UInt32, deviceAck: UInt32, window: UInt32) {
+        condition.lock()
+        deviceAcknowledged = deviceAck
+        deviceWindow = window
+        condition.unlock()
+    }
+
+    func received(_ data: Data) {
+        condition.lock()
+        buffer.append(data)
+        acknowledgement = acknowledgement &+ UInt32(data.count)
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func remoteClosed() {
+        condition.lock()
+        if state == .open { state = .closedByPeer }
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func remoteReset() {
+        condition.lock()
+        state = .reset
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func localClosed() {
+        condition.lock()
+        state = .closed
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func linkDropped() {
+        condition.lock()
+        state = .reset
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func waitUntilConnected(timeout: TimeInterval) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        condition.lock()
+        defer { condition.unlock() }
+        while state == .connecting {
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining <= 0 { throw USBMuxError.timeout("opening port \(devicePort)") }
+            condition.wait(until: Date(timeIntervalSinceNow: min(remaining, 0.25)))
         }
-        if data.count > 0, data.count % max == 0 { try? device.bulkOutZLP() }
+        switch state {
+        case .open, .closedByPeer: return
+        case .reset: throw USBMuxError.refused("the guest reset port \(devicePort)")
+        default: throw USBMuxError.closed
+        }
+    }
+
+    // MARK: - The byte pipe
+
+    /// Blocks until `count` bytes are in hand. A short return means the channel closed first.
+    func read(_ count: Int, timeout: TimeInterval = 20) throws -> Data {
+        guard count > 0 else { return Data() }
+        let deadline = Date().addingTimeInterval(timeout)
+        condition.lock()
+        defer { condition.unlock() }
+        while buffer.count < count {
+            if state == .reset { throw USBMuxError.closed }
+            if state == .closed || state == .closedByPeer { break }
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining <= 0 { throw USBMuxError.timeout("reading \(count) bytes from port \(devicePort)") }
+            condition.wait(until: Date(timeIntervalSinceNow: min(remaining, 0.25)))
+        }
+        let take = min(count, buffer.count)
+        let out = Data(buffer.prefix(take))
+        buffer.removeFirst(take)
+        return out
+    }
+
+    func write(_ data: Data, timeout: TimeInterval = 20) throws {
+        guard let device else { throw USBMuxError.closed }
+        guard isOpen else { throw USBMuxError.closed }
+        try device.send(self, data: data, timeout: timeout)
+    }
+
+    func close() { device?.close(self) }
+}
+
+// MARK: - Big-endian helpers
+
+extension Data {
+    fileprivate mutating func appendBig(_ value: UInt32) {
+        append(UInt8(truncatingIfNeeded: value >> 24))
+        append(UInt8(truncatingIfNeeded: value >> 16))
+        append(UInt8(truncatingIfNeeded: value >> 8))
+        append(UInt8(truncatingIfNeeded: value))
+    }
+
+    fileprivate mutating func appendBig(_ value: UInt16) {
+        append(UInt8(truncatingIfNeeded: value >> 8))
+        append(UInt8(truncatingIfNeeded: value))
+    }
+
+    fileprivate func readBig32(_ offset: Int) -> UInt32 {
+        let base = startIndex + offset
+        guard base + 3 < endIndex else { return 0 }
+        return (UInt32(self[base]) << 24) | (UInt32(self[base + 1]) << 16)
+            | (UInt32(self[base + 2]) << 8) | UInt32(self[base + 3])
     }
 }

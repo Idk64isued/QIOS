@@ -17,12 +17,15 @@ enum LockdownError: Error, CustomStringConvertible {
     case wrongType(String)
     case serviceError(String)
     case requiresSSL(String)
+    case needsPairing(String)
     var description: String {
         switch self {
         case .badReply(let m): return "lockdown: \(m)"
         case .wrongType(let got): return "lockdown: not lockdown (type=\(got))"
         case .serviceError(let m): return "lockdown: service error: \(m)"
         case .requiresSSL(let name): return "lockdown: \(name) requires SSL (device pairing not supported here yet)"
+        case .needsPairing(let why):
+            return "lockdown: the device wants to be paired before it hands out services (\(why))"
         }
     }
 }
@@ -45,12 +48,50 @@ final class LockdownClient {
 
     func startService(_ name: String, timeout: TimeInterval = 10) throws -> ServiceInfo {
         let reply = try request(["Request": "StartService", "Service": name], timeout: timeout)
-        if let err = reply["Error"] as? String { throw LockdownError.serviceError(err) }
+        if let err = reply["Error"] as? String { throw Self.serviceFailure(err, service: name) }
         guard let port = (reply["Port"] as? Int) ?? (reply["Port"] as? NSNumber)?.intValue else {
             throw LockdownError.badReply("StartService returned no Port")
         }
         let enableSSL = (reply["EnableServiceSSL"] as? Bool) ?? false
         return ServiceInfo(name: name, port: UInt16(port), enableSSL: enableSSL)
+    }
+
+    /// GetValue for one key, as a string (numbers and booleans are described rather than typed).
+    func value(_ key: String, domain: String? = nil, timeout: TimeInterval = 10) throws -> String {
+        var request: [String: Any] = ["Request": "GetValue", "Key": key]
+        if let domain { request["Domain"] = domain }
+        let reply = try self.request(request, timeout: timeout)
+        if let error = reply["Error"] as? String { throw Self.serviceFailure(error, service: "GetValue " + key) }
+        guard let value = reply["Value"] else { throw LockdownError.badReply("GetValue \(key) returned nothing") }
+        if let text = value as? String { return text }
+        if let number = value as? NSNumber { return number.stringValue }
+        if let data = value as? Data { return "\(data.count) bytes" }
+        return "\(value)"
+    }
+
+    /// Starts the first of `names` the device will give us. Used to prefer the jailbreak's afc2 over stock afc.
+    func startAnyService(_ names: [String], timeout: TimeInterval = 10) throws -> ServiceInfo {
+        var last: Error = LockdownError.serviceError("no service names given")
+        for name in names {
+            do {
+                return try startService(name, timeout: timeout)
+            } catch {
+                last = error
+            }
+        }
+        throw last
+    }
+
+    /// Turns lockdown's own error strings into something that says what to do about it. A device that has never
+    /// been paired refuses every service with one of these.
+    static func serviceFailure(_ error: String, service: String) -> Error {
+        switch error {
+        case "InvalidHostID", "SessionInactive", "PasswordProtected", "PairingDialogResponsePending",
+            "UserDeniedPairing", "InvalidPairRecord":
+            return LockdownError.needsPairing(error)
+        default:
+            return LockdownError.serviceError("\(service): \(error)")
+        }
     }
 
     // MARK: - plist framing (4-byte BE length prefix + XML plist)

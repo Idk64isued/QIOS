@@ -721,6 +721,7 @@ struct EmulatorScreen: View {
     @State private var installNote = ""
     @State private var toast = ""
     @StateObject private var volume = VolumeWatcher()
+    @StateObject private var modem = ModemController()
     @State private var keyboardBridge: KeyboardBridge?
     @State private var firstFrameSeen = false
 
@@ -754,6 +755,7 @@ struct EmulatorScreen: View {
         }
         .onAppear {
             details = device.details
+            modem.qemu = emulator.qemu
             volume.onVolumeUp = { emulator.press(2) }
             volume.onVolumeDown = { emulator.press(3) }
         }
@@ -775,7 +777,9 @@ struct EmulatorScreen: View {
         .sheet(isPresented: $showFiles) {
             if let agent = emulator.agent { FilesBrowserView(agent: agent) { showFiles = false } }
         }
-        .sheet(isPresented: $showCarrier) { CarrierEditor(agent: emulator.agent) { showCarrier = false } }
+        .sheet(isPresented: $showCarrier) {
+            CarrierEditor(agent: emulator.agent, modem: modem) { showCarrier = false }
+        }
         .sheet(isPresented: $showHelp) { HelpView { showHelp = false } }
     }
 
@@ -804,65 +808,90 @@ struct EmulatorScreen: View {
         .padding(.bottom, 10)
     }
 
-    /// Immersive: the display fills the screen, and only the Home button is up front. A small ⋯ in the top-right
-    /// brings the rest back as an overlay — identical to the plain-mode controls.
+    /// Immersive: the device's screen and its Home button, and nothing else — the phone as it would sit in your
+    /// hand. The screen takes the full width at its own shape and sits under the status bar; the Home button is
+    /// centred in the space below it, where a real one is. A tap anywhere else brings the rest of the controls
+    /// back, and so does the small ⋯ in the corner.
     private var immersive: some View {
-        ZStack {
-            DeviceStage(board: details.board, qemu: emulator.qemu, mode: .immersive, keyboardBridge: keyboardBridge) {
-                emulator.press(0)
-            }
+        GeometryReader { proxy in
+            // The guest's screen shape, from the device art (320x480 on these phones, 4:3 on an iPad). Falling
+            // back to 3:2 keeps a board with no art from stretching.
+            let art = details.board?.facts.art
+            let aspect = art.map { $0.screenCutout.height / max($0.screenCutout.width, 1) } ?? 1.5
+            let width = proxy.size.width
+            let screenHeight = min(width * aspect, proxy.size.height - 110)
 
-            VStack {
-                HStack {
-                    Spacer()
-                    Button {
-                        withAnimation(.spring(duration: 0.3)) { showAllControls.toggle() }
-                    } label: {
-                        Image(systemName: showAllControls ? "xmark" : "ellipsis")
-                            .font(.system(size: 15, weight: .semibold))
-                            .frame(width: 36, height: 36)
-                            .background(.ultraThinMaterial, in: Circle())
-                            .environment(\.colorScheme, .dark)
-                            .foregroundStyle(.white)
-                            .padding(.trailing, 16)
-                            .padding(.top, 10)
+            ZStack {
+                Color.black.ignoresSafeArea()
+
+                VStack(spacing: 0) {
+                    DisplayView(qemu: emulator.qemu, keyboardBridge: keyboardBridge)
+                        .frame(width: width, height: max(screenHeight, 1))
+                        .clipped()
+                    // Everything below the screen is the "bezel": tapping it brings the controls back, the way
+                    // pressing the frame of a real phone does nothing but is where your thumb already is.
+                    ZStack {
+                        Color.black
+                            .contentShape(Rectangle())
+                            .onTapGesture { withAnimation(.spring(duration: 0.3)) { showAllControls.toggle() } }
+                        homeButton(diameter: 66)
                     }
-                    .buttonStyle(.plain)
                 }
-                Spacer()
+                .frame(maxHeight: .infinity, alignment: .top)
 
-                // The single Home button. Big, tappable, centred — the only thing on screen by default.
-                Button {
-                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                    emulator.press(0)
-                } label: {
-                    Circle()
-                        .strokeBorder(Color.white.opacity(0.35), lineWidth: 2.5)
-                        .background(Circle().fill(Color.white.opacity(0.04)))
-                        .frame(width: 72, height: 72)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                .stroke(Color.white.opacity(0.75), lineWidth: 2)
-                                .frame(width: 22, height: 22)
-                        )
-                }
-                .buttonStyle(.plain)
-                .padding(.bottom, 24)
-            }
-
-            // Overlay: when expanded, the top bar and bottom pill slide in over the device.
-            if showAllControls {
+                // The way back, for anyone who would rather aim at a button than the bezel.
                 VStack {
-                    topBar
-                        .background(.ultraThinMaterial.opacity(0.6))
-                        .environment(\.colorScheme, .dark)
+                    HStack {
+                        Spacer()
+                        Button {
+                            withAnimation(.spring(duration: 0.3)) { showAllControls.toggle() }
+                        } label: {
+                            Image(systemName: showAllControls ? "xmark" : "ellipsis")
+                                .font(.system(size: 14, weight: .semibold))
+                                .frame(width: 32, height: 32)
+                                .background(.ultraThinMaterial, in: Circle())
+                                .environment(\.colorScheme, .dark)
+                                .foregroundStyle(.white.opacity(showAllControls ? 1 : 0.45))
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.trailing, 12)
+                        .padding(.top, 4)
+                    }
                     Spacer()
-                    bottomPill.padding(.bottom, 14)
                 }
-                .transition(.opacity)
-                .onTapGesture { withAnimation(.spring(duration: 0.3)) { showAllControls = false } }
+
+                // Revealed: the same top bar and pill the windowed modes use, over the device.
+                if showAllControls {
+                    VStack {
+                        topBar
+                            .background(.ultraThinMaterial)
+                            .environment(\.colorScheme, .dark)
+                        Spacer()
+                        bottomPill.padding(.bottom, 10)
+                    }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
         }
+    }
+
+    /// The Home button: a ring with the rounded square inside it, the way the device's own is drawn.
+    private func homeButton(diameter: CGFloat) -> some View {
+        Button {
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            emulator.press(0)
+        } label: {
+            Circle()
+                .strokeBorder(Color.white.opacity(0.35), lineWidth: 2.5)
+                .background(Circle().fill(Color.white.opacity(0.04)))
+                .frame(width: diameter, height: diameter)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .stroke(Color.white.opacity(0.75), lineWidth: 2)
+                        .frame(width: diameter * 0.3, height: diameter * 0.3)
+                )
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Pieces (shared by all layouts)
@@ -933,7 +962,17 @@ struct EmulatorScreen: View {
                     Toggle(isOn: Binding(
                         get: { UserDefaults.standard.object(forKey: "enableUSB") as? Bool ?? false },
                         set: { UserDefaults.standard.set($0, forKey: "enableUSB") }
-                    )) { Label("USB bridge (next boot only)", systemImage: "cable.connector") }
+                    )) { Label("USB bridge (next boot)", systemImage: "cable.connector") }
+                    if let session = emulator.usb {
+                        Label("USB: " + session.state.text, systemImage: "cable.connector.horizontal")
+                        Button {
+                            Task {
+                                installNote = "Asking the device over USB\u{2026}"
+                                let answer = await session.probe()
+                                installNote = answer ?? "The device did not answer over USB. See the log."
+                            }
+                        } label: { Label("Ask the device over USB", systemImage: "questionmark.app") }
+                    }
                 }
             } label: {
                 Image(systemName: "gearshape")
@@ -1048,7 +1087,7 @@ struct EmulatorScreen: View {
     private func performInstall(url: URL) async {
         defer { try? FileManager.default.removeItem(at: url) }
         installNote = "Installing \(url.lastPathComponent)\u{2026}"
-        if let session = emulator.usb, case .enumerated = session.state {
+        if let session = emulator.usb, case .ready = session.state {
             do {
                 try await session.install(ipa: url) { fraction, status in
                     Task { @MainActor in installNote = "\(status) " + String(format: "%.0f%%", fraction * 100) }

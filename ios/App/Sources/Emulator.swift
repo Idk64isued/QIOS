@@ -53,17 +53,32 @@ final class Emulator: ObservableObject {
             return
         }
         do {
-            // USB bridge is opt-in: passing usb-tcp-addr changes how the guest comes up. Without it, boot is exactly
-            // like it was before the USB stack existed. The Settings menu has a toggle.
-            let enableUSB = UserDefaults.standard.object(forKey: "enableUSB") as? Bool ?? false
-            let usbSession = enableUSB ? (try? USBSession()) : nil
-            if enableUSB {
-                if let usbSession { self.usb = usbSession } else { LTMLog.note("usb: bridge not started") }
-                // The bridge is unfinished and a boot with it on can hang at the Apple logo. So the switch counts for
-                // one boot only: it is turned back off here, and turned on again only if the bridge really connects
-                // (USBSession). A hung boot can then never repeat itself on the next launch.
+            // The USB bridge is opt-in. Passing usb-tcp-addr switches off the host the emulator otherwise runs
+            // in-process, so this app then owes the guest everything a host does: the listener goes up here, before
+            // the machine starts, and USBHostBridge keeps driving it for the whole session.
+            var enableUSB = UserDefaults.standard.object(forKey: "enableUSB") as? Bool ?? false
+            // A hang-loop breaker: every boot that turns the bridge on counts a strike, and reaching a configured
+            // device clears them. Two boots in a row where the device never came up turn the bridge off by itself,
+            // so a device can never be left unbootable by a setting the user has to go and find.
+            let strikes = UserDefaults.standard.integer(forKey: "usbStrikes")
+            if enableUSB, strikes >= 2 {
+                enableUSB = false
                 UserDefaults.standard.set(false, forKey: "enableUSB")
-                LTMLog.note("usb bridge: ON for this boot only (experimental; if the device hangs, reopen the app and it is off again)")
+                UserDefaults.standard.set(0, forKey: "usbStrikes")
+                LTMLog.note("usb bridge: off again — the device did not come up over USB on the last two boots")
+            }
+            var usbSession: USBSession?
+            if enableUSB {
+                UserDefaults.standard.set(strikes + 1, forKey: "usbStrikes")
+                do {
+                    let session = try USBSession()
+                    session.start()
+                    usbSession = session
+                    self.usb = session
+                    LTMLog.note("usb bridge: on, listening on \(session.qemuAddress)")
+                } catch {
+                    LTMLog.note("usb bridge: could not start (\(error)); booting without it")
+                }
             } else {
                 LTMLog.note("usb bridge: off")
             }
@@ -142,8 +157,8 @@ final class Emulator: ObservableObject {
                     }
                 }
             }
-            // The USB bridge too — the guest's USB core comes up ~100 s after boot.
-            usb?.waitForGuest()
+            // The bridge is already running; it keeps retrying on its own until the guest's USB core is up, which
+            // takes about 100 seconds of boot.
         } catch {
             state = .failed(error.localizedDescription)
         }

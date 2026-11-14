@@ -31,6 +31,7 @@ enum OnDevicePrep {
         seed: String,
         skipSetup: Bool = false,
         jailbreak: Bool = false,
+        softwareGraphics: Bool = false,
         emit: @escaping @Sendable (PrepEvent) -> Void
     ) async throws {
         guard let catalog = FirmwareCatalog.url else {
@@ -40,6 +41,9 @@ enum OnDevicePrep {
             var entry = try FirmwareEntry.load(id: entryID, fromCatalog: catalog)
             if skipSetup { entry.recipe?.options["skip_setup"] = true }
             if jailbreak { entry.recipe?.options["jailbreak"] = true }
+            // gles_shim off: the stock OpenGLES stays in place and the device composites its own screen (SystemEdits
+            // then sets CA_ENABLE_OGL=0, and on 1.x LayerKit does the same). Slower, but it draws what it should.
+            if softwareGraphics { entry.recipe?.options["gles_shim"] = false }
             let options = Preparer.Options(
                 entry: entry, ipsw: ipsw, out: out, seed: seed, helper: nil, guestTools: guestTools, cache: cache)
             // .writer: volumes are read and written by FirmwareKit's own HFS+ and disk-image code. The default
@@ -76,6 +80,7 @@ enum OnDevicePrep {
         seed: String,
         skipSetup: Bool = false,
         jailbreak: Bool = false,
+        softwareGraphics: Bool = false,
         emit: @escaping @Sendable (PrepEvent) -> Void
     ) async throws {
         throw Transfer.Failure(message: "This build of Light Touch cannot prepare firmware. Use the ready-made iPod touch, or a newer build.")
@@ -115,6 +120,10 @@ struct DevicePlan {
     var skipSetup: Bool = false
     /// Install Cydia on the device (firmwarekit create --jailbreak). Needs an in-process tar; still experimental on iOS.
     var jailbreak: Bool = false
+    /// Prepare without the GL front end (recipe option gles_shim off), so the device composites its screen in
+    /// software. The fallback for a build whose GL path the emulator does not model: on iPhone OS 1 that shows up
+    /// as a Home screen of blank white boxes.
+    var softwareGraphics: Bool = false
 
     static let readyMadeID = "n72ap-7E18"
 
@@ -390,7 +399,8 @@ final class DeviceCreator: ObservableObject {
                 try await OnDevicePrep.create(
                     entryID: entry.id, ipsw: IPSWStore.url(for: entry), out: out, guestTools: tools,
                     cache: Library.decrypted, seed: UUID().uuidString,
-                    skipSetup: plan.skipSetup, jailbreak: plan.jailbreak
+                    skipSetup: plan.skipSetup, jailbreak: plan.jailbreak,
+                    softwareGraphics: plan.softwareGraphics
                 ) { event in
                     switch event {
                     case .begin(let total): steps.total = total

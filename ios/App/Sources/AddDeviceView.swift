@@ -20,6 +20,7 @@ struct AddDeviceView: View {
     @State private var importNote = ""
     @State private var importing = false
     @State private var skipSetup = false
+    @State private var softwareGraphics = false
     @State private var jailbreak = false
 
     var body: some View {
@@ -370,6 +371,15 @@ struct AddDeviceView: View {
                                 }
                             }
                             .tint(Theme.accent)
+                            Toggle(isOn: $softwareGraphics) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Software graphics").font(.system(size: 13, weight: .medium, design: .rounded)).foregroundStyle(.white)
+                                    Text("Leaves the GL translation out and lets the device draw its own screen. Slower, but the right choice if icons and text come out as blank white boxes \u{2014} which is what iPhone OS 1 does on some builds.")
+                                        .font(.system(size: 11, design: .rounded)).foregroundStyle(Theme.secondaryText)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            .tint(Theme.accent)
                         }
                     }
                     GlassCard("What happens", symbol: "list.bullet") {
@@ -386,6 +396,7 @@ struct AddDeviceView: View {
                         chosen.name = name.trimmingCharacters(in: .whitespaces).isEmpty ? plan.name : name
                         chosen.skipSetup = skipSetup
                         chosen.jailbreak = jailbreak
+                        chosen.softwareGraphics = softwareGraphics
                         page = .working
                         creator.start(chosen)
                     } label: {
