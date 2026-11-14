@@ -19,6 +19,8 @@ struct AddDeviceView: View {
     @State private var showIPSWPicker = false
     @State private var importNote = ""
     @State private var importing = false
+    @State private var skipSetup = false
+    @State private var jailbreak = false
 
     var body: some View {
         NavigationView {
@@ -169,19 +171,22 @@ struct AddDeviceView: View {
         }
     }
 
+    @State private var downloadingIPSW: CatalogFirmware?
+    @State private var downloadFraction: Double = 0
+    @State private var downloadMessage = ""
+
     private func firmwareRow(_ entry: CatalogFirmware) -> some View {
         let support = entry.support
         let usable = support == .onDevice
         let stored = IPSWStore.has(entry)
-        return Button {
-            choose(DevicePlan(kind: .firmware(entry), name: "\(DeviceModel(board: entry.board).shortName) \(entry.version)"))
-        } label: {
+        let downloading = downloadingIPSW?.id == entry.id
+        return VStack(spacing: 6) {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
                         Text(entry.systemName)
                             .font(.system(size: 14, weight: .semibold, design: .rounded))
-                            .foregroundStyle(usable ? .white : .white.opacity(0.45))
+                            .foregroundStyle(usable ? .white : .white.opacity(0.75))
                         Text(entry.build)
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundStyle(Theme.tertiaryText)
@@ -193,17 +198,64 @@ struct AddDeviceView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
-                Image(systemName: usable ? "chevron.right" : "desktopcomputer")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Theme.tertiaryText)
+                if usable {
+                    Button {
+                        choose(DevicePlan(kind: .firmware(entry), name: "\(DeviceModel(board: entry.board).shortName) \(entry.version)"))
+                    } label: {
+                        Image(systemName: "chevron.right").font(.system(size: 13)).foregroundStyle(Theme.accent)
+                            .padding(10)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    // Mac-only: still lets you download the IPSW for later transfer.
+                    Button {
+                        startIPSWDownload(entry)
+                    } label: {
+                        Label(stored ? "Have it" : downloading ? "\(Int(downloadFraction * 100))%" : "Download IPSW",
+                            systemImage: stored ? "checkmark.circle.fill" : "arrow.down.circle")
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .foregroundStyle(stored ? Theme.success : Theme.accent)
+                            .padding(.horizontal, 10).padding(.vertical, 6)
+                            .background((stored ? Theme.success : Theme.accent).opacity(0.14), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(stored || downloadingIPSW != nil)
+                }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .contentShape(Rectangle())
+            if downloading {
+                ProgressView(value: downloadFraction).tint(Theme.accent)
+                if !downloadMessage.isEmpty {
+                    Text(downloadMessage)
+                        .font(.system(size: 10, design: .rounded)).foregroundStyle(Theme.secondaryText)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
         }
-        .buttonStyle(.plain)
-        .disabled(!usable)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func startIPSWDownload(_ entry: CatalogFirmware) {
+        downloadingIPSW = entry
+        downloadFraction = 0
+        downloadMessage = ""
+        Task {
+            do {
+                try await IPSWStore.download(entry) { fraction, detail in
+                    Task { @MainActor in
+                        downloadFraction = fraction
+                        downloadMessage = detail
+                    }
+                }
+                downloadMessage = "Saved to Files \u{203A} LightTouch \u{203A} IPSW."
+            } catch is CancellationError {
+                downloadMessage = "Cancelled."
+            } catch {
+                downloadMessage = error.localizedDescription
+            }
+            downloadingIPSW = nil
+        }
     }
 
     private func rowDetail(_ entry: CatalogFirmware, support: CatalogFirmware.Support, stored: Bool) -> String {
@@ -291,6 +343,35 @@ struct AddDeviceView: View {
                             .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                             .autocorrectionDisabled()
                     }
+                    if case .firmware(let entry) = plan.kind {
+                        GlassCard("Options", symbol: "slider.horizontal.3") {
+                            // Only 3.x and later ship a Setup Assistant; 1.x and 2.x boot straight to SpringBoard.
+                            if entry.major >= 3 {
+                                Toggle(isOn: $skipSetup) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Skip Setup Assistant").font(.system(size: 13, weight: .medium, design: .rounded)).foregroundStyle(.white)
+                                        Text("Boot straight to the Home screen the first time.")
+                                            .font(.system(size: 11, design: .rounded)).foregroundStyle(Theme.secondaryText)
+                                    }
+                                }
+                                .tint(Theme.accent)
+                            }
+                            Toggle(isOn: $jailbreak) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack(spacing: 6) {
+                                        Text("Jailbreak").font(.system(size: 13, weight: .medium, design: .rounded)).foregroundStyle(.white)
+                                        Text("Experimental").font(.system(size: 9, weight: .bold, design: .rounded))
+                                            .foregroundStyle(Theme.warning).padding(.horizontal, 6).padding(.vertical, 2)
+                                            .background(Theme.warning.opacity(0.15), in: Capsule())
+                                    }
+                                    Text("Install Cydia and MobileSubstrate. On iOS the tar extractor is in-process; if it can\u{2019}t open the Cydia bootstrap the preparation says so and nothing else is written.")
+                                        .font(.system(size: 11, design: .rounded)).foregroundStyle(Theme.secondaryText)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            .tint(Theme.accent)
+                        }
+                    }
                     GlassCard("What happens", symbol: "list.bullet") {
                         VStack(alignment: .leading, spacing: 10) {
                             ForEach(Array(planSteps(plan).enumerated()), id: \.offset) { _, step in
@@ -303,6 +384,8 @@ struct AddDeviceView: View {
                     Button {
                         var chosen = plan
                         chosen.name = name.trimmingCharacters(in: .whitespaces).isEmpty ? plan.name : name
+                        chosen.skipSetup = skipSetup
+                        chosen.jailbreak = jailbreak
                         page = .working
                         creator.start(chosen)
                     } label: {

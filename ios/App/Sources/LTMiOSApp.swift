@@ -681,79 +681,308 @@ struct ControlButton: View {
 }
 
 // MARK: - Emulator Screen
+//
+// Three ways to look at the running device:
+//   .bezel      — the device around the screen (the shell photo with the live screen inside)
+//   .plain      — the Mac app's plain view: a thin border around the screen on a dark stage,
+//                 with a floating top bar (back / name / Console) and a floating bottom pill
+//                 (settings · Home · sliders)
+//   .immersive  — the screen fills the whole phone; only the Home button is visible; tap the
+//                 small ⋯ in the corner to bring the rest back
+//
+// All three take the same input: touches go to the emulator, iPhone volume buttons to the guest's volume, and a
+// hardware keyboard (over the hidden KeyboardBridge) to whatever text field has focus. The … menu is the same
+// everywhere, so everything is one tap away in any mode.
+
+enum ControlsPresentation { case floating, barAndPill, hidden }
 
 struct EmulatorScreen: View {
     @EnvironmentObject var emulator: Emulator
     let device: DeviceFolder
-    @AppStorage("bezel") private var bezel = true
+
+    @AppStorage("viewMode") private var viewModeRaw = ViewMode.bezel.rawValue
+    @AppStorage("startupTone") private var startupTone = true
+
     @State private var details = DeviceFolder.Details()
     @State private var shareItem: ShareItem?
     @State private var showStore = false
     @State private var showIPAPicker = false
+    @State private var showApps = false
+    @State private var showFiles = false
+    @State private var showCarrier = false
+    @State private var showHelp = false
+    @State private var showAllControls = false   // immersive mode: the overlay that brings the rest back
     @State private var installNote = ""
+    @State private var toast = ""
+    @StateObject private var volume = VolumeWatcher()
+    @State private var keyboardBridge: KeyboardBridge?
+    @State private var firstFrameSeen = false
+
+    private var mode: ViewMode { ViewMode(rawValue: viewModeRaw) ?? .bezel }
 
     var body: some View {
         ZStack {
             stageBackground
 
-            VStack(spacing: 0) {
-                Spacer(minLength: 6)
+            // Hidden input helpers — the keyboard bridge takes hardware-keyboard keys, the volume watcher
+            // notices iPhone volume changes and turns them into emulator button presses.
+            Color.clear.frame(width: 0, height: 0)
+                .overlay(
+                    KeyboardBridgeView(agent: emulator.agent) { bridge in
+                        Task { @MainActor in
+                            keyboardBridge = bridge
+                            bridge?.becomeFirstResponder()
+                        }
+                    }
+                )
+                .overlay(VolumeWatcherView(watcher: volume))
 
-                DeviceStage(board: details.board, qemu: emulator.qemu, bezel: bezel) { emulator.press(0) }
-                    .padding(.horizontal, bezel ? 6 : 0)
-
-                Spacer(minLength: 10)
-
-                controls
-
-                if !note.isEmpty {
-                    Text(note)
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
-                        .foregroundStyle(Theme.warning)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 20)
-                        .padding(.top, 6)
-                }
+            switch mode {
+            case .bezel, .plain:
+                windowed
+            case .immersive:
+                immersive
             }
-            .padding(.bottom, 10)
+
+            savingOverlay
         }
-        .overlay { savingOverlay }
-        .onAppear { details = device.details }
-        .sheet(item: $shareItem) { item in
-            ActivityView(items: [item.url])
+        .onAppear {
+            details = device.details
+            volume.onVolumeUp = { emulator.press(2) }
+            volume.onVolumeDown = { emulator.press(3) }
         }
+        .onDisappear { volume.stop() }
+        .onChange(of: emulator.state) { state in
+            if state == .running && startupTone && !firstFrameSeen {
+                firstFrameSeen = true
+                StartupTone.play()
+            }
+        }
+        .sheet(item: $shareItem) { item in ActivityView(items: [item.url]) }
         .sheet(isPresented: $showStore) {
             LegacyStoreView(agent: emulator.agent, target: device.storeTarget) { showStore = false }
         }
-        .sheet(isPresented: $showIPAPicker) {
-            IPAPickerView { url in
-                showIPAPicker = false
-                guard let url else { return }
-                guard let agent = emulator.agent else {
-                    installNote = "The device is not ready to take apps yet."
-                    return
+        .sheet(isPresented: $showIPAPicker) { ipaPickerSheet }
+        .sheet(isPresented: $showApps) {
+            if let agent = emulator.agent { AppsBrowserView(agent: agent) { showApps = false } }
+        }
+        .sheet(isPresented: $showFiles) {
+            if let agent = emulator.agent { FilesBrowserView(agent: agent) { showFiles = false } }
+        }
+        .sheet(isPresented: $showCarrier) { CarrierEditor(agent: emulator.agent) { showCarrier = false } }
+        .sheet(isPresented: $showHelp) { HelpView { showHelp = false } }
+    }
+
+    // MARK: - Layouts
+
+    /// Plain and bezel modes: the Mac app's plain view. A floating top bar (back / name / Console) and a floating
+    /// bottom pill (settings · Home · sliders). The … menu is behind the sliders icon.
+    private var windowed: some View {
+        VStack(spacing: 0) {
+            topBar
+            Spacer(minLength: 2)
+            DeviceStage(board: details.board, qemu: emulator.qemu, mode: mode, keyboardBridge: keyboardBridge) {
+                emulator.press(0)
+            }
+            Spacer(minLength: 2)
+            bottomPill
+            if !toastText.isEmpty {
+                Text(toastText)
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(Theme.warning)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 6)
+            }
+        }
+        .padding(.bottom, 10)
+    }
+
+    /// Immersive: the display fills the screen, and only the Home button is up front. A small ⋯ in the top-right
+    /// brings the rest back as an overlay — identical to the plain-mode controls.
+    private var immersive: some View {
+        ZStack {
+            DeviceStage(board: details.board, qemu: emulator.qemu, mode: .immersive, keyboardBridge: keyboardBridge) {
+                emulator.press(0)
+            }
+
+            VStack {
+                HStack {
+                    Spacer()
+                    Button {
+                        withAnimation(.spring(duration: 0.3)) { showAllControls.toggle() }
+                    } label: {
+                        Image(systemName: showAllControls ? "xmark" : "ellipsis")
+                            .font(.system(size: 15, weight: .semibold))
+                            .frame(width: 36, height: 36)
+                            .background(.ultraThinMaterial, in: Circle())
+                            .environment(\.colorScheme, .dark)
+                            .foregroundStyle(.white)
+                            .padding(.trailing, 16)
+                            .padding(.top, 10)
+                    }
+                    .buttonStyle(.plain)
                 }
-                Task {
-                    installNote = "Installing \(url.lastPathComponent)\u{2026}"
-                    let ok = await agent.installIPA(localURL: url)
-                    try? FileManager.default.removeItem(at: url)
-                    installNote = ok
-                        ? (agent.hasShell ? "Installed." : "Copied to the device. Only a jailbroken device can finish installing it for now.")
-                        : "Could not install it. See the log."
+                Spacer()
+
+                // The single Home button. Big, tappable, centred — the only thing on screen by default.
+                Button {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    emulator.press(0)
+                } label: {
+                    Circle()
+                        .strokeBorder(Color.white.opacity(0.35), lineWidth: 2.5)
+                        .background(Circle().fill(Color.white.opacity(0.04)))
+                        .frame(width: 72, height: 72)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .stroke(Color.white.opacity(0.75), lineWidth: 2)
+                                .frame(width: 22, height: 22)
+                        )
                 }
+                .buttonStyle(.plain)
+                .padding(.bottom, 24)
+            }
+
+            // Overlay: when expanded, the top bar and bottom pill slide in over the device.
+            if showAllControls {
+                VStack {
+                    topBar
+                        .background(.ultraThinMaterial.opacity(0.6))
+                        .environment(\.colorScheme, .dark)
+                    Spacer()
+                    bottomPill.padding(.bottom, 14)
+                }
+                .transition(.opacity)
+                .onTapGesture { withAnimation(.spring(duration: 0.3)) { showAllControls = false } }
             }
         }
     }
 
-    private var note: String {
-        if !emulator.saveMessage.isEmpty, emulator.state == .running { return emulator.saveMessage }
-        return installNote
+    // MARK: - Pieces (shared by all layouts)
+
+    /// Top bar: back arrow (does nothing destructive — it just sends a Home press), device name + state, and a
+    /// Console button that opens the log share sheet. Matches the screenshot the user shared.
+    private var topBar: some View {
+        HStack {
+            Button {
+                emulator.press(0)   // Home
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 15, weight: .semibold))
+                    .frame(width: 36, height: 36)
+                    .background(Color.white.opacity(0.10), in: Circle())
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+            Spacer()
+            VStack(spacing: 2) {
+                Text(details.version.map { (Int($0.prefix { $0 != "." }) ?? 0) < 4 ? "iPhone OS \($0)" : "iOS \($0)" } ?? device.name)
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+                Text(stateText)
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(Theme.secondaryText)
+            }
+            Spacer()
+            Button {
+                if let url = LTMLog.exportCopy() { shareItem = ShareItem(url: url) }
+            } label: {
+                Text("Console")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Color.white.opacity(0.10), in: Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
     }
 
-    /// The Mac app's stage: its black-to-blue gradient picture, when the build carries it.
+    /// Floating pill: settings (view mode / startup tone / carrier / help), Home (big, centred), and sliders (the full
+    /// menu of actions: Legacy Store, Apps, Files, IPA, Screenshot, Save & quit, Shut down).
+    private var bottomPill: some View {
+        HStack(spacing: 18) {
+            Menu {
+                Section("View") {
+                    Picker("View mode", selection: $viewModeRaw) {
+                        ForEach(ViewMode.allCases, id: \.self) { m in
+                            Label(m.title, systemImage: m.symbol).tag(m.rawValue)
+                        }
+                    }
+                }
+                Section {
+                    Toggle(isOn: $startupTone) { Label("Startup tone", systemImage: "speaker.wave.2") }
+                    Button { showCarrier = true } label: { Label("Carrier name\u{2026}", systemImage: "antenna.radiowaves.left.and.right") }
+                    Button { showHelp = true } label: { Label("Help", systemImage: "questionmark.circle") }
+                }
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 44, height: 44)
+                    .background(Color.white.opacity(0.08), in: Circle())
+                    .foregroundStyle(.white)
+            }
+
+            Button {
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                emulator.press(0)
+            } label: {
+                Circle()
+                    .strokeBorder(Color.white.opacity(0.9), lineWidth: 2)
+                    .background(Circle().fill(Color.white.opacity(0.08)))
+                    .frame(width: 60, height: 60)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .stroke(Color.white.opacity(0.9), lineWidth: 2)
+                            .frame(width: 18, height: 18))
+            }
+            .buttonStyle(.plain)
+
+            Menu {
+                Section("Apps") {
+                    Button { showStore = true } label: { Label("Legacy Store", systemImage: "bag") }
+                    if emulator.agent != nil {
+                        Button { showApps = true } label: { Label("Apps on the device", systemImage: "square.grid.2x2") }
+                        Button { showFiles = true } label: { Label("Files on the device", systemImage: "folder") }
+                    }
+                    Button { showIPAPicker = true } label: { Label("Install an IPA\u{2026}", systemImage: "doc.zipper") }
+                }
+                Section("Capture") {
+                    Button { takeScreenshot() } label: { Label("Save screenshot", systemImage: "camera") }
+                    Button {
+                        if let url = LTMLog.exportCopy() { shareItem = ShareItem(url: url) }
+                    } label: { Label("Export log", systemImage: "square.and.arrow.up") }
+                }
+                Section("Power") {
+                    Button { emulator.press(1) } label: { Label("Sleep / Wake", systemImage: "power.circle") }
+                    Button { emulator.saveAndQuit() } label: { Label("Save & quit", systemImage: "tray.and.arrow.down") }
+                    Button(role: .destructive) { emulator.quit() } label: { Label("Shut down", systemImage: "power") }
+                }
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 44, height: 44)
+                    .background(Color.white.opacity(0.08), in: Circle())
+                    .foregroundStyle(.white)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial, in: Capsule())
+        .environment(\.colorScheme, .dark)
+        .shadow(color: .black.opacity(0.4), radius: 20, y: 8)
+    }
+
+    /// The Mac app's stage background: its black-to-blue gradient picture when the build carries it, else the app's
+    /// own gradient. In immersive mode the display covers everything, so the background doesn't show.
     @ViewBuilder private var stageBackground: some View {
-        if let gradient = UIImage(named: "gradient") {
-            // As an overlay the picture takes the screen's size instead of pushing the layout to its own.
+        if mode == .immersive {
+            Color.black.ignoresSafeArea()
+        } else if let gradient = UIImage(named: "gradient") {
             Color.black
                 .overlay(Image(uiImage: gradient).resizable().aspectRatio(contentMode: .fill))
                 .clipped()
@@ -763,61 +992,20 @@ struct EmulatorScreen: View {
         }
     }
 
-    private var controls: some View {
-        HStack(spacing: 14) {
-            ControlButton(symbol: "speaker.minus.fill") { emulator.press(3) }
-            ControlButton(symbol: "speaker.plus.fill") { emulator.press(2) }
-            ControlButton(symbol: "circle", size: 58) { emulator.press(0) }
-            ControlButton(symbol: "power") { emulator.press(1) }
-            Menu {
-                Section {
-                    Button {
-                        showStore = true
-                    } label: {
-                        Label("Legacy Store", systemImage: "bag")
-                    }
-                    Button {
-                        showIPAPicker = true
-                    } label: {
-                        Label("Install an IPA\u{2026}", systemImage: "doc.zipper")
-                    }
-                }
-                Section {
-                    Toggle(isOn: $bezel) {
-                        Label("Show the device", systemImage: "iphone")
-                    }
-                    Button {
-                        if let url = LTMLog.exportCopy() { shareItem = ShareItem(url: url) }
-                    } label: {
-                        Label("Export log", systemImage: "square.and.arrow.up")
-                    }
-                }
-                Section {
-                    Button {
-                        emulator.saveAndQuit()
-                    } label: {
-                        Label("Save & quit", systemImage: "tray.and.arrow.down")
-                    }
-                    Button(role: .destructive) {
-                        emulator.quit()
-                    } label: {
-                        Label("Shut down", systemImage: "power")
-                    }
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 17, weight: .semibold))
-                    .frame(width: 46, height: 46)
-                    .background(.ultraThinMaterial, in: Circle())
-                    .environment(\.colorScheme, .dark)
-                    .foregroundStyle(Color.white)
-            }
+    private var stateText: String {
+        switch emulator.state {
+        case .idle: return "Idle"
+        case .running: return "Running"
+        case .saving: return "Saving\u{2026}"
+        case .saved: return "Saved"
+        case .failed: return "Stopped"
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-        .background(.ultraThinMaterial, in: Capsule())
-        .environment(\.colorScheme, .dark)
-        .shadow(color: .black.opacity(0.4), radius: 20, y: 8)
+    }
+
+    private var toastText: String {
+        if !emulator.saveMessage.isEmpty, emulator.state == .running { return emulator.saveMessage }
+        if !installNote.isEmpty { return installNote }
+        return toast
     }
 
     @ViewBuilder private var savingOverlay: some View {
@@ -825,14 +1013,66 @@ struct EmulatorScreen: View {
             ZStack {
                 Color.black.opacity(0.8).ignoresSafeArea()
                 VStack(spacing: 14) {
-                    ProgressView()
-                        .controlSize(.large)
-                        .tint(.white)
-                    Text(emulator.saveMessage)
-                        .font(.system(size: 15, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white)
+                    ProgressView().controlSize(.large).tint(.white)
+                    Text(emulator.saveMessage).font(.system(size: 15, weight: .medium, design: .rounded)).foregroundStyle(.white)
                 }
             }
+        }
+    }
+
+    @ViewBuilder private var ipaPickerSheet: some View {
+        IPAPickerView { url in
+            showIPAPicker = false
+            guard let url else { return }
+            Task { await performInstall(url: url) }
+        }
+    }
+
+    /// Install an IPA: USB path first (the Mac app's real way), else the guest agent as a fallback.
+    private func performInstall(url: URL) async {
+        defer { try? FileManager.default.removeItem(at: url) }
+        installNote = "Installing \(url.lastPathComponent)\u{2026}"
+        if let session = emulator.usb, case .enumerated = session.state {
+            do {
+                try await session.install(ipa: url) { fraction, status in
+                    Task { @MainActor in installNote = "\(status) " + String(format: "%.0f%%", fraction * 100) }
+                }
+                installNote = "Installed."
+                return
+            } catch {
+                installNote = "USB install failed: \(error). Trying the agent\u{2026}"
+            }
+        }
+        guard let agent = emulator.agent else {
+            installNote = "The device is not ready to take apps yet."
+            return
+        }
+        let ok = await agent.installIPA(localURL: url)
+        installNote = ok
+            ? (agent.hasShell ? "Installed via the agent." : "Copied to the device. Only a jailbroken device can finish installing it for now.")
+            : "Could not install it. See the log."
+    }
+
+    private func takeScreenshot() {
+        // The display's view hierarchy holds the newest frame. Find it in the key window.
+        guard let window = UIApplication.shared.connectedScenes
+            .compactMap({ ($0 as? UIWindowScene)?.keyWindow }).first,
+            let image = DisplaySnapshot.latestFrame(inside: window)
+        else {
+            toast = "No frame to capture yet."
+            Task { try? await Task.sleep(nanoseconds: 1_500_000_000); toast = "" }
+            return
+        }
+        Task {
+            let result = await Screenshot.save(image: image)
+            switch result {
+            case .saved, .savedFile: toast = "Saved to Photos (Light Touch album)."
+            case .noAccess: toast = "Photos access denied."
+            case .noFrame: toast = "No frame to capture yet."
+            case .failed(let m): toast = "Couldn\u{2019}t save: \(m)"
+            }
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            toast = ""
         }
     }
 }

@@ -98,21 +98,37 @@ struct CatalogFirmware: Decodable, Identifiable, Hashable {
     }
 
     /// Whether this phone can make the device itself. Preparation on the phone is file work only; firmware that needs
-    /// a preparation boot (iOS 4 data protection, the iPad's seal) still has to be prepared on a Mac.
+    /// a preparation boot (iOS 4 data protection, the iPad's seal) still has to be prepared on a Mac. For devices in
+    /// the second case, you can still download the IPSW on the phone and prepare the device on a Mac later, then copy
+    /// the base/ folder over — the IPSW browser and the device-folder import path handle that.
     var support: Support {
         if status == "coming_soon" { return .comingSoon }
         if source.kind != "ipsw" || source.url == nil || source.sha1 == nil {
-            return .needsMac("This build is only archived as a developer beta package.")
+            return .needsMac("Archived as a developer beta package; Light Touch can\u{2019}t fetch this one itself.")
         }
         switch board {
         case "n72ap":
-            return major < 4 ? .onDevice : .needsMac("iOS 4 needs a preparation boot, which only the Mac app can run.")
+            return major < 4 ? .onDevice : .needsMac("iOS 4 data protection needs a keybag boot in a helper process iOS can\u{2019}t start. Prepare it on the Mac and copy the base over.")
         case "n45ap", "m68ap":
             return .onDevice
+        case "n18ap":
+            return .needsMac("iPod touch 3G preparation needs a keybag boot (Mac only). The emulator can boot a Mac-prepared base.")
+        case "n88ap":
+            return .needsMac("iPhone 3GS preparation needs a seal boot (Mac only). The emulator can boot a Mac-prepared base.")
+        case "n81ap":
+            return .needsMac("iPod touch 4G preparation needs a seal boot (Mac only). The emulator can boot a Mac-prepared base.")
+        case "n90ap":
+            return .needsMac("iPhone 4 preparation needs a seal boot (Mac only). The emulator can boot a Mac-prepared base \u{2014} download the IPSW here, prepare on the Mac, and bring over the base/ folder.")
+        case "k48ap":
+            return .needsMac("iPad preparation needs a seal boot (Mac only). The emulator can boot a Mac-prepared base.")
         default:
             return .needsMac("This device needs preparation boots, which only the Mac app can run.")
         }
     }
+
+    /// Whether the emulator can at least BOOT a prepared base of this device on iOS (regardless of where it was
+    /// prepared). Right now every board in HostRuntime has a matching machine in the dylib.
+    var canBootOnIOS: Bool { true }
 
     /// Download places, the catalog's own first, each with the sha1 and size the file must have.
     var downloads: [(url: URL, sha1: String, bytes: Int64?)] {

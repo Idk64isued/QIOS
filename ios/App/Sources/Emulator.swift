@@ -25,6 +25,7 @@ final class Emulator: ObservableObject {
     @Published private(set) var engine = "not loaded"
     private(set) var qemu: QemuRuntime?
     @Published private(set) var agent: GuestAgent?
+    @Published private(set) var usb: USBSession?
     private var started = false
     private var observers: [NSObjectProtocol] = []
     private var audio: AudioPlayer?
@@ -52,7 +53,11 @@ final class Emulator: ObservableObject {
             return
         }
         do {
-            var config = try Self.bootConfig(directory: directory)
+            // Open the USB bridge listener BEFORE building the boot argv: QEMU dials out to it when the guest's USB
+            // core comes up, so the listener must already be there.
+            let usbSession = try? USBSession()
+            if let usbSession { self.usb = usbSession } else { LTMLog.note("usb: bridge not started") }
+            var config = try Self.bootConfig(directory: directory, usbAddress: usbSession?.qemuAddress)
             var argv = config.argv
             // iOS gives a process no 1 GiB code buffer worth of headroom: ask for a modest one. Split W^X is how
             // JIT works under CS_DEBUGGED/TXM (tcg/region.c); TCI has no code buffer to split.
@@ -119,6 +124,8 @@ final class Emulator: ObservableObject {
                 await ga.probe()
                 await ga.checkShellCapabilities()
             }
+            // The USB bridge too — the guest's USB core comes up ~100 s after boot.
+            usb?.waitForGuest()
         } catch {
             state = .failed(error.localizedDescription)
         }
@@ -226,7 +233,7 @@ final class Emulator: ObservableObject {
 
     /// The same argv the Mac app builds (HostRuntime's PreparedDeviceBoot), minus what needs a helper process:
     /// no web proxy / Wi-Fi, no USB bridge (usbmuxd), no guest package. Sound is played from the emulator's mixer (AudioPlayer).
-    static func bootConfig(directory: URL) throws -> BootConfig {
+    static func bootConfig(directory: URL, usbAddress: String? = nil) throws -> BootConfig {
         let base = directory.appendingPathComponent("base", isDirectory: true)
         let overlay = directory.appendingPathComponent("overlay", isDirectory: true)
         guard let lock = try DeviceLock.read(base: base) else { throw BootError.noLock(base) }
@@ -248,7 +255,7 @@ final class Emulator: ObservableObject {
             board: board, base: base, overlay: overlay, writableNOR: writableNOR, storageKey: nil,
             bootrom: BootRecipe.bootrom(board.bootrom, filesRoot: filesRoot))
         return try prepared.configuration(
-            hardware: hardware, bootArgs: "amfi_allow_any_signature=1 cs_enforcement_disable=1", usbAddress: nil, wifi: false,
+            hardware: hardware, bootArgs: "amfi_allow_any_signature=1 cs_enforcement_disable=1", usbAddress: usbAddress, wifi: false,
             guestPackage: nil, serial: "null", audio: ["-audio", "driver=none"], netdev: nil)
     }
 }

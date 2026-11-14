@@ -180,6 +180,108 @@ final class GuestAgent: ObservableObject {
         return result.hasPrefix("ok") || result.hasPrefix("chown")
     }
 
+    // MARK: - Typing (hardware keyboard bridge)
+
+    /// Type Unicode text into whatever text field has focus in the guest. One `type` request per burst.
+    @discardableResult
+    func typeText(_ text: String) async -> Bool {
+        guard !text.isEmpty else { return true }
+        let id = UUID().uuidString
+        let encoded = Data(text.utf8).base64EncodedString()
+        guard agentRequest("\(id) type\n\(encoded)") else { return false }
+        return await pollResult(id: id, timeout: 5.0) != nil
+    }
+
+    /// Delete one character in the guest's focused text field.
+    @discardableResult
+    func backspace() async -> Bool {
+        let id = UUID().uuidString
+        guard agentRequest("\(id) backspace\n") else { return false }
+        return await pollResult(id: id, timeout: 5.0) != nil
+    }
+
+    // MARK: - Apps
+
+    struct GuestApp: Identifiable, Hashable {
+        let bundleID: String
+        let name: String
+        let path: String
+        var id: String { bundleID.isEmpty ? path : bundleID }
+    }
+
+    /// Lists the user apps on the guest (/Applications under 501, roughly). Returns an empty list if the agent
+    /// doesn't give us a shell: `/Applications` is on the system volume on 1.x–4.x, we read it via `spawn ls`.
+    func listApps() async -> [GuestApp] {
+        guard hasShell else { return [] }
+        guard let listing = await spawn(argv: ["/bin/ls", "-1", "/Applications"]),
+            let text = String(data: listing, encoding: .utf8)
+        else { return [] }
+        let names = text.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespaces) }
+            .filter { $0.hasSuffix(".app") }
+        var out: [GuestApp] = []
+        for name in names {
+            let path = "/Applications/\(name)"
+            // Info.plist's CFBundleIdentifier (+ CFBundleDisplayName / CFBundleName) if the shell can read the plist.
+            var bundleID = ""
+            var display = (name as NSString).deletingPathExtension
+            if let plist = await spawn(argv: ["/usr/libexec/PlistBuddy", "-c", "Print :CFBundleIdentifier", "\(path)/Info.plist"]),
+                let text = String(data: plist, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                !text.isEmpty, !text.lowercased().contains("error")
+            {
+                bundleID = text
+            }
+            if let plist = await spawn(argv: ["/usr/libexec/PlistBuddy", "-c", "Print :CFBundleDisplayName", "\(path)/Info.plist"]),
+                let text = String(data: plist, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                !text.isEmpty, !text.lowercased().contains("error")
+            {
+                display = text
+            }
+            out.append(GuestApp(bundleID: bundleID, name: display, path: path))
+        }
+        return out.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// Removes an installed app folder from /Applications (jailbroken only).
+    @discardableResult
+    func removeApp(at path: String) async -> Bool {
+        guard hasShell else { return false }
+        guard let out = await spawn(argv: ["/bin/rm", "-rf", path]) else { return false }
+        // `rm -rf` prints nothing on success.
+        return out.isEmpty
+    }
+
+    // MARK: - Files
+
+    struct GuestFile: Identifiable, Hashable {
+        let name: String
+        let isDirectory: Bool
+        let size: Int64
+        var id: String { name + (isDirectory ? "/" : "") }
+    }
+
+    /// Lists a directory on the guest with `spawn ls -lA`. Requires shell tools.
+    func listDirectory(_ path: String) async -> [GuestFile] {
+        guard hasShell else { return [] }
+        guard let out = await spawn(argv: ["/bin/ls", "-lAp", path]),
+            let text = String(data: out, encoding: .utf8)
+        else { return [] }
+        var files: [GuestFile] = []
+        for line in text.split(separator: "\n") {
+            let parts = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+            // `total 123` or `ls: cannot access...`
+            guard parts.count >= 9, let first = parts.first?.first, "-dlbcps".contains(first) else { continue }
+            let size = Int64(parts[4]) ?? 0
+            let name = parts.dropFirst(8).joined(separator: " ")
+            if name.isEmpty { continue }
+            let trimmed = name.hasSuffix("/") ? String(name.dropLast()) : name
+            files.append(GuestFile(name: trimmed, isDirectory: first == "d" || name.hasSuffix("/"), size: size))
+        }
+        return files.sorted {
+            if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
+            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
     /// Delete a file in the guest.
     func unlink(path: String) async -> Bool {
         let id = UUID().uuidString

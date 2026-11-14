@@ -29,13 +29,17 @@ enum OnDevicePrep {
         guestTools: URL,
         cache: URL,
         seed: String,
+        skipSetup: Bool = false,
+        jailbreak: Bool = false,
         emit: @escaping @Sendable (PrepEvent) -> Void
     ) async throws {
         guard let catalog = FirmwareCatalog.url else {
             throw Transfer.Failure(message: "This build has no firmware catalog.")
         }
         do {
-            let entry = try FirmwareEntry.load(id: entryID, fromCatalog: catalog)
+            var entry = try FirmwareEntry.load(id: entryID, fromCatalog: catalog)
+            if skipSetup { entry.recipe?.options["skip_setup"] = true }
+            if jailbreak { entry.recipe?.options["jailbreak"] = true }
             let options = Preparer.Options(
                 entry: entry, ipsw: ipsw, out: out, seed: seed, helper: nil, guestTools: guestTools, cache: cache)
             // .writer: volumes are read and written by FirmwareKit's own HFS+ and disk-image code. The default
@@ -70,6 +74,8 @@ enum OnDevicePrep {
         guestTools: URL,
         cache: URL,
         seed: String,
+        skipSetup: Bool = false,
+        jailbreak: Bool = false,
         emit: @escaping @Sendable (PrepEvent) -> Void
     ) async throws {
         throw Transfer.Failure(message: "This build of Light Touch cannot prepare firmware. Use the ready-made iPod touch, or a newer build.")
@@ -105,6 +111,10 @@ struct DevicePlan {
     }
     var kind: Kind
     var name: String
+    /// Prepare the device past Setup Assistant (3.x and later; nothing on 1.x and 2.x).
+    var skipSetup: Bool = false
+    /// Install Cydia on the device (firmwarekit create --jailbreak). Needs an in-process tar; still experimental on iOS.
+    var jailbreak: Bool = false
 
     static let readyMadeID = "n72ap-7E18"
 
@@ -365,24 +375,44 @@ final class DeviceCreator: ObservableObject {
             setvbuf(stderr, nil, _IOLBF, 0)
 
             let steps = Steps()
-            try await OnDevicePrep.create(
-                entryID: entry.id, ipsw: IPSWStore.url(for: entry), out: out, guestTools: tools,
-                cache: Library.decrypted, seed: UUID().uuidString
-            ) { event in
-                switch event {
-                case .begin(let total): steps.total = total
-                case .step(let index, let name):
-                    steps.index = index
-                    steps.name = name
-                    let total = max(steps.total, index)
-                    progress("prepare", Double(index - 1) / Double(max(total, 1)), "\(index) of \(total): \(name)", force: true)
-                case .progress(let fraction, let detail):
-                    let total = max(steps.total, steps.index, 1)
-                    let overall = (Double(max(steps.index, 1) - 1) + min(1, max(0, fraction))) / Double(total)
-                    let label = detail.map { "\(steps.name) (\($0))" } ?? steps.name
-                    progress("prepare", overall, "\(steps.index) of \(total): \(label)")
-                case .warning(let message): warn(message)
+            // Memory watch: FirmwareKit writes an 8 GiB sparse NAND, with metadata pages in RAM. On the Mac that is
+            // free; on iOS a process has a strict memory limit (roughly 1–3 GB before jetsam). When memory climbs
+            // the detail line says so, and the thrown error (if we get OOM-killed) will make clear why.
+            let memoryWatch = Task {
+                while !Task.isCancelled {
+                    let used = MemoryStats.footprintMB()
+                    if used > 0 { LTMLog.note("prep: \(used) MB in use (step \(steps.index) \(steps.name))") }
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
                 }
+            }
+            defer { memoryWatch.cancel() }
+            do {
+                try await OnDevicePrep.create(
+                    entryID: entry.id, ipsw: IPSWStore.url(for: entry), out: out, guestTools: tools,
+                    cache: Library.decrypted, seed: UUID().uuidString,
+                    skipSetup: plan.skipSetup, jailbreak: plan.jailbreak
+                ) { event in
+                    switch event {
+                    case .begin(let total): steps.total = total
+                    case .step(let index, let name):
+                        steps.index = index
+                        steps.name = name
+                        let total = max(steps.total, index)
+                        progress("prepare", Double(index - 1) / Double(max(total, 1)), "\(index) of \(total): \(name)", force: true)
+                    case .progress(let fraction, let detail):
+                        let total = max(steps.total, steps.index, 1)
+                        let overall = (Double(max(steps.index, 1) - 1) + min(1, max(0, fraction))) / Double(total)
+                        let label = detail.map { "\(steps.name) (\($0))" } ?? steps.name
+                        progress("prepare", overall, "\(steps.index) of \(total): \(label)")
+                    case .warning(let message): warn(message)
+                    }
+                }
+            } catch {
+                // A clearer message when it looks like jetsam killed the step mid-way (the preparer throws nothing then;
+                // we only land here on a real error, but the memory footprint goes with the message either way).
+                let used = MemoryStats.footprintMB()
+                let hint = used > 1500 ? " (at \(used) MB in use \u{2014} the phone may have run out of memory for this step)" : ""
+                throw Transfer.Failure(message: "\(error.localizedDescription)\(hint)")
             }
             try Task.checkCancellation()
             guard fm.fileExists(atPath: out.appendingPathComponent("device.lock.json").path) else {

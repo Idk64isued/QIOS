@@ -129,6 +129,32 @@ edit("Sources/FirmwareKit/N72/N72Recipe.swift", "FileManager.default.homeDirecto
 edit("Sources/FirmwareKit/K48/K48Recipe.swift", ".kernel).map(Data.init)", ".kernel).map { Data($0) }",
      marker=".kernel).map { Data($0) }")
 
+# Cydia uses /usr/bin/tar for two listings (member paths; set-uid/set-gid files). iOS has no tar binary. Route both
+# listings through the in-process TarArchive reader instead. The extract path already uses TarArchive via the
+# HFSPlusWriter backend, so with these two swaps the jailbreak option works on iOS too.
+edit(
+    "Sources/FirmwareKit/SystemEdits/Cydia.swift",
+    """        for p in packages {
+            entries += try tar(["-tf", p.path]).split(separator: "\\n").map(Self.entryPath).filter {
+                $0 != Cydia.excluded && !$0.hasPrefix(Cydia.excluded + "/")
+            }
+            for line in try tar(["-tvf", p.path]).split(separator: "\\n") {
+                if let entry = Self.specialMode(String(line)) { special.append(entry) }
+            }
+        }""",
+    """        for p in packages {
+            // iOS has no /usr/bin/tar; read the archive in-process (same backend the extract step uses).
+            let archive = try TarArchive(contentsOf: p)
+            for member in archive.members {
+                let path = member.path
+                if path.isEmpty || path == Cydia.excluded || path.hasPrefix(Cydia.excluded + "/") { continue }
+                entries.append(path)
+                if member.kind == .file, member.mode & 0o6000 != 0 { special.append((path: path, mode: member.mode)) }
+            }
+        }""",
+    marker="iOS has no /usr/bin/tar; read the archive in-process",
+)
+
 # --- RAR sources (developer betas): Unrar.swift is left out of the iOS build ---
 rar = ROOT / "Sources/FirmwareKit/Archive/RARSource.swift"
 if rar.exists():

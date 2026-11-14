@@ -6,6 +6,22 @@ enum PerfStats {
     static var frames = 0
 }
 
+/// The process's own memory footprint, as Apple's jetsam counts it. Used during firmware preparation to warn when
+/// the phone is close to the per-process limit.
+enum MemoryStats {
+    static func footprintMB() -> Int {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return 0 }
+        return Int(info.phys_footprint) / (1024 * 1024)
+    }
+}
+
 /// A log file you can send: Files > On My iPhone > LightTouch > lighttouch.log, rewritten every launch.
 /// The emulator's own messages (stderr) land in it too, including the vCPU accounting switched on by IT_VCPU_ACCT.
 enum LTMLog {

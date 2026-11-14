@@ -3,11 +3,17 @@ import UIKit
 
 /// The emulated screen. Polls the emulator's newest frame on a display link (the library hands back a pointer
 /// plus a serial, and says "nothing new" cheaply) and turns touches into normalised screen coordinates.
+/// Also exports the newest frame as an image (for screenshots) and puts focus back on the hardware-keyboard bridge
+/// whenever the user taps the screen, so a connected keyboard keeps going.
 final class DisplayUIView: UIView {
     var qemu: QemuRuntime?
+    weak var keyboardBridge: UIView?
     private var link: CADisplayLink?
     private var serial: UInt64 = 0
     private var imageSize = CGSize(width: 320, height: 480)
+    /// The newest guest frame as a CGImage, kept for screenshots (the framework's own buffer is recycled, so this
+    /// holds its own copy).
+    private(set) var latestFrame: CGImage?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -44,6 +50,7 @@ final class DisplayUIView: UIView {
             shouldInterpolate: true, intent: .defaultIntent) else { return }
         imageSize = CGSize(width: Int(w), height: Int(h))
         layer.contents = image
+        latestFrame = image
         PerfStats.frames += 1
         if PerfStats.frames == 1 { LTMLog.note("first guest frame \(w)x\(h)") }
     }
@@ -62,7 +69,11 @@ final class DisplayUIView: UIView {
         qemu.touch(0, phase, nx, ny)
     }
 
-    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) { if let t = touches.first { send(t, phase: 0) } }
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if let t = touches.first { send(t, phase: 0) }
+        // Any tap puts focus back on the hardware-keyboard bridge, so a connected keyboard keeps typing into the guest.
+        keyboardBridge?.becomeFirstResponder()
+    }
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) { if let t = touches.first { send(t, phase: 1) } }
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) { if let t = touches.first { send(t, phase: 2) } }
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) { if let t = touches.first { send(t, phase: 2) } }
@@ -70,10 +81,34 @@ final class DisplayUIView: UIView {
 
 struct DisplayView: UIViewRepresentable {
     let qemu: QemuRuntime?
+    /// A hidden text field that catches hardware-keyboard keys and sends them to the guest agent (optional).
+    let keyboardBridge: UIView?
+
+    init(qemu: QemuRuntime?, keyboardBridge: UIView? = nil) {
+        self.qemu = qemu
+        self.keyboardBridge = keyboardBridge
+    }
+
     func makeUIView(context: Context) -> DisplayUIView {
         let v = DisplayUIView()
         v.qemu = qemu
+        v.keyboardBridge = keyboardBridge
         return v
     }
-    func updateUIView(_ view: DisplayUIView, context: Context) { view.qemu = qemu }
+    func updateUIView(_ view: DisplayUIView, context: Context) {
+        view.qemu = qemu
+        view.keyboardBridge = keyboardBridge
+    }
+}
+
+/// Finds the DisplayUIView inside a SwiftUI host view and hands back its newest frame.
+enum DisplaySnapshot {
+    static func latestFrame(inside root: UIView) -> CGImage? {
+        func walk(_ v: UIView) -> DisplayUIView? {
+            if let d = v as? DisplayUIView { return d }
+            for child in v.subviews { if let d = walk(child) { return d } }
+            return nil
+        }
+        return walk(root)?.latestFrame
+    }
 }
