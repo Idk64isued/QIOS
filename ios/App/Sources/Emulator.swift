@@ -84,6 +84,16 @@ final class Emulator: ObservableObject {
             }
             var config = try Self.bootConfig(directory: directory, usbAddress: usbSession?.qemuAddress)
             var argv = config.argv
+            // The iPhones carry a fake cellular modem on UART1 (the iPod touch has none). It is what makes the
+            // status bar, calls and texts work, and it is also the first thing to turn off when a phone boots to
+            // the Home screen and then wedges: the machine takes baseband=off and leaves that serial line empty.
+            if UserDefaults.standard.object(forKey: "cellularModem") as? Bool == false,
+                let machineIndex = argv.firstIndex(of: "-M"), machineIndex + 1 < argv.count,
+                argv[machineIndex + 1].hasPrefix("iPhone-")
+            {
+                argv[machineIndex + 1] += ",baseband=off"
+                LTMLog.note("cellular modem: off for this boot")
+            }
             // iOS gives a process no 1 GiB code buffer worth of headroom: ask for a modest one. Split W^X is how
             // JIT works under CS_DEBUGGED/TXM (tcg/region.c); TCI has no code buffer to split.
             // The code cache has to hold the translated guest code or QEMU throws it all away and translates again

@@ -367,7 +367,7 @@ struct CarrierEditor: View {
     @State private var bars = UserDefaults.standard.object(forKey: "carrierBars") as? Int ?? 4
     @State private var callNumber = UserDefaults.standard.string(forKey: "callNumber") ?? "+15551234567"
     @State private var textNumber = UserDefaults.standard.string(forKey: "textNumber") ?? "+15551234567"
-    @State private var textBody = "Sent from the other side."
+    @State private var textBody = "hello world from 2007!"
     @State private var message = ""
     @State private var busy = false
     @StateObject private var keyboard = KeyboardInset()

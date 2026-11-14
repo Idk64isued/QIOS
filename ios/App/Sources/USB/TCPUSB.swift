@@ -277,6 +277,19 @@ final class TCPUSBTransport: @unchecked Sendable {
     func exchange(ep: UInt8, flags: UInt8 = 0, out: Data = Data(), inLength: Int = 0, timeout: TimeInterval = 2)
         throws -> (status: Int, data: Data)
     {
+        do {
+            return try send(ep: ep, flags: flags, out: out, inLength: inLength, timeout: timeout)
+        } catch let error as TCPUSBError {
+            // The link is gone. Forget the socket as well, so isConnected answers honestly and the caller waits for
+            // the emulator to dial again instead of retrying into a dead descriptor as fast as it can.
+            if case .disconnected = error { dropConnection() }
+            throw error
+        }
+    }
+
+    private func send(ep: UInt8, flags: UInt8, out: Data, inLength: Int, timeout: TimeInterval)
+        throws -> (status: Int, data: Data)
+    {
         let incoming = ep & TCPUSB.directionIn != 0
         let payloadLength = incoming ? inLength : out.count
         guard payloadLength >= 0, payloadLength <= TCPUSB.maxTransaction else {

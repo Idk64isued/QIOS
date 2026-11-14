@@ -958,6 +958,14 @@ struct EmulatorScreen: View {
                     Button { showHelp = true } label: { Label("Help", systemImage: "questionmark.circle") }
                 }
                 Section("Advanced") {
+                    // The modem is an iPhone thing, and turning it off is the first thing to try when a phone
+                    // reaches the Home screen and then locks up.
+                    if details.isPhone {
+                        Toggle(isOn: Binding(
+                            get: { UserDefaults.standard.object(forKey: "cellularModem") as? Bool ?? true },
+                            set: { UserDefaults.standard.set($0, forKey: "cellularModem") }
+                        )) { Label("Cellular modem (next boot)", systemImage: "antenna.radiowaves.left.and.right") }
+                    }
                     // Note: takes effect on the next boot; the current emulator keeps whatever it started with.
                     Toggle(isOn: Binding(
                         get: { UserDefaults.standard.object(forKey: "enableUSB") as? Bool ?? false },

@@ -47,6 +47,7 @@ final class USBHostBridge: @unchecked Sendable {
     private var thread: Thread?
     private var attempts = 0
     private var lastFailure: String?
+    private var lastReport = Date.distantPast
     private(set) var deviceSummary: String?
 
     /// How long the bridge has been in the running state, for the UI.
@@ -123,12 +124,16 @@ final class USBHostBridge: @unchecked Sendable {
                 report(error)
                 mux.linkDropped(error)
                 configuredAt = nil
-                // The link may simply have gone (QEMU redials on a core soft reset); otherwise leave the guest
-                // alone for a moment, exactly as the built-in host's restart delay does.
-                if let usb = error as? TCPUSBError, case .disconnected = usb {
-                    _ = transport.waitForConnection(timeout: 5)
+                // Never come straight back round. An attempt that fails the instant it starts — a link that went
+                // away between the accept and the first packet, say — would otherwise retry thousands of times a
+                // second and drown both the log and the emulator's main loop.
+                Thread.sleep(forTimeInterval: 1)
+                if !transport.isConnected {
+                    // Wait for the emulator to dial again rather than poll a dead socket.
+                    _ = transport.waitForConnection(timeout: 10)
                 } else {
-                    Thread.sleep(forTimeInterval: 3)
+                    // The restart delay QEMU's own built-in host uses between enumeration attempts.
+                    Thread.sleep(forTimeInterval: 2)
                 }
             }
         }
@@ -166,11 +171,14 @@ final class USBHostBridge: @unchecked Sendable {
         attempts += 1
         let text = (error as? CustomStringConvertible)?.description ?? "\(error)"
         set(.retrying(text))
-        // The first failure is worth a line; after that only occasionally, or the log fills up with the NAKs that
-        // are a normal part of waiting for the guest to boot.
-        if text != lastFailure || attempts % 12 == 0 {
+        // One line for a new kind of failure, and after that at most one every ten seconds. Counting attempts is
+        // not enough: the same failure repeating quickly is exactly the case that must not fill the log.
+        let now = Date()
+        let quiet = now.timeIntervalSince(lastReport) < 10
+        if text != lastFailure || !quiet {
             LTMLog.note("usb: bring-up attempt \(attempts) did not take (\(text)); trying again")
             lastFailure = text
+            lastReport = now
         }
     }
 

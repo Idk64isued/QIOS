@@ -64,6 +64,16 @@ text and images should be — iPhone OS 1 does this on some builds, and the log 
 (FirmwareKit's `gles_shim` off), so the device composites its own screen the way it did on the real hardware. It is
 slower, and it is the thing to try when a device boots but draws nothing worth looking at.
 
+## When a phone boots and then wedges
+
+The iPhones carry a fake modem on UART1 that the iPod touch does not have. If a phone reaches the Home screen and
+then locks up a few seconds later — the log shows the interrupt rate climbing into the hundreds of thousands a
+second and the frame rate falling to zero — turn **Cellular modem** off in the gear menu and boot again. That
+passes `baseband=off` to the machine and leaves that serial line empty.
+
+If it boots and stays up with the modem off, the modem is what wedges it (and calls and texts are off with it). If
+it wedges anyway, the modem is innocent and the next suspect is the Bluetooth line, which has no switch yet.
+
 ## The USB bridge
 
 Off by default; **Settings → USB bridge** turns it on for the next boot.
