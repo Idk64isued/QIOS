@@ -99,7 +99,7 @@ struct KeyboardBridgeView: UIViewRepresentable {
 /// Watches the iPhone's volume slider and, when it moves, sends the matching guest button press, then puts the
 /// system volume back where it was so the phone itself doesn't actually change.
 @MainActor
-final class VolumeWatcher: NSObject {
+final class VolumeWatcher: NSObject, ObservableObject {
     private let hidden = MPVolumeView(frame: CGRect(x: -1000, y: -1000, width: 1, height: 1))
     private var observation: NSKeyValueObservation?
     private var expected: Float?

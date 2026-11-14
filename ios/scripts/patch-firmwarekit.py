@@ -276,6 +276,21 @@ for rel, content in [
     (ROOT / rel).write_text(content)
     print(f"  wrote: {rel}")
 
+# Xcode 26's explicit Swift modules need every C/Clang target to be a proper module (with a module.modulemap).
+# SPM's auto-generated one isn't delivered to Xcode's module cache in all cases, so Swift code that imports a C
+# target's module can fail "unable to resolve module dependency: 'CActivation'". A hand-written module.modulemap in
+# the target's include directory is the reliable fix.
+modulemap = ROOT / "Sources/CActivation/include/module.modulemap"
+if not modulemap.exists():
+    modulemap.write_text("""module CActivation {
+    header "CActivation.h"
+    export *
+}
+""")
+    print(f"  wrote: Sources/CActivation/include/module.modulemap")
+else:
+    print(f"  already present: Sources/CActivation/include/module.modulemap")
+
 if problems:
     print("\nFirmwareKit iOS patch: these edits did not apply (upstream changed?):", file=sys.stderr)
     for p in problems:
