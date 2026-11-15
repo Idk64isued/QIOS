@@ -34,6 +34,10 @@ CASES = [
     ("an iOS 17 API",
      "SettingsView.swift", "var body: some View {", "var body: some View {\n        let _ = ContentUnavailableView(\"x\", systemImage: \"y\")",
      "ContentUnavailableView (iOS 17)"),
+    ("a nested type used by its simple name outside its parent (update 33)",
+     "PhotoImport.swift", "throw GuestAgent.InstallFailure(message: \"\\(title) has no length.\")",
+     "throw InstallFailure(message: \"\\(title) has no length.\")",
+     "'InstallFailure' is declared inside GuestAgent"),
     ("a syntax error",
      "Modem.swift", "import Foundation", "import Foundation\nfunc broken( {", "does not parse"),
 ]

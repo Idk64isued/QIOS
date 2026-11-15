@@ -496,6 +496,17 @@ def in_available_block(src, node):
     return False
 
 
+# Names the SDKs already use: an app type nested under one of these names (PackedDevice.Index.Image) doesn't stop the
+# simple name meaning SwiftUI's or Swift's own elsewhere.
+SDK_TYPES = {
+    "Image", "Result", "Context", "Text", "Label", "Button", "Color", "State", "Data", "URL", "Date", "Error", "Kind",
+    "Status", "Options", "Mode", "Entry", "Item", "Section", "Group", "Link", "Shape", "Path", "Font", "Event",
+    "Value", "Key", "Element", "Index", "Range", "Style", "Content", "Body", "Configuration", "Coordinator", "Task",
+    "Timer", "Thread", "Notification", "Bundle", "Picker", "Toggle", "Menu", "Form", "List", "Table", "Grid",
+    "Stack", "Layout", "Animation", "Transaction", "Binding", "Environment", "Scene", "Window", "View", "Model",
+}
+
+
 def check_file(path, src, tree, idx, report):
     short = os.path.relpath(path)
     for node in walk(tree.root_node):
@@ -567,6 +578,33 @@ def check_file(path, src, tree, idx, report):
                 got = "(" + ", ".join((lab or "_") + ":" for lab in labels) + ")"
                 report.error(short, line_of(node),
                              f"{owner}.{fname}{got} matches none of its declarations {' '.join(sigs)}")
+
+    # ---- nested types: a type declared inside another (GuestAgent.InstallFailure) is only in scope by its simple
+    # name inside that type and its extensions; anywhere else the simple name is "cannot find in scope".
+    nested = {}
+    for qualified, info in idx.types.items():
+        if "." in qualified and info.primary:
+            parent, simple = qualified.rsplit(".", 1)
+            nested.setdefault(simple, []).append(parent)
+    for node in walk(tree.root_node):
+        if node.type != "call_expression" or not node.children or node.children[0].type != "simple_identifier":
+            continue
+        name = text(src, node.children[0])
+        if not name[:1].isupper() or name not in nested or (name in idx.types and idx.types[name].primary) \
+                or name in SDK_TYPES:
+            continue
+        inside = set()
+        n = node.parent
+        while n is not None:
+            if n.type in ("class_declaration", "protocol_declaration"):
+                tn = type_name_of(src, n)
+                if tn:
+                    inside.add(tn)
+            n = n.parent
+        parents = nested[name]
+        if not any(p.rsplit(".", 1)[-1] in inside for p in parents):
+            report.error(short, line_of(node), f"'{name}' is declared inside {' / '.join(parents)}: "
+                                               f"here it has to be written {parents[0]}.{name}")
 
     # ---- availability
     lines = src.decode("utf-8", "replace").split("\n")

@@ -181,7 +181,7 @@ final class ScreenRecorder: @unchecked Sendable {
             writer.finishWriting { [self] in
                 let ok = writer.status == .completed && lastVideo.isValid
                 LTMLog.note("recording: " + (ok ? "saved \(Int(end.seconds)) s" : "failed \(writer.error?.localizedDescription ?? "(no frames)")"))
-                DispatchQueue.main.async { done(ok ? url : nil) }
+                DispatchQueue.main.async { done(ok ? self.url : nil) }
             }
         }
     }

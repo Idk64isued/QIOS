@@ -463,7 +463,7 @@ public enum InProcessOneShot {
     nonisolated(unsafe) public static var run: Runner?
 
     static func boot(
-        _ run: Runner, argv: [String], machine: String, serial: URL, stop: String?, stopPattern: String?,
+        _ run: @escaping Runner, argv: [String], machine: String, serial: URL, stop: String?, stopPattern: String?,
         timeout: Double, log: (String) -> Void, during: (@Sendable () throws -> Void)?
     ) throws -> Result {
         final class Failure: @unchecked Sendable {

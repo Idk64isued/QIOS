@@ -35,7 +35,7 @@ enum MediaPrep {
     /// An upright, opaque baseline JPEG, at most 2048 pixels on its longer side.
     static func photo(_ data: Data, title: String) throws -> PreparedMedia {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
-            throw InstallFailure(message: "\(title) isn\u{2019}t a picture Light Touch can read.")
+            throw GuestAgent.InstallFailure(message: "\(title) isn\u{2019}t a picture Light Touch can read.")
         }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -43,30 +43,30 @@ enum MediaPrep {
             kCGImageSourceThumbnailMaxPixelSize: 2048,
         ]
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-            throw InstallFailure(message: "\(title) couldn\u{2019}t be decoded.")
+            throw GuestAgent.InstallFailure(message: "\(title) couldn\u{2019}t be decoded.")
         }
         // JPEG has no transparency: flatten onto white, in sRGB.
         let space = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         guard let context = CGContext(
             data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: 0, space: space,
             bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
-        else { throw InstallFailure(message: "\(title) couldn\u{2019}t be converted.") }
+        else { throw GuestAgent.InstallFailure(message: "\(title) couldn\u{2019}t be converted.") }
         let rect = CGRect(x: 0, y: 0, width: image.width, height: image.height)
         context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
         context.fill(rect)
         context.draw(image, in: rect)
-        guard let flat = context.makeImage() else { throw InstallFailure(message: "\(title) couldn\u{2019}t be converted.") }
+        guard let flat = context.makeImage() else { throw GuestAgent.InstallFailure(message: "\(title) couldn\u{2019}t be converted.") }
         let (id, dir) = try folder()
         let out = dir.appendingPathComponent("image.jpg")
         guard let destination = CGImageDestinationCreateWithURL(out as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else {
-            throw InstallFailure(message: "\(title) couldn\u{2019}t be converted.")
+            throw GuestAgent.InstallFailure(message: "\(title) couldn\u{2019}t be converted.")
         }
         let properties: [CFString: Any] = [
             kCGImageDestinationLossyCompressionQuality: 0.9,
             kCGImagePropertyJFIFDictionary: [kCGImagePropertyJFIFIsProgressive: false],
         ]
         CGImageDestinationAddImage(destination, flat, properties as CFDictionary)
-        guard CGImageDestinationFinalize(destination) else { throw InstallFailure(message: "\(title) couldn\u{2019}t be saved.") }
+        guard CGImageDestinationFinalize(destination) else { throw GuestAgent.InstallFailure(message: "\(title) couldn\u{2019}t be saved.") }
         return PreparedMedia(id: id, kind: .photo, title: title, directory: dir, file: out, metadata: nil)
     }
 
@@ -74,15 +74,15 @@ enum MediaPrep {
     static func video(_ source: URL, title: String, hd: Bool) async throws -> PreparedMedia {
         let asset = AVURLAsset(url: source)
         let duration = try await asset.load(.duration).seconds
-        guard duration.isFinite, duration > 0 else { throw InstallFailure(message: "\(title) has no length.") }
+        guard duration.isFinite, duration > 0 else { throw GuestAgent.InstallFailure(message: "\(title) has no length.") }
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
-            throw InstallFailure(message: "\(title) has no picture.")
+            throw GuestAgent.InstallFailure(message: "\(title) has no picture.")
         }
         let natural = try await track.load(.naturalSize)
         let transform = try await track.load(.preferredTransform)
         let upright = natural.applying(transform)
         let w0 = abs(upright.width), h0 = abs(upright.height)
-        guard w0 > 0, h0 > 0 else { throw InstallFailure(message: "\(title) has no picture.") }
+        guard w0 > 0, h0 > 0 else { throw GuestAgent.InstallFailure(message: "\(title) has no picture.") }
         let long: CGFloat = hd ? 1280 : 640, short: CGFloat = hd ? 720 : 480
         let box = w0 >= h0 ? CGSize(width: long, height: short) : CGSize(width: short, height: long)
         let scale = min(1, box.width / w0, box.height / h0)
@@ -103,7 +103,7 @@ enum MediaPrep {
         let videoOut = AVAssetReaderVideoCompositionOutput(
             videoTracks: [track], videoSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
         videoOut.videoComposition = composition
-        guard reader.canAdd(videoOut) else { throw InstallFailure(message: "\(title) can\u{2019}t be read.") }
+        guard reader.canAdd(videoOut) else { throw GuestAgent.InstallFailure(message: "\(title) can\u{2019}t be read.") }
         reader.add(videoOut)
         var audioOut: AVAssetReaderTrackOutput?
         if let audioTrack = try await asset.loadTracks(withMediaType: .audio).first {
@@ -139,7 +139,7 @@ enum MediaPrep {
             audioIn = a
         }
         guard reader.startReading(), writer.startWriting() else {
-            throw InstallFailure(message: "\(title) couldn\u{2019}t be converted: \((reader.error ?? writer.error)?.localizedDescription ?? "unknown error")")
+            throw GuestAgent.InstallFailure(message: "\(title) couldn\u{2019}t be converted: \((reader.error ?? writer.error)?.localizedDescription ?? "unknown error")")
         }
         writer.startSession(atSourceTime: .zero)
         var pairs: [(AVAssetWriterInput, AVAssetReaderOutput)] = [(videoIn, videoOut)]
@@ -198,12 +198,12 @@ private enum Transcode {
             group.notify(queue: .global()) {
                 if reader.status != .completed || writer.status == .failed {
                     writer.cancelWriting()
-                    c.resume(throwing: InstallFailure(message: "The video couldn\u{2019}t be converted: \((reader.error ?? writer.error)?.localizedDescription ?? "unknown error")"))
+                    c.resume(throwing: GuestAgent.InstallFailure(message: "The video couldn\u{2019}t be converted: \((reader.error ?? writer.error)?.localizedDescription ?? "unknown error")"))
                     return
                 }
                 writer.finishWriting {
                     if writer.status == .completed { c.resume() } else {
-                        c.resume(throwing: InstallFailure(message: "The video couldn\u{2019}t be saved: \(writer.error?.localizedDescription ?? "unknown error")"))
+                        c.resume(throwing: GuestAgent.InstallFailure(message: "The video couldn\u{2019}t be saved: \(writer.error?.localizedDescription ?? "unknown error")"))
                     }
                 }
             }
@@ -217,14 +217,14 @@ extension GuestAgent {
         let major = Int((guestVersion ?? "3").prefix { $0 != "." }) ?? 3
         let minor = Int((guestVersion ?? "3.1").split(separator: ".").dropFirst().first ?? "0") ?? 0
         guard major > 3 || (major == 3 && minor >= 1) else {
-            throw InstallFailure(message: "Adding photos and videos needs iPhone OS 3.1 or later on the device.")
+            throw GuestAgent.InstallFailure(message: "Adding photos and videos needs iPhone OS 3.1 or later on the device.")
         }
         guard status == .alive, ops.contains("spawn"), ops.contains("put") || ops.contains("putpart") else {
-            throw InstallFailure(message: "The device\u{2019}s agent isn\u{2019}t ready. Give it a minute after the Home screen appears.")
+            throw GuestAgent.InstallFailure(message: "The device\u{2019}s agent isn\u{2019}t ready. Give it a minute after the Home screen appears.")
         }
         let toolName = media.kind == .photo ? "itphoto" : "itmedia"
         guard let tool = MacFiles.guestTool(toolName) else {
-            throw InstallFailure(message: "The guest tools have no \(toolName). Get the Mac files again (Add device \u{203A} Mac files).")
+            throw GuestAgent.InstallFailure(message: "The guest tools have no \(toolName). Get the Mac files again (Add device \u{203A} Mac files).")
         }
         isInstalling = true
         defer { isInstalling = false }
@@ -235,7 +235,7 @@ extension GuestAgent {
         progress("Copying \(media.title)\u{2026}")
         let staged = folder + "/" + media.file.lastPathComponent
         guard await putFile(localURL: media.file, guestPath: staged, mode: "0644") else {
-            throw InstallFailure(message: "Copying \(media.title) into the device failed. \(lastLog)")
+            throw GuestAgent.InstallFailure(message: "Copying \(media.title) into the device failed. \(lastLog)")
         }
         try await runHelper(uid: 501, gid: 501, paths: [staged], what: "hand it to the device")
         let exe = "/tmp/ltm-\(toolName)-\(media.id)"
@@ -244,14 +244,14 @@ extension GuestAgent {
         if let metadata = media.metadata {
             let plist = "/tmp/ltm-media-\(media.id).plist"
             guard await putFile(localURL: metadata, guestPath: plist, mode: "0644") else {
-                throw InstallFailure(message: "Couldn\u{2019}t copy the video\u{2019}s details into the device. \(lastLog)")
+                throw GuestAgent.InstallFailure(message: "Couldn\u{2019}t copy the video\u{2019}s details into the device. \(lastLog)")
             }
             argv.append(plist)
             temporary.append(plist)
         }
         argv.append(media.id)
         guard await putFile(localURL: tool, guestPath: exe, mode: "0755") else {
-            throw InstallFailure(message: "Couldn\u{2019}t put \(toolName) into the device. \(lastLog)")
+            throw GuestAgent.InstallFailure(message: "Couldn\u{2019}t put \(toolName) into the device. \(lastLog)")
         }
         progress("Adding \(media.title) to \(media.kind == .photo ? "Photos" : "Videos")\u{2026}")
         let result = await run(argv, timeout: 180)
@@ -260,7 +260,7 @@ extension GuestAgent {
         log("\(toolName): status \(result?.status ?? -1): \(output.trimmingCharacters(in: .whitespacesAndNewlines))")
         guard let result, result.status == 0, output.contains("imported") else {
             let reason = output.split(separator: "\n").last.map(String.init) ?? "no answer"
-            throw InstallFailure(message: "\(media.kind == .photo ? "Photos" : "Videos") didn\u{2019}t take \(media.title): \(reason)")
+            throw GuestAgent.InstallFailure(message: "\(media.kind == .photo ? "Photos" : "Videos") didn\u{2019}t take \(media.title): \(reason)")
         }
     }
 }
@@ -361,13 +361,13 @@ struct MediaImportView: View {
             let isMovie = item.supportedContentTypes.contains { $0.conforms(to: .movie) }
             if isMovie {
                 guard let movie = try await item.loadTransferable(type: PickedMovie.self) else {
-                    throw InstallFailure(message: "That video couldn\u{2019}t be read (it may still be in iCloud).")
+                    throw GuestAgent.InstallFailure(message: "That video couldn\u{2019}t be read (it may still be in iCloud).")
                 }
                 defer { try? FileManager.default.removeItem(at: movie.url) }
                 return try await MediaPrep.video(movie.url, title: "Video \(index + 1)", hd: hd)
             }
             guard let data = try await item.loadTransferable(type: Data.self) else {
-                throw InstallFailure(message: "That photo couldn\u{2019}t be read (it may still be in iCloud).")
+                throw GuestAgent.InstallFailure(message: "That photo couldn\u{2019}t be read (it may still be in iCloud).")
             }
             return try MediaPrep.photo(data, title: "Photo \(index + 1)")
         }
