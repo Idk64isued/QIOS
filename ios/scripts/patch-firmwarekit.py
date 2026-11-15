@@ -570,9 +570,15 @@ edit(
             guard cat.count > 512, folded || cat[14 + 37] == 0xBC else {
                 throw FirmwareError(.unsupported, "\\(url.lastPathComponent): an HFS+ catalog this writer can't order")
             }
-            // A typed local for the comparator, not the ternary passed straight as the `compare:` closure: that
-            // form crashes the Swift 6.1 type checker ("failed to produce diagnostic for expression").
-            let order: ([UInt8], [UInt8]) -> Int = folded ? BTreeFile.foldedCatalogOrder : BTreeFile.catalogOrder
+            // if/else, not a ternary, to choose the comparator: a ternary of two function references
+            // (`folded ? BTreeFile.foldedCatalogOrder : BTreeFile.catalogOrder`) crashes the Swift 6.1 type
+            // checker ("failed to produce diagnostic for expression"), whether or not it is bound to a typed local.
+            let order: ([UInt8], [UInt8]) -> Int
+            if folded {
+                order = BTreeFile.foldedCatalogOrder
+            } else {
+                order = BTreeFile.catalogOrder
+            }
             catalog = try BTreeFile(cat, compare: order, wellFormed: Self.catalogRecord)
             #endif""",
     marker="ordered case-folded",
