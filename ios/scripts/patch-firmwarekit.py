@@ -158,6 +158,16 @@ edit("Sources/FirmwareKit/N72/N72Recipe.swift",
      "            let roots = [bundled, ProcessInfo.processInfo.environment[\"LTM_FILES\"].map { URL(fileURLWithPath: $0) }]\n"
      "            #endif\n        #endif\n",
      marker='environment["LTM_FILES"].map { URL(fileURLWithPath: $0) }]\n            #endif')
+# The recipes check their helper is an executable file. The app names a stand-in (the boots run in-process), and
+# iOS's sandbox answers "not executable" for anything in an app container: a file being there is what counts.
+edit("Sources/FirmwareKit/K48/K48Recipe.swift",
+     "guard let helper = c.o.helper, FileManager.default.isExecutableFile(atPath: helper.path) else {",
+     "guard let helper = c.o.helper, FileManager.default.fileExists(atPath: helper.path) else {",
+     marker="guard let helper = c.o.helper, FileManager.default.fileExists(atPath: helper.path) else {")
+edit("Sources/FirmwareKit/N72/N72Recipe.swift",
+     "guard let helper, fm.isExecutableFile(atPath: helper.path) else {",
+     "guard let helper, fm.fileExists(atPath: helper.path) else {",
+     marker="guard let helper, fm.fileExists(atPath: helper.path) else {")
 # Machines on iOS is the table the app set from its library; naming a helper would empty it (no helper to list from).
 edit("Sources/FirmwareKit/K48/K48Recipe.swift",
      "        patcher = K48IBoot.patcher(helper: helper)\n        Machines.helper = helper\n",

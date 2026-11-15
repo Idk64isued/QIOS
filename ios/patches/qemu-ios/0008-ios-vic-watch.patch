@@ -1,0 +1,99 @@
+diff --git a/hw/intc/pl192.c b/hw/intc/pl192.c
+index 25edc96cfd..87ae98590e 100644
+--- a/hw/intc/pl192.c
++++ b/hw/intc/pl192.c
+@@ -529,6 +529,65 @@ static const MemoryRegionOps pl192_ops = {
+     .endianness = DEVICE_NATIVE_ENDIAN,
+ };
+ 
++/*
++ * The watch. The VIC hands the CPU an interrupt only while its priority is
++ * above the one being serviced (pl192_update's early returns); the serviced
++ * priority is pushed when the guest reads VECTADDR and popped when it writes
++ * it. If a pop is ever lost, every interrupt at that priority and below is
++ * held back for good: the guest sits in WFI with an enabled interrupt pending
++ * and the device looks frozen (timers, storage, touch all stop), which is what
++ * the iPod touch 2G does under heavy storage writes. No guest keeps an enabled
++ * interrupt waiting for seconds while the CPU is idle, so when that state
++ * holds for two seconds the watch logs the controller and clears the stale
++ * priority stack. IT_VIC_WATCH=0 turns it off (log only with =log).
++ */
++static int pl192_watch_mode(void)
++{
++    static int mode = -1;
++    if (mode < 0) {
++        const char *v = getenv("IT_VIC_WATCH");
++        mode = !v ? 2 : !strcmp(v, "0") ? 0 : !strcmp(v, "log") ? 1 : 2;
++    }
++    return mode;
++}
++
++static void pl192_watch_tick(void *opaque)
++{
++    PL192State *s = opaque;
++    CPUState *cpu = first_cpu;
++    uint32_t pending = (s->rawintr | s->softint) & s->intenable & ~s->intselect;
++    bool held = (pending || s->daisy_input) && cpu && cpu->halted &&
++                s->stack_i > 0 && s->current_highest != PL192_NO_IRQ;
++    uint32_t key = pending ^ (s->priority << 24) ^ ((uint32_t)s->stack_i << 28);
++
++    timer_mod(s->watch, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 1000);
++    if (!held) {
++        s->watch_seen = 0;
++        return;
++    }
++    s->watch_seen = (key == s->watch_key) ? s->watch_seen + 1 : 1;
++    s->watch_key = key;
++    if (s->watch_seen < 2) {
++        return;
++    }
++    fprintf(stderr, "[vic] %s held back for %us: pending 0x%08x (raw 0x%08x enable 0x%08x soft 0x%08x) "
++            "highest %u current %u priority 0x%x stack %d daisy %u%s\n",
++            memory_region_name(&s->iomem), s->watch_seen, pending, s->rawintr, s->intenable, s->softint,
++            s->current_highest, s->current, s->priority, s->stack_i, s->daisy_input,
++            pl192_watch_mode() == 2 ? " -- clearing the priority stack" : "");
++    if (pl192_watch_mode() == 2) {
++        s->stack_i = 0;
++        s->priority = s->priority_stack[0] = 0x10;
++        s->current = s->irq_stack[0] = PL192_NO_IRQ;
++        s->watch_unstuck++;
++        s->watch_seen = 0;
++        pl192_update(s);
++        if (s->daisy) {
++            pl192_update(s->daisy);
++        }
++    }
++}
++
+ DeviceState *pl192_manual_init(char *mem_name, ...)
+ {
+     DeviceState *dev = qdev_new(TYPE_PL192);
+@@ -543,6 +602,11 @@ DeviceState *pl192_manual_init(char *mem_name, ...)
+     sysbus_init_irq(sbd, &s->irq);
+     sysbus_init_irq(sbd, &s->fiq);
+     sysbus_realize_and_unref(sbd, &error_fatal);
++    /* The application processor's controllers only: an IOP's belong to another core. */
++    if (pl192_watch_mode() && strncmp(mem_name, "iop", 3) != 0) {
++        s->watch = timer_new_ms(QEMU_CLOCK_VIRTUAL, pl192_watch_tick, s);
++        timer_mod(s->watch, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 1000);
++    }
+ 
+     va_start(va, mem_name);
+     int n = 0;
+diff --git a/include/hw/intc/pl192.h b/include/hw/intc/pl192.h
+index cb7bb03652..847a795d9f 100644
+--- a/include/hw/intc/pl192.h
++++ b/include/hw/intc/pl192.h
+@@ -73,6 +73,12 @@ struct PL192State {
+ 
+     /* Next controller in chain */
+     PL192State *daisy;
++
++    /* Stuck-priority watch (pl192_watch): not migrated */
++    QEMUTimer *watch;
++    uint32_t watch_seen;      /* consecutive ticks the same pending IRQ sat undelivered */
++    uint32_t watch_key;
++    uint32_t watch_unstuck;   /* how many times it had to be cleared */
+ };
+ 
+ DeviceState *pl192_manual_init(char *mem_name, ...);

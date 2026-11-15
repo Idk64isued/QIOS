@@ -30,13 +30,13 @@ enum OneShotRunner {
     static func helperStandIn() -> URL? {
         let fm = FileManager.default
         let url = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("LightTouchDevice")
-        if !fm.isExecutableFile(atPath: url.path) {
+        if !fm.fileExists(atPath: url.path) {
             try? fm.removeItem(at: url)
             guard fm.createFile(atPath: url.path, contents: Data("#!/bin/false\nLight Touch runs its preparation boots in-process.\n".utf8))
             else { return nil }
             chmod(url.path, 0o755)
         }
-        return fm.isExecutableFile(atPath: url.path) ? url : nil
+        return fm.fileExists(atPath: url.path) ? url : nil
     }
 
     private static var root: URL {

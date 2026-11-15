@@ -201,6 +201,15 @@ signature), runs headless on a thread, and is left behind when it ends (`OneShot
 so restart Light Touch after preparing one of these before starting it. The iPad is prepared with its kboot chain
 (iBoot32Patcher, which its iBoot chain needs, is a Mac tool).
 
+## Freezes under heavy storage writes (VIC watch)
+
+Reports from the iPod touch 2G showed the device stopping for minutes during big installs: the emulated CPU idle in
+WFI, nothing drawn, the agent timing out, then recovering by itself. `patches/qemu-ios/0008` watches the interrupt
+controllers (PL192): an enabled interrupt held back for two seconds while the CPU sits idle means the controller's
+priority stack lost a pop, and the watch logs a `[vic] … held back` line with its state and clears the stale
+priority. `IT_VIC_WATCH=log` only logs; `IT_VIC_WATCH=0` turns it off. If freezes continue without `[vic]` lines,
+the cause is elsewhere.
+
 ## Microphone
 
 On the S5L8920 and A4 machines (iPhone 3GS, iPod touch 3G and 4G, iPhone 4, iPad) the device menu's "Use this
