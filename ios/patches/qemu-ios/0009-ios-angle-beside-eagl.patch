@@ -1,0 +1,31 @@
+diff --git a/hw/arm/meson.build b/hw/arm/meson.build
+index 98333ecbda..8bc39470ac 100644
+--- a/hw/arm/meson.build
++++ b/hw/arm/meson.build
+@@ -144,6 +144,10 @@ elif host_gles.found()
+   # sysroot's --extra-ldflags vanish from the link.
+   arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G',
+              if_true: [files('gles-host.c', 'gles-host-eagl.c'), host_gles, pvrtc_dep])
++  if angle_prefix != ''
++    # ANGLE beside EAGL, chosen per boot (gl-renderer=angle): ES 1.1 and ES 2.0 guests both on Metal.
++    arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G', if_true: [files('gles-host-angle.c'), host_angle])
++  endif
+ else
+   arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G', if_true: files('gles-host-stub.c'))
+ endif
+diff --git a/meson.build b/meson.build
+index be28191129..58957b56df 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1239,8 +1239,9 @@ host_opengl = dependency('appleframeworks', modules: 'OpenGL',
+ angle_prefix = get_option('ltm_angle_prefix')
+ host_angle = declare_dependency()
+ if angle_prefix != ''
+-  if not host_opengl.found()
+-    error('The experimental ANGLE renderer is built beside the CGL one, on macOS')
++  # iOS: beside the EAGL one (Light Touch for iOS ships libEGL and libGLESv2 in its Frameworks).
++  if not host_opengl.found() and not cc.has_header('OpenGLES/ES1/gl.h')
++    error('The experimental ANGLE renderer is built beside the CGL (macOS) or EAGL (iOS) one')
+   endif
+   host_angle = declare_dependency(compile_args: ['-DGLES_HOST_WITH_ANGLE=1', '-I' + angle_prefix / 'include'],
+     link_args: ['-Wl,-rpath,' + angle_prefix / 'out/ltm-metal'])

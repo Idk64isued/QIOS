@@ -21,6 +21,34 @@ final class QemuRuntime: @unchecked Sendable {
         self.isJIT = isJIT
     }
 
+    /// ANGLE (libEGL + libGLESv2) ships beside the emulator in this build.
+    static var angleBundled: Bool {
+        let dir = Bundle.main.privateFrameworksPath ?? (Bundle.main.bundlePath + "/Frameworks")
+        return FileManager.default.fileExists(atPath: dir + "/libEGL.dylib")
+            && FileManager.default.fileExists(atPath: dir + "/libGLESv2.dylib")
+    }
+
+    /// Settings › Graphics: how the device's OpenGL ES reaches this phone's GPU.
+    enum Renderer: String, CaseIterable {
+        /// ANGLE on Metal: ES 1.1 and ES 2.0 guests (the default).
+        case angle
+        /// The iPhone's own OpenGL ES, ES 1.1 and ES 3.0 contexts (qemu-ios patch 0010, gl-renderer=es3).
+        case es3
+        /// The iPhone's own OpenGL ES 1.1 only (the first renderer): no shaders, so the newer devices draw in software.
+        case classic
+    }
+
+    /// The renderer the next boot uses: the setting, where this build has it (both new ones come with ANGLE's build).
+    static var renderer: Renderer {
+        let picked = Renderer(rawValue: UserDefaults.standard.string(forKey: "glRenderer") ?? "angle") ?? .angle
+        return angleBundled ? picked : .classic
+    }
+
+    static var usesANGLE: Bool { renderer == .angle }
+
+    /// Whether the renderer runs ES 2.0 shaders (what the S5L8920 and A4 devices composite with).
+    static var runsShaders: Bool { renderer != .classic }
+
     /// The dylib that suits this launch: the JIT build when JIT is ready, else the interpreter.
     static func load() throws -> QemuRuntime {
         let dir = Bundle.main.privateFrameworksPath ?? (Bundle.main.bundlePath + "/Frameworks")

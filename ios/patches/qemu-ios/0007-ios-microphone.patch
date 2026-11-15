@@ -1,8 +1,8 @@
 diff --git a/hw/arm/s5l8930_i2s.c b/hw/arm/s5l8930_i2s.c
-index 0235c765e5..0ae424f4bb 100644
+index 0235c765e5..c543b1bbed 100644
 --- a/hw/arm/s5l8930_i2s.c
 +++ b/hw/arm/s5l8930_i2s.c
-@@ -219,6 +219,83 @@ static void i2s_set_in_rate(S5L8930I2SState *s, unsigned rate)
+@@ -219,6 +219,88 @@ static void i2s_set_in_rate(S5L8930I2SState *s, unsigned rate)
      }
  }
  
@@ -48,11 +48,16 @@ index 0235c765e5..0ae424f4bb 100644
 +    qatomic_set(&mic_on, on);
 +}
 +
-+/* The guest read the microphone within the last second (a recording app is open). */
++/*
++ * The guest read its microphone within the last second (Voice Memos recording, an app's voice chat), whether or
++ * not the host's microphone is on: the app turns the phone's microphone on only while this says so.
++ */
++static int64_t mic_guest_read_us;
++
 +bool qemu_ios_mic_listening(void)
 +{
-+    int64_t last = qatomic_read(&mic_last_read_us);
-+    return qatomic_read(&mic_on) && last && g_get_monotonic_time() - last < 1000000;
++    int64_t last = qatomic_read(&mic_guest_read_us);
++    return last && g_get_monotonic_time() - last < 1000000;
 +}
 +
 +static void mic_next_frame(S5L8930I2SState *s)
@@ -86,13 +91,20 @@ index 0235c765e5..0ae424f4bb 100644
  /* Next captured stereo S16 frame: the tone, the host's input, or silence. */
  static void i2s_next_frame(S5L8930I2SState *s)
  {
-@@ -230,6 +307,10 @@ static void i2s_next_frame(S5L8930I2SState *s)
+@@ -230,6 +312,17 @@ static void i2s_next_frame(S5L8930I2SState *s)
          stw_le_p(s->rx_frame + 2, v);
          return;
      }
-+    if (s->audio_out && qatomic_read(&mic_on)) {
-+        mic_next_frame(s);
-+        return;
++    if (s->audio_out) {
++        int64_t now = g_get_monotonic_time();
++        /* once every 100 ms is plenty for "is it listening" */
++        if (now - qatomic_read(&mic_guest_read_us) > 100000) {
++            qatomic_set(&mic_guest_read_us, now);
++        }
++        if (qatomic_read(&mic_on)) {
++            mic_next_frame(s);
++            return;
++        }
 +    }
      if (s->in_level < 4) {
          memset(s->rx_frame, 0, 4);

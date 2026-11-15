@@ -1,6 +1,7 @@
 #!/bin/bash
 # Patches qemu-ios, then builds libqemu-arm.dylib (JIT) and libqemu-arm-tci.dylib (interpreter fallback) for iOS arm64.
-#     build-qemu.sh QEMU_SRC DEPS_PREFIX OUT_DIR
+#     [LTM_ANGLE=angle-out] build-qemu.sh QEMU_SRC DEPS_PREFIX OUT_DIR
+# LTM_ANGLE (build-angle-ios.sh's output): also build the ANGLE renderer beside the EAGL one (patches/qemu-ios/0009).
 set -euo pipefail
 QEMU="$(cd "${1:?qemu-ios checkout}" && pwd)"; P="$(cd "${2:?deps prefix}" && pwd)"; OUT="${3:?out dir}"; mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -26,7 +27,8 @@ build() {   # NAME DYLIB EXTRA-CONFIGURE-ARGS...
     "$QEMU/configure" --cross-prefix= --cpu=aarch64 --cc="clang $FLAGS" --cxx="clang++ $FLAGS" --objcc="clang $FLAGS" \
         --target-list=arm-softmmu --without-default-features --enable-pixman --enable-slirp --enable-nettle --disable-pie \
         --disable-tools --disable-docs --audio-drv-list= --python="${QEMU_PYTHON:-python3}" \
-        --extra-cflags="-I$P/include -miphoneos-version-min=16.0 -DGLES_SILENCE_DEPRECATION -ferror-limit=0" --extra-ldflags="-L$P/lib -lcrypto -miphoneos-version-min=16.0" "$@"
+        --extra-cflags="-I$P/include -miphoneos-version-min=16.0 -DGLES_SILENCE_DEPRECATION -ferror-limit=0" --extra-ldflags="-L$P/lib -lcrypto -miphoneos-version-min=16.0" \
+        ${LTM_ANGLE:+"-Dltm_angle_prefix=$LTM_ANGLE"} "$@"
     ninja -k 0 -j"$JOBS" qemu-system-arm   # -k 0: keep going, so one run reports every failing file
     bash "$HERE/make-dylib-ios.sh" "$QEMU" "$PWD" "$dylib"
     cp "$dylib" "$OUT/"

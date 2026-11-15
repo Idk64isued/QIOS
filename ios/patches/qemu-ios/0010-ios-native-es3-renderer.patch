@@ -1,0 +1,347 @@
+diff --git a/hw/arm/gles-host-angle.c.inc b/hw/arm/gles-host-angle.c.inc
+index 392367c5ca..257916b585 100644
+--- a/hw/arm/gles-host-angle.c.inc
++++ b/hw/arm/gles-host-angle.c.inc
+@@ -6,6 +6,10 @@
+ #include <EGL/egl.h>
+ #include <EGL/eglext.h>
+ #include <dlfcn.h>
++#ifdef GLES_HOST_NATIVE_ES3
++#include <objc/runtime.h>
++#include <objc/message.h>
++#endif
+ #include "gles-host-angle-gl.h"
+ #define CGLContextObj GLESAngleContextRef
+ #define CGLSetCurrentContext gles_angle_set_current
+@@ -14,6 +18,9 @@
+ typedef struct GLESAngleContext {
+     EGLContext context;
+     EGLSurface surface;
++#ifdef GLES_HOST_NATIVE_ES3
++    id eagl;                /* the EAGLContext (gles-host-es3.c) */
++#endif
+     unsigned refs;
+     bool es2;
+     GLint row_length;       /* GL_UNPACK_ROW_LENGTH in an ES1 context, which keeps it here (below) */
+@@ -28,6 +35,95 @@ static __thread CGLContextObj angle_current;
+ 
+ /* libEGL and libGLESv2 beside the emulator (@rpath: the app's Frameworks), else in the ANGLE build it was
+  * configured with (GLES_ANGLE_DIR); false, and the bridge stays on CGL, where there is neither. */
++#ifdef GLES_HOST_NATIVE_ES3
++/* NV_fence isn't on iOS: fences test complete, which only costs the bridge a wait it would have had anyway. */
++static void es3_gen_fences(GLsizei n, GLuint *f) { for (GLsizei i = 0; i < n; i++) f[i] = (GLuint)i + 1; }
++static void es3_delete_fences(GLsizei n, const GLuint *f) { (void)n; (void)f; }
++static void es3_set_fence(GLuint f, GLenum c) { (void)f; (void)c; glFlush(); }
++static GLboolean es3_is_fence(GLuint f) { return f != 0; }
++static GLboolean es3_test_fence(GLuint f) { (void)f; return GL_TRUE; }
++static void es3_finish_fence(GLuint f) { (void)f; glFinish(); }
++static void es3_missing(void) {}
++
++/* OpenGLES.framework's own entry points (ES 1.1 and ES 2.0/3.0 alike: each acts on the current context's API). */
++static bool gles_angle_load(void)
++{
++    static int loaded = -1;
++    if (loaded >= 0) return loaded;
++    void *gl = dlopen("/System/Library/Frameworks/OpenGLES.framework/OpenGLES", RTLD_NOW | RTLD_LOCAL);
++    loaded = gl && objc_getClass("EAGLContext");
++    if (!loaded) {
++        fprintf(stderr, "[gles-es3] the iPhone's OpenGL ES is not available: %s\n", gl ? "no EAGLContext" : dlerror());
++        return false;
++    }
++    GString *missing = g_string_new(NULL);
++#define GLES_ES3_LOAD(name) \
++    gles_angle_fn_##name = #name[0] == 'e' ? NULL : dlsym(gl, #name); \
++    if (!gles_angle_fn_##name && #name[0] != 'e') { \
++        g_string_append(missing, " " #name); \
++        gles_angle_fn_##name = (__typeof__(gles_angle_fn_##name))(void *)es3_missing; \
++    }
++    GLES_ANGLE_FUNCTIONS(GLES_ES3_LOAD)
++#undef GLES_ES3_LOAD
++    gles_angle_fn_glGenFencesNV = es3_gen_fences;
++    gles_angle_fn_glDeleteFencesNV = es3_delete_fences;
++    gles_angle_fn_glSetFenceNV = es3_set_fence;
++    gles_angle_fn_glIsFenceNV = es3_is_fence;
++    gles_angle_fn_glTestFenceNV = es3_test_fence;
++    gles_angle_fn_glFinishFenceNV = es3_finish_fence;
++    if (missing->len) fprintf(stderr, "[gles-es3] not in OpenGLES (no-ops):%s\n", missing->str);
++    g_string_free(missing, true);
++    return true;
++}
++
++typedef id (*es3_msg_t)(id, SEL);
++typedef id (*es3_msg_ul_t)(id, SEL, unsigned long);
++typedef id (*es3_msg_ul_id_t)(id, SEL, unsigned long, id);
++typedef BOOL (*es3_msg_bool_id_t)(id, SEL, id);
++
++static bool gles_angle_create(CGLContextObj share, bool es2, CGLContextObj *out)
++{
++    if (!gles_angle_load()) return false;
++    Class cls = objc_getClass("EAGLContext");
++    /* a sharegroup holds one API's contexts */
++    id group = share && share->es2 == es2 && share->eagl
++        ? ((es3_msg_t)objc_msgSend)(share->eagl, sel_registerName("sharegroup")) : NULL;
++    id ctx = NULL;
++    for (unsigned long api = es2 ? 3 : 1; !ctx && api >= (es2 ? 2 : 1); api--) {
++        id fresh = ((es3_msg_t)objc_msgSend)((id)cls, sel_registerName("alloc"));
++        ctx = group ? ((es3_msg_ul_id_t)objc_msgSend)(fresh, sel_registerName("initWithAPI:sharegroup:"), api, group)
++                    : ((es3_msg_ul_t)objc_msgSend)(fresh, sel_registerName("initWithAPI:"), api);
++    }
++    if (!ctx) {
++        fprintf(stderr, "[gles-es3] no EAGLContext for ES %s\n", es2 ? "3.0/2.0" : "1.1");
++        return false;
++    }
++    CGLContextObj c = g_new0(struct GLESAngleContext, 1);
++    c->refs = 1;
++    c->es2 = es2;
++    c->eagl = ctx;
++    c->rect_size = share && group ? g_hash_table_ref(share->rect_size) : g_hash_table_new(g_direct_hash, g_direct_equal);
++    *out = c;
++    return true;
++}
++static int CGLSetCurrentContext(CGLContextObj c)
++{
++    if (angle_current == c) return 0;
++    if (!((es3_msg_bool_id_t)objc_msgSend)((id)objc_getClass("EAGLContext"), sel_registerName("setCurrentContext:"),
++                                           c ? c->eagl : NULL)) return -1;
++    angle_current = c;
++    return 0;
++}
++static CGLContextObj CGLRetainContext(CGLContextObj c) { c->refs++; return c; }
++static void CGLReleaseContext(CGLContextObj c)
++{
++    if (--c->refs) return;
++    if (angle_current == c) CGLSetCurrentContext(NULL);
++    ((es3_msg_t)objc_msgSend)(c->eagl, sel_registerName("release"));
++    g_hash_table_unref(c->rect_size);
++    g_free(c);
++}
++#else
+ static bool gles_angle_load(void)
+ {
+     static int loaded = -1;
+@@ -112,6 +208,8 @@ static void CGLReleaseContext(CGLContextObj c)
+     g_free(c);
+ }
+ 
++#endif /* GLES_HOST_NATIVE_ES3 */
++
+ /* Desktop clip-plane setters receive doubles reconstructed from guest floats. */
+ static void gles_angle_clip_plane(GLenum plane, const double *value)
+ {
+diff --git a/hw/arm/gles-host-es3.c b/hw/arm/gles-host-es3.c
+new file mode 100644
+index 0000000000..063d28eabd
+--- /dev/null
++++ b/hw/arm/gles-host-es3.c
+@@ -0,0 +1,27 @@
++/*
++ * The GL bridge on the iPhone's own OpenGL ES (iOS hosts): gles-host.c built a third time through the ANGLE adapter
++ * (gles-host-angle.c.inc), with its GL from OpenGLES.framework and its contexts from EAGL instead of ANGLE's
++ * libraries. A guest ES 1.1 context is an EAGL ES 1.1 context and a guest ES 2.0 one an EAGL ES 3.0 context, so the
++ * shader devices (S5L8920, A4) draw on the iPhone's GPU without ANGLE. Chosen per boot: -M ...,gl-renderer=es3.
++ * Contexts of the two APIs can't share objects in EAGL (a sharegroup is one API's), so they don't; ES 1.1 and ES 2.0
++ * guest contexts meet through surfaces (guest memory), which is how CoreAnimation hands layers around anyway.
++ */
++#define GLES_HOST_ANGLE 1
++#define GLES_HOST_NATIVE_ES3 1
++#define gles_host_call gles_es3_host_call
++#define gles_host_stats gles_es3_host_stats
++#define gles_host_set_allowed gles_es3_host_set_allowed
++#define gles_host_reset gles_es3_host_reset
++#define gles_host_context_count gles_es3_host_context_count
++#define gles_host_refuse gles_es3_host_refuse
++#define gles_host_rejects gles_es3_host_rejects
++#define gles_host_set_debug gles_es3_host_set_debug
++#define gles_host_debug gles_es3_host_debug
++#define gles_host_ram_gen gles_es3_host_ram_gen
++#include "gles-host.c"
++
++bool gles_es3_host_available(void);
++bool gles_es3_host_available(void)
++{
++    return gles_angle_load();
++}
+diff --git a/hw/arm/gles-host.c b/hw/arm/gles-host.c
+index 3b2e57ad2c..cc15955c24 100644
+--- a/hw/arm/gles-host.c
++++ b/hw/arm/gles-host.c
+@@ -859,6 +859,27 @@ bool gles_angle_host_available(void);
+ #define GLES_ON_ANGLE(call) do { } while (0)
+ #define GLES_ON_ANGLE_VOID(call) do { } while (0)
+ #endif
++/* A boot on the iPhone's own ES 1.1 + ES 3.0 (gl-renderer=es3): forwarded to gles-host-es3.c, the same adapter
++ * over OpenGLES.framework and EAGL contexts. */
++#if defined(GLES_HOST_WITH_ES3) && !defined(GLES_HOST_ANGLE)
++static bool gles_on_es3;
++int64_t gles_es3_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx, uint32_t argc, const uint32_t *args);
++void gles_es3_host_stats(uint64_t *draws, uint64_t *presents);
++void gles_es3_host_set_allowed(bool allowed);
++void gles_es3_host_reset(void);
++int gles_es3_host_context_count(void);
++bool gles_es3_host_refuse(const char *fmt, ...) G_GNUC_PRINTF(1, 2);
++char *gles_es3_host_rejects(void);
++void gles_es3_host_set_debug(bool on);
++bool gles_es3_host_debug(void);
++uint64_t gles_es3_host_ram_gen(uint64_t addr, uint64_t len);
++bool gles_es3_host_available(void);
++#define GLES_ON_ES3(call) do { if (gles_on_es3) return call; } while (0)
++#define GLES_ON_ES3_VOID(call) do { if (gles_on_es3) { call; return; } } while (0)
++#else
++#define GLES_ON_ES3(call) do { } while (0)
++#define GLES_ON_ES3_VOID(call) do { } while (0)
++#endif
+ 
+ /* Old guest engines retain their legacy context. New engines pass opaque
+  * host handles, so every GC gets independent native GL and client-array state. */
+@@ -893,6 +914,7 @@ static void gles_end_context(void)
+ int gles_host_context_count(void)
+ {
+     GLES_ON_ANGLE(gles_angle_host_context_count());
++    GLES_ON_ES3(gles_es3_host_context_count());
+     return qatomic_read(&gles_live_contexts);
+ }
+ 
+@@ -2221,6 +2243,7 @@ static bool gles_refuse(const char *fmt, ...)
+     vsnprintf(name, sizeof(name), fmt, ap);
+     va_end(ap);
+     GLES_ON_ANGLE(gles_angle_host_refuse("%s", name));
++    GLES_ON_ES3(gles_es3_host_refuse("%s", name));
+     return gles_reject_note(name, 1, false);
+ }
+ 
+@@ -2233,6 +2256,7 @@ bool gles_host_refuse(const char *fmt, ...)
+     vsnprintf(name, sizeof(name), fmt, ap);
+     va_end(ap);
+     GLES_ON_ANGLE(gles_angle_host_refuse("%s", name));
++    GLES_ON_ES3(gles_es3_host_refuse("%s", name));
+     return gles_reject_note(name, 1, false);
+ }
+ 
+@@ -2244,6 +2268,7 @@ static gint gles_strcmp_data(gconstpointer a, gconstpointer b, gpointer d)
+ char *gles_host_rejects(void)
+ {
+     GLES_ON_ANGLE(gles_angle_host_rejects());
++    GLES_ON_ES3(gles_es3_host_rejects());
+     GString *out = g_string_new(NULL);
+     GList *keys = gles_rejects ?
+         g_list_sort_with_data(g_hash_table_get_keys(gles_rejects),
+@@ -2260,12 +2285,14 @@ char *gles_host_rejects(void)
+ void gles_host_set_debug(bool on)
+ {
+     GLES_ON_ANGLE_VOID(gles_angle_host_set_debug(on));
++    GLES_ON_ES3_VOID(gles_es3_host_set_debug(on));
+     gles_debug = on;
+ }
+ 
+ bool gles_host_debug(void)
+ {
+     GLES_ON_ANGLE(gles_angle_host_debug());
++    GLES_ON_ES3(gles_es3_host_debug());
+     return gles_debug;
+ }
+ 
+@@ -4826,6 +4853,7 @@ static int gles_surface_resolve(CPUState *cpu, uint32_t id, GLESSurface *s)
+ uint64_t gles_host_ram_gen(uint64_t addr, uint64_t len)
+ {
+     GLES_ON_ANGLE(gles_angle_host_ram_gen(addr, len));
++    GLES_ON_ES3(gles_es3_host_ram_gen(addr, len));
+     uint64_t gen = 0;
+ 
+     for (size_t page = addr >> TARGET_PAGE_BITS;
+@@ -8733,6 +8761,7 @@ static bool gles_allowed = true;
+ void gles_host_set_allowed(bool allowed)
+ {
+     GLES_ON_ANGLE_VOID(gles_angle_host_set_allowed(allowed));
++    GLES_ON_ES3_VOID(gles_es3_host_set_allowed(allowed));
+     gles_allowed = allowed;
+ }
+ 
+@@ -8895,6 +8924,7 @@ static void gles_drop_all(void)
+ void gles_host_reset(void)
+ {
+     GLES_ON_ANGLE_VOID(gles_angle_host_reset());
++    GLES_ON_ES3_VOID(gles_es3_host_reset());
+ #if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
+     gles_snapshot_register();
+     gles_drop_all();
+@@ -8905,6 +8935,7 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
+                        uint32_t argc, const uint32_t *a)
+ {
+     GLES_ON_ANGLE(gles_angle_host_call(cpu, slot, ctx, argc, a));
++    GLES_ON_ES3(gles_es3_host_call(cpu, slot, ctx, argc, a));
+     uint64_t t0;
+     int64_t r;
+ 
+@@ -9035,6 +9066,7 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
+ void gles_host_stats(uint64_t *draws, uint64_t *presents)
+ {
+     GLES_ON_ANGLE_VOID(gles_angle_host_stats(draws, presents));
++    GLES_ON_ES3_VOID(gles_es3_host_stats(draws, presents));
+     *draws = gh.draws;
+     *presents = gh.presents;
+ }
+@@ -9044,22 +9076,29 @@ static char *gles_get_renderer(Object *obj, Error **errp)
+ {
+ #ifdef GLES_HOST_WITH_ANGLE
+     if (gles_on_angle) return g_strdup("angle");
++#endif
++#ifdef GLES_HOST_WITH_ES3
++    if (gles_on_es3) return g_strdup("es3");
+ #endif
+     return g_strdup("cgl");
+ }
+ 
+ static void gles_set_renderer(Object *obj, const char *value, Error **errp)
+ {
+-    bool angle = !strcmp(value, "angle");
+-    if (!angle && strcmp(value, "cgl")) {
+-        error_setg(errp, "gl-renderer is cgl or angle, not '%s'", value);
++    bool angle = !strcmp(value, "angle"), es3 = !strcmp(value, "es3");
++    if (!angle && !es3 && strcmp(value, "cgl")) {
++        error_setg(errp, "gl-renderer is cgl, angle or es3, not '%s'", value);
+         return;
+     }
++#ifdef GLES_HOST_WITH_ES3
++    gles_on_es3 = es3 && gles_es3_host_available();
++    if (es3 && gles_on_es3) return;
++#endif
+ #ifdef GLES_HOST_WITH_ANGLE
+     gles_on_angle = angle && gles_angle_host_available();
+-    if (gles_on_angle == angle) return;
++    if (angle && gles_on_angle) return;
+ #endif
+-    if (angle) fprintf(stderr, "[gles] gl-renderer=angle: ANGLE is not available here; the GL bridge stays on CGL\n");
++    if (angle || es3) fprintf(stderr, "[gles] gl-renderer=%s is not available here; the GL bridge stays on the default\n", value);
+ }
+ 
+ void gles_host_class_init(ObjectClass *oc)
+diff --git a/hw/arm/meson.build b/hw/arm/meson.build
+index 8bc39470ac..dba6a72c48 100644
+--- a/hw/arm/meson.build
++++ b/hw/arm/meson.build
+@@ -147,6 +147,8 @@ elif host_gles.found()
+   if angle_prefix != ''
+     # ANGLE beside EAGL, chosen per boot (gl-renderer=angle): ES 1.1 and ES 2.0 guests both on Metal.
+     arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G', if_true: [files('gles-host-angle.c'), host_angle])
++    # and the iPhone's own ES 1.1 + 3.0 through the same adapter (gl-renderer=es3)
++    arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G', if_true: [files('gles-host-es3.c'), host_es3])
+   endif
+ else
+   arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G', if_true: files('gles-host-stub.c'))
+diff --git a/meson.build b/meson.build
+index 58957b56df..eea456d965 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1246,6 +1246,12 @@ if angle_prefix != ''
+   host_angle = declare_dependency(compile_args: ['-DGLES_HOST_WITH_ANGLE=1', '-I' + angle_prefix / 'include'],
+     link_args: ['-Wl,-rpath,' + angle_prefix / 'out/ltm-metal'])
+ endif
++# iOS: the same adapter over the iPhone's own OpenGL ES 1.1 + 3.0 (gles-host-es3.c, gl-renderer=es3), built with
++# ANGLE's Khronos headers.
++host_es3 = declare_dependency()
++if angle_prefix != '' and not host_opengl.found()
++  host_es3 = declare_dependency(compile_args: ['-DGLES_HOST_WITH_ES3=1'])
++endif
+ # IOSurface (and the CoreFoundation dictionary that configures one) is not
+ # optional garnish here: it is the render target the iOS present path reads,
+ # which is what keeps a tile-based GPU from being drained by a glReadPixels

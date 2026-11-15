@@ -210,10 +210,24 @@ priority stack lost a pop, and the watch logs a `[vic] … held back` line with 
 priority. `IT_VIC_WATCH=log` only logs; `IT_VIC_WATCH=0` turns it off. If freezes continue without `[vic]` lines,
 the cause is elsewhere.
 
+## Graphics renderers (Settings › Graphics)
+
+- **ANGLE** (default): CI builds Google's ANGLE for iOS (`scripts/build-angle-ios.sh`, Metal only, cached per pinned
+  commit; the first build takes most of an hour) and ships `libEGL.dylib` and `libGLESv2.dylib` beside the emulator.
+  qemu-ios's ANGLE renderer (the Mac's experimental one) is built beside the EAGL one (`patches/qemu-ios/0009`) and
+  chosen per boot with `-M …,gl-renderer=angle`: ES 1.1 and ES 2.0 guests both draw on Metal.
+- **iPhone GL** (test): the same adapter over the phone's own OpenGL ES, an ES 1.1 context for ES 1.1 guests and an
+  ES 3.0 one for ES 2.0 guests (`patches/qemu-ios/0010`, `gl-renderer=es3`). EAGL contexts of different APIs can't
+  share objects, so they don't.
+- **Classic**: the first renderer, OpenGL ES 1.1 only (it carries the iPod touch 2G texture fixes, 0004–0006). The
+  S5L8920 and A4 devices (shaders) are prepared with `ca_ogl` off under it, and draw in software.
+
+If ANGLE fails to build, CI says so in a warning and the build ships with Classic only.
+
 ## Microphone
 
-On the S5L8920 and A4 machines (iPhone 3GS, iPod touch 3G and 4G, iPhone 4, iPad) the device menu's "Use this
-phone's microphone" feeds this phone's microphone into the codec's I2S capture (`patches/qemu-ios/0007`): converted
+On the S5L8920 and A4 machines (iPhone 3GS, iPod touch 3G and 4G, iPhone 4, iPad), with Settings › Microphone on,
+the phone's microphone turns on by itself while the device records and off three seconds after; it feeds this phone's microphone into the codec's I2S capture (`patches/qemu-ios/0007`): converted
 to 44.1 kHz, doubled to stereo, read by the guest when it records. The iPod touch 2G and the 1.x boards have no
 capture path in their I2S models, so the item isn't offered there.
 

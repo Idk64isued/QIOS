@@ -47,6 +47,14 @@ enum OnDevicePrep {
             // The iPad's default boot chain patches iBoot with iBoot32Patcher, a Mac tool; its kboot chain (the one
             // its iPod touch 4G and iPhone 4 siblings always use) is built in-process.
             if entry.board == "k48ap" { entry.recipe?.boot = "kboot" }
+            // The S5L8920 and A4 boards composite with ES 2.0 shaders, which this phone's GL bridge can't run yet
+            // (its host context is ES 1.1): through the bridge their screen stays black. Without the bridge
+            // (ca_ogl off) SpringBoard draws in software, so the device shows its Home screen and ordinary apps;
+            // 3D games need the bridge and won't draw.
+            // With ANGLE or the iPhone's ES 3.0 (Settings › Graphics) they keep it: both run ES 2.0 shaders.
+            if ["n18ap", "n88ap", "n81ap", "n90ap", "k48ap"].contains(entry.board), softwareGraphics || !QemuRuntime.runsShaders {
+                entry.recipe?.options["ca_ogl"] = false
+            }
             // The keybag and seal boots run here, each on a fresh copy of the emulator library (OneShotRunner). The
             // recipes ask for a helper executable; this app is the one doing the work, so it names itself.
             OneShotRunner.install()

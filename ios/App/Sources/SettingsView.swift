@@ -28,6 +28,8 @@ struct DeviceSettingsView: View {
     @AppStorage("wifiNetwork") private var wifiNetwork = false
     @AppStorage("debugPort") private var debugPort = false
     @AppStorage("rawKeyboard") private var rawKeyboard = true
+    @AppStorage("microphone") private var microphone = true
+    @AppStorage("glRenderer") private var glRenderer = "angle"
     @AppStorage("codeCacheMB") private var codeCacheMB = 512
 
     var body: some View {
@@ -101,6 +103,12 @@ struct DeviceSettingsView: View {
                                     "The fake modem that makes the carrier, calls and texts work. Takes effect on the next boot.",
                                     isOn: $cellularModem)
                             }
+                            if Microphone.supported(board: details.board?.rawValue) {
+                                toggle(
+                                    "Microphone",
+                                    "The device hears through this phone\u{2019}s microphone, which turns on only while something on the device records (Voice Memos, a voice app) and off right after.",
+                                    isOn: $microphone)
+                            }
                             toggle(
                                 "Hardware keyboard keys",
                                 "On the iPad, iPhone 4 and iPod touch 4G, a keyboard connected to this phone is the device\u{2019}s own USB keyboard (arrows, Escape and all). Elsewhere, keys are typed into the focused text field.",
@@ -123,6 +131,24 @@ struct DeviceSettingsView: View {
                                         .font(.system(size: 12, weight: .semibold, design: .rounded))
                                         .foregroundStyle(Theme.accent)
                                 }
+                            }
+                        }
+
+                        GlassCard("Graphics", symbol: "cube.transparent") {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Picker("", selection: $glRenderer) {
+                                    Text("ANGLE").tag("angle")
+                                    Text("iPhone GL").tag("es3")
+                                    Text("Classic").tag("classic")
+                                }
+                                .pickerStyle(.segmented)
+                                .disabled(!QemuRuntime.angleBundled)
+                                Text(QemuRuntime.angleBundled
+                                     ? "ANGLE (the default) draws the device\u{2019}s graphics on Metal, newer devices\u{2019} shaders included. iPhone GL is a test: the same, on the phone\u{2019}s own OpenGL ES 3.0. Classic is the first renderer (OpenGL ES 1.1, no shaders: the iPhone 3GS, iPhone 4, iPod touch 3G/4G and iPad draw in software there); it has the iPod touch\u{2019}s texture fixes, so try it if something draws wrong. Takes effect on the next boot. A newer device prepared under Classic keeps software drawing until it\u{2019}s prepared again."
+                                     : "This build has no ANGLE, so the device draws with the iPhone\u{2019}s own GL.")
+                                    .font(.system(size: 11, design: .rounded))
+                                    .foregroundStyle(Theme.secondaryText)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                         }
 

@@ -846,6 +846,7 @@ struct EmulatorScreen: View {
         // looks wrong. Applied here, inside the sheets below, so Settings and the rest still follow the system.
         .environment(\.colorScheme, .dark)
         .environmentObject(controls)
+        .task { await followGuestMicrophone() }
         .task {
             // No lit screen after two minutes usually means the filesystem is being repaired, not that the app
             // is broken. Say so, with the way out.
@@ -1116,11 +1117,8 @@ struct EmulatorScreen: View {
             }
             Button { controls.shake() } label: { Label("Shake", systemImage: "waveform") }
             Button { emulator.press(1) } label: { Label("Sleep / Wake", systemImage: "power.circle") }
-            if Microphone.supported(board: details.board?.rawValue), emulator.qemu?.micWrite != nil {
-                Button { toggleMicrophone() } label: {
-                    Label(micOn ? "Turn the microphone off" : "Use this phone\u{2019}s microphone",
-                          systemImage: micOn ? "mic.slash" : "mic")
-                }
+            if micOn {
+                Button { toggleMicrophone() } label: { Label("Stop the microphone now", systemImage: "mic.slash") }
             }
             if emulator.agent != nil {
                 Button { showTweaks = true } label: { Label("Tweaks\u{2026}", systemImage: "wand.and.stars") }
@@ -1320,6 +1318,47 @@ struct EmulatorScreen: View {
 
     /// The A4 boards' Videos app plays 720p; the rest want 640×480.
     static func playsHD(_ board: String?) -> Bool { ["n81ap", "n90ap", "k48ap"].contains(board ?? "") }
+
+    /// The phone's microphone follows the device's: on while something on it records (Voice Memos, a voice app),
+    /// off three seconds after it stops, so the phone's orange dot only shows when the device is really listening.
+    /// Only the boards whose emulated hardware has a microphone input, and only with Settings › Microphone on.
+    private func followGuestMicrophone() async {
+        guard Microphone.supported(board: details.board?.rawValue) || Microphone.supported(board: device.details.board?.rawValue)
+        else { return }
+        var quietSince: Date?
+        var refused = false
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard let qemu = emulator.qemu, let listening = qemu.micListening else { continue }
+            let wanted = UserDefaults.standard.object(forKey: "microphone") as? Bool ?? true
+            if wanted, !refused, listening() {
+                quietSince = nil
+                if !micOn {
+                    guard let mic = microphone ?? Microphone(qemu: qemu) else { return }
+                    microphone = mic
+                    if let why = await mic.start() {
+                        refused = true
+                        toast = why
+                    } else {
+                        micOn = true
+                        toast = "The device is listening through this phone\u{2019}s microphone."
+                    }
+                    Task {
+                        try? await Task.sleep(nanoseconds: 2_500_000_000)
+                        toast = ""
+                    }
+                }
+            } else if micOn {
+                if !wanted { quietSince = .distantPast }
+                if quietSince == nil { quietSince = Date() }
+                if let since = quietSince, Date().timeIntervalSince(since) > 3 {
+                    microphone?.stop()
+                    micOn = false
+                    quietSince = nil
+                }
+            }
+        }
+    }
 
     private func toggleMicrophone() {
         if micOn {

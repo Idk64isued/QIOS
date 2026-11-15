@@ -119,7 +119,9 @@ struct CatalogFirmware: Decodable, Identifiable, Hashable {
         case "n72ap":
             return major < 4 ? nil : "Preparing includes a keybag boot of the device (a few minutes)."
         case "n18ap", "n88ap", "n81ap", "n90ap", "k48ap":
-            return "Preparing includes \(major >= 4 ? "a keybag boot and " : "")a seal boot of the device: allow 10\u{2013}30 minutes, keep Light Touch open, and restart it before the first start."
+            return "Preparing includes \(major >= 4 ? "a keybag boot and " : "")a seal boot of the device: allow 10\u{2013}30 minutes, keep Light Touch open, and restart it before the first start." + (QemuRuntime.runsShaders
+                ? " Its graphics run on this phone\u{2019}s GPU (Settings \u{203A} Graphics)."
+                : " With Classic graphics its screen is drawn in software: the Home screen and ordinary apps work, 3D games don\u{2019}t.")
         default:
             return nil
         }

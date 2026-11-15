@@ -43,7 +43,7 @@ jobs:
   build:
     needs: precheck
     runs-on: macos-26
-    timeout-minutes: 180
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@v4
       - name: Tools
@@ -110,6 +110,39 @@ jobs:
           fi
           echo "Built without on-device firmware preparation."
 
+      # ---- ANGLE for iOS (the default GL renderer): built once per pinned commit and cached. Its first build takes
+      # most of an hour; if it fails, the emulator is built without it and runs on the iPhone's own GL (EAGL).
+      - name: Restore ANGLE
+        id: acache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/angle-ios
+          key: angle-ios-${{ hashFiles('build-support/dependencies.json', 'build-support/patches/angle-metal-strong.patch', 'ios/scripts/build-angle-ios.sh') }}
+      - name: Build ANGLE (Metal, arm64 iOS)
+        id: abuild
+        if: steps.acache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        timeout-minutes: 150
+        run: bash ios/scripts/build-angle-ios.sh "$RUNNER_TEMP/angle-src" "$RUNNER_TEMP/angle-ios"
+      - name: Save ANGLE
+        if: steps.acache.outputs.cache-hit != 'true' && steps.abuild.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/angle-ios
+          key: ${{ steps.acache.outputs.cache-primary-key }}
+      - name: Free the ANGLE checkout
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/angle-src"
+      - name: Is ANGLE here
+        id: angle
+        run: |
+          if [ -f "$RUNNER_TEMP/angle-ios/libEGL.dylib" ] && [ -f "$RUNNER_TEMP/angle-ios/libGLESv2.dylib" ]; then
+            echo "have=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "have=no" >> "$GITHUB_OUTPUT"
+            echo "::warning::ANGLE did not build; this emulator runs every device on the iPhone's own GL (no ES 2.0 devices on the GPU)"
+          fi
+
       # ---- The emulator libraries: rebuilt only when something that goes into them changes.
       - name: Emulator cache key
         id: qkey
@@ -119,7 +152,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/qemu-lib
-          key: qemu-lib-${{ steps.qkey.outputs.xcode }}-${{ hashFiles('build-support/sources.json', 'build-support/dependencies.json', 'ios/patches/qemu-ios/**', 'ios/scripts/build-qemu.sh', 'ios/scripts/make-dylib-ios.sh', 'ios/scripts/build-deps.sh') }}
+          key: qemu-lib-${{ steps.qkey.outputs.xcode }}-angle-${{ steps.angle.outputs.have }}-${{ hashFiles('build-support/sources.json', 'build-support/dependencies.json', 'ios/patches/qemu-ios/**', 'ios/scripts/build-qemu.sh', 'ios/scripts/make-dylib-ios.sh', 'ios/scripts/build-deps.sh') }}
       - name: Fetch qemu-ios at the commit build-support/sources.json pins
         if: steps.qcache.outputs.cache-hit != 'true'
         run: |
@@ -146,6 +179,7 @@ jobs:
       - name: Build emulator libraries (JIT + interpreter)
         if: steps.qcache.outputs.cache-hit != 'true'
         run: |
+          if [ "${{ steps.angle.outputs.have }}" = yes ]; then export LTM_ANGLE="$RUNNER_TEMP/angle-ios"; fi
           bash ios/scripts/build-qemu.sh "$RUNNER_TEMP/qemu-ios" "$RUNNER_TEMP/ios-deps/prefix" "$RUNNER_TEMP/qemu-out"
           mkdir -p "$RUNNER_TEMP/qemu-lib" && cp "$RUNNER_TEMP"/qemu-out/*.dylib "$RUNNER_TEMP/qemu-lib/"
           # The profiler's addresses (ThreadSampler) -> function names: libqemu-arm.dylib+0x... is an nm address.
@@ -162,10 +196,14 @@ jobs:
           APP="ios/App/build/Build/Products/Release-iphoneos/LightTouch.app"
           test -f "$RUNNER_TEMP/qemu-lib/libqemu-arm.dylib" && test -f "$RUNNER_TEMP/qemu-lib/libqemu-arm-tci.dylib"
           mkdir -p "$APP/Frameworks" && cp "$RUNNER_TEMP"/qemu-lib/*.dylib "$APP/Frameworks/"
+          if [ "${{ steps.angle.outputs.have }}" = yes ]; then
+            cp "$RUNNER_TEMP"/angle-ios/libEGL.dylib "$RUNNER_TEMP"/angle-ios/libGLESv2.dylib "$APP/Frameworks/"
+            mkdir -p "$APP/Licenses/ANGLE" && cp "$RUNNER_TEMP"/angle-ios/licenses/* "$APP/Licenses/ANGLE/"
+          fi
           ldid -Sios/App/LightTouchiOS.entitlements "$APP/LightTouch"
           mkdir Payload && cp -R "$APP" Payload/ && zip -qry LightTouch.ipa Payload
           SRC=rebuilt; [ "${{ steps.qcache.outputs.cache-hit }}" = "true" ] && SRC="from cache"
-          echo "### LightTouch.ipa $(du -h LightTouch.ipa | cut -f1), emulator libraries $SRC" >> "$GITHUB_STEP_SUMMARY"
+          echo "### LightTouch.ipa $(du -h LightTouch.ipa | cut -f1), emulator libraries $SRC, ANGLE ${{ steps.angle.outputs.have }}" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with: { name: LightTouch-ipa, path: LightTouch.ipa }
       - uses: actions/upload-artifact@v4
@@ -180,3 +218,4 @@ jobs:
             ${{ runner.temp }}/build-lite.log
             ${{ runner.temp }}/firmwarekit-patch.log
             ${{ runner.temp }}/ios-deps/logs
+            ${{ runner.temp }}/angle-ios/ninja.log

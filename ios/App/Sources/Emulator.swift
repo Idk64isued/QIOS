@@ -126,7 +126,7 @@ final class Emulator: ObservableObject {
                 setenv("IT_VCPU_ACCT", "5", 1)
                 setenv("IT_GLES_PROF", "1", 1)  // where the graphics frame time goes, reported next to the frame rate
             }
-            LTMLog.note("engine \(qemu.isJIT ? "JIT" : "TCI"), \(JIT.summary)")
+            LTMLog.note("engine \(qemu.isJIT ? "JIT" : "TCI"), GL \(QemuRuntime.renderer.rawValue), \(JIT.summary)")
             LTMLog.note("args \(argv.joined(separator: " "))")
             // Optional: skip the renderer's per-call GL error checks (each one makes the GPU driver catch up).
             if UserDefaults.standard.bool(forKey: "fastGL") { setenv("IT_GLES_STRICT", "0", 1) }
@@ -448,7 +448,12 @@ final class Emulator: ObservableObject {
             : nil
         var config = try prepared.configuration(
             hardware: hardware, bootArgs: "amfi_allow_any_signature=1 cs_enforcement_disable=1", usbAddress: usbAddress, wifi: wifi,
-            guestPackage: nil, serial: "null", audio: ["-audio", "driver=none"], netdev: netdev)
+            guestPackage: nil, serial: "null", audio: ["-audio", "driver=none"], netdev: netdev,
+            // Settings › Graphics: ANGLE draws ES 1.1 and ES 2.0 guests on Metal; off, the iPhone's own ES 1.1 GL.
+            angle: QemuRuntime.renderer == .angle)
+        if QemuRuntime.renderer == .es3, let m = config.argv.firstIndex(of: "-M"), m + 1 < config.argv.count {
+            config.argv[m + 1] += ",gl-renderer=es3"
+        }
         // Debug port (Settings): QEMU's gdbstub for lldb/gdb from another machine on this network. It has no password,
         // so it is off unless asked for, and only for that boot.
         if defaults.bool(forKey: "debugPort") {
