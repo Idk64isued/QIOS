@@ -1,0 +1,54 @@
+diff --git a/contrib/ios-app/qemu-ios-ui.c b/contrib/ios-app/qemu-ios-ui.c
+index f9e26e26d6..5a3af9436f 100644
+--- a/contrib/ios-app/qemu-ios-ui.c
++++ b/contrib/ios-app/qemu-ios-ui.c
+@@ -1052,3 +1052,36 @@ void qemu_ios_set_foreground(bool foreground)
+         aio_bh_schedule_oneshot(qemu_get_aio_context(), ios_resume_bh, NULL);
+     }
+ }
++
++/*
++ * The iOS app's preparation boots (keybag, seal, check) each run a fresh copy of this library and abandon it when the
++ * boot ends: QEMU starts once per image and never frees what it allocated, and the app has no other process to put
++ * them in. What such a copy keeps that matters is the guest's RAM, every page the boot touched (most of an iPhone
++ * 4's 512 MiB by the end of a seal boot). This hands those pages back: each RAM block's range is mapped afresh,
++ * anonymous and untouched, so it stays a valid address (anything that still reads it reads zeros) but costs nothing
++ * until written. Call it once the copy's main loop has returned, or after pausing it.
++ */
++#include <sys/mman.h>
++#include "system/ramblock.h"
++
++uint64_t qemu_ios_release_guest_memory(void)
++{
++    RAMBlock *block;
++    uint64_t released = 0;
++
++    RCU_READ_LOCK_GUARD();
++    RAMBLOCK_FOREACH(block) {
++        size_t page = qemu_real_host_page_size();
++        uintptr_t start = ROUND_UP((uintptr_t)block->host, page);
++        uintptr_t end = ROUND_DOWN((uintptr_t)block->host + block->max_length, page);
++
++        if (!block->host || block->fd >= 0 || end <= start) {
++            continue;
++        }
++        if (mmap((void *)start, end - start, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0)
++            != MAP_FAILED) {
++            released += end - start;
++        }
++    }
++    return released;
++}
+diff --git a/contrib/ios-app/qemu-ios-ui.h b/contrib/ios-app/qemu-ios-ui.h
+index 0d2639629c..d51c565332 100644
+--- a/contrib/ios-app/qemu-ios-ui.h
++++ b/contrib/ios-app/qemu-ios-ui.h
+@@ -146,6 +146,8 @@ void qemu_ios_ui_input_later(void (*fn)(void *), void *opaque);
+  * on willResignActive, not on didEnterBackground.
+  */
+ void qemu_ios_set_foreground(bool foreground);
++/* Hands an abandoned copy's guest RAM back to the system (its pages mapped afresh); returns the bytes released. */
++uint64_t qemu_ios_release_guest_memory(void);
+ 
+ /*
+  * Save the machine to `path`, so the next launch can restore instead of

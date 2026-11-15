@@ -20,6 +20,13 @@ targets:
       # Our own catalog holds the app icon; the Mac's holds the device art (shells, gradient).
       - Assets.xcassets
       - path: ../../LightTouchMac/Assets.xcassets
+      # The Mac app's 3D devices (View › 3D) and their studio lighting, as a folder (Models/<name>.usdz), and the
+      # special trick's chime.
+      - path: ../../Models
+        type: folder
+        buildPhase: resources
+      - path: ../../LightTouchMac/special_trick.mp3
+        buildPhase: resources
     dependencies:
       - package: HostRuntime
       - package: FirmwareKit

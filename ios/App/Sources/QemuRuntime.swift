@@ -110,6 +110,8 @@ final class QemuRuntime: @unchecked Sendable {
     lazy var micWrite = optionalSym("qemu_ios_mic_write", (@convention(c) (UnsafePointer<Int16>?, Int32) -> Int32).self)
     lazy var micEnable = optionalSym("qemu_ios_mic_enable", (@convention(c) (Bool) -> Void).self)
     lazy var micListening = optionalSym("qemu_ios_mic_listening", (@convention(c) () -> Bool).self)
+    /// An abandoned preparation copy's guest RAM, handed back (qemu-ios patch 0014); the bytes released.
+    lazy var releaseGuestMemory = optionalSym("qemu_ios_release_guest_memory", (@convention(c) () -> UInt64).self)
     lazy var hardwareKeyboard = optionalSym("qemu_ios_ui_hardware_keyboard", (@convention(c) (Bool) -> Bool).self)
     lazy var cancelInput = optionalSym("qemu_ios_ui_cancel_input", (@convention(c) () -> Void).self)
     // Sensors the real phone can stand in for

@@ -42,6 +42,13 @@ final class DeviceControls: ObservableObject {
     }
     /// The guest agent answers orientation questions on this device.
     private var guestReports = false
+    /// A turn the user asked for (Rotate left/right), which wins over the guest's report until the guest's
+    /// orientation next changes or the user picks Upright: plenty of 2009 games draw sideways while telling UIKit
+    /// they're portrait, and those need turning by hand and staying turned.
+    private var manualTurns: Int?
+    /// The last reading, waiting for a second identical one before it's acted on (an app launching reports a few
+    /// orientations on its way to its own).
+    private var pendingDegrees: Int?
 
     static func turns(forHeld orientation: Int) -> Int {
         switch orientation {
@@ -94,8 +101,16 @@ final class DeviceControls: ObservableObject {
     private func guestOrientation(_ degrees: Int) {
         guard let turns = Self.turns(forGuest: degrees) else { return }
         guestReports = true
+        // Two readings in a row (half a second) before anything moves: no flicker through transitional states.
+        guard pendingDegrees == degrees else {
+            pendingDegrees = degrees
+            return
+        }
+        let changed = lastGuestDegrees != nil && lastGuestDegrees != degrees
         lastGuestDegrees = degrees
-        if turns != quarterTurns { quarterTurns = turns }
+        if changed { manualTurns = nil }   // the app turned itself: the user's turn no longer applies
+        let want = manualTurns ?? turns
+        if want != quarterTurns { quarterTurns = want }
     }
 
     // Settings the user can turn on. Plain UserDefaults rather than @AppStorage: this is not a view, and a
@@ -131,6 +146,8 @@ final class DeviceControls: ObservableObject {
         orientation = 1
         quarterTurns = 0
         guestReports = false
+        manualTurns = nil
+        pendingDegrees = nil
         vibratorPulses = 0
 
         UIDevice.current.isBatteryMonitoringEnabled = true
@@ -169,6 +186,7 @@ final class DeviceControls: ObservableObject {
             if level != backlight { backlight = level }
         }
         if let failed = qemu.storageFailed?(), failed != storageFailed { storageFailed = failed }
+        followHeldPhone()
         if let confirmed = qemu.shutdownConfirmed?(), confirmed != guestWantsShutdown {
             guestWantsShutdown = confirmed
         }
@@ -281,8 +299,12 @@ final class DeviceControls: ObservableObject {
         setOrientation(next[orientation] ?? 1)
     }
 
-    /// Back to portrait.
-    func upright() { setOrientation(1) }
+    /// Back to portrait, and back to following the guest.
+    func upright() {
+        manualTurns = nil
+        setOrientation(1)
+        if guestReports, let degrees = lastGuestDegrees, let turns = Self.turns(forGuest: degrees) { quarterTurns = turns }
+    }
 
     private func setOrientation(_ value: Int) {
         if let apply = qemu?.orientation, apply(Int32(value)) {
@@ -295,9 +317,13 @@ final class DeviceControls: ObservableObject {
         } else {
             return
         }
-        // With the agent reporting, the next poll (a quarter second) turns the picture to however the front app
-        // ends up standing; without it, the picture follows the hold.
-        if !guestReports { quarterTurns = Self.turns(forHeld: value) }
+        // The picture turns with the hold right away, and stays turned (manualTurns) until the front app turns
+        // itself or the user picks Upright.
+        // With Tilt and compass on, this phone's next reading holds the device again: the picture stays with it.
+        if motion.isDeviceMotionActive { return }
+        let turns = Self.turns(forHeld: value)
+        if value != 1 { manualTurns = turns } else { manualTurns = nil }
+        quarterTurns = turns
     }
 
     /// Sleep / Wake, for the overlay a sleeping screen shows.
@@ -314,7 +340,10 @@ final class DeviceControls: ObservableObject {
 
     func setMotion(_ on: Bool) {
         UserDefaults.standard.set(on, forKey: "passMotion")
+        manualTurns = nil
         on ? startMotion() : stopMotion()
+        // Off: the device goes back to the hold picked last (tilting left it however this phone was).
+        if !on, running { setOrientation(orientation) }
     }
 
     /// The real phone's tilt becomes the device's tilt, so anything that reads the accelerometer works, and its
@@ -328,13 +357,45 @@ final class DeviceControls: ObservableObject {
         var lastHeading = -1
         motion.startDeviceMotionUpdates(using: frame, to: .main) { [weak self] data, _ in
             guard let self, let data else { return }
-            self.qemu?.attitude?(data.attitude.pitch * 180 / .pi, data.attitude.roll * 180 / .pi, 0)
+            if let (pitch, roll) = Self.guestAttitude(gravity: data.gravity) { self.qemu?.attitude?(pitch, roll, 1) }
             let heading = Int(data.heading.rounded())
             if heading >= 0, heading != lastHeading {
                 lastHeading = heading
                 _ = self.qemu?.compass?(Int32(heading))
             }
         }
+    }
+
+    /// With Tilt and compass on, the device is held the way this phone is, and its picture turns so it stays lined
+    /// up with this phone rather than with Light Touch's own interface (which turns to landscape with the phone):
+    /// a guest that turns its interface when tilted then reads upright, as on the real thing. Where the guest agent
+    /// reports how the front app stands, that report decides instead (guestOrientation), and a turn picked from the
+    /// menu holds until the guest changes.
+    private func followHeldPhone() {
+        guard passMotion, motion.isDeviceMotionActive, !guestReports, manualTurns == nil else { return }
+        let scene = UIApplication.shared.connectedScenes.lazy.compactMap { $0 as? UIWindowScene }.first
+        guard let interface = scene?.effectiveGeometry.interfaceOrientation else { return }
+        let turns: Int
+        switch interface {
+        case .landscapeRight: turns = Self.turns(forHeld: 3)   // Home button on the right
+        case .landscapeLeft: turns = Self.turns(forHeld: 4)
+        default: turns = 0
+        }
+        if turns != quarterTurns { quarterTurns = turns }
+    }
+
+    /// This phone's gravity (CoreMotion's, in g: +x the right edge, +y the top, +z out of the screen) as the
+    /// emulator's attitude in its flat pose, where 0, 0 is face up, positive pitch tips the top edge down and positive
+    /// roll the right edge down: gravity (sin r cos p, sin p, -cos r cos p). The device then reads the same gravity
+    /// this phone does, whichever way it is held. CoreMotion's own pitch and roll are Euler angles about another
+    /// order of axes, and fed straight in they read upright as flat.
+    static func guestAttitude(gravity g: CMAcceleration) -> (Double, Double)? {
+        let length = (g.x * g.x + g.y * g.y + g.z * g.z).squareRoot()
+        guard length > 0.1, length.isFinite else { return nil }
+        let x = g.x / length, y = g.y / length, z = g.z / length
+        let pitch = asin(max(-1, min(1, y))) * 180 / .pi
+        let roll = abs(x) < 1e-6 && abs(z) < 1e-6 ? 0 : atan2(x, -z) * 180 / .pi
+        return (pitch, roll)
     }
 
     private func stopMotion() {

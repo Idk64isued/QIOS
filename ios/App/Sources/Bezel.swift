@@ -66,12 +66,14 @@ enum ViewMode: String, CaseIterable {
     case bezel      // the device around the screen (the shell photo with the live screen inside)
     case plain      // a thin-border screen on the dark stage (matches the Mac app's plain view)
     case immersive  // the screen fills the phone; only the Home button is visible
+    case model      // the Mac app's 3D device, live screen on its display (Model3D.swift); With Device where none ships
 
     var title: String {
         switch self {
         case .bezel: return "With Device"
         case .plain: return "Plain Screen"
         case .immersive: return "Immersive"
+        case .model: return "3D"
         }
     }
     var symbol: String {
@@ -79,6 +81,7 @@ enum ViewMode: String, CaseIterable {
         case .bezel: return "iphone"
         case .plain: return "rectangle.on.rectangle.square"
         case .immersive: return "rectangle.expand.vertical"
+        case .model: return "cube"
         }
     }
 }
@@ -113,6 +116,14 @@ struct DeviceStage: View {
         case .immersive:
             GuestScreen(qemu: qemu, keyboardBridge: keyboardBridge)
                 .ignoresSafeArea()
+        case .model:
+            if let url = DeviceModel3D.url(for: board) {
+                ModelStage(board: board, url: url, qemu: qemu, keyboardBridge: keyboardBridge, onHome: onHome)
+            } else if let art = board?.facts.art, let shell = UIImage(named: art.shell) {
+                BezelView(art: art, shell: shell, qemu: qemu, keyboardBridge: keyboardBridge, onHome: onHome)
+            } else {
+                PlainStage(qemu: qemu, keyboardBridge: keyboardBridge)
+            }
         }
     }
 }

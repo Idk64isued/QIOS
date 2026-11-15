@@ -1,5 +1,76 @@
+import Metal
+import QuartzCore
 import SwiftUI
 import UIKit
+
+/// Puts guest frames on screen through Metal: each frame is copied once into a shared texture and blitted into a
+/// drawable the guest's size, and Core Animation scales the layer (nearest or linear, the layer's filter). The other
+/// way (a CGImage per frame as a layer's contents) copied the frame twice on the main thread and had Core Animation
+/// convert it again, sixty times a second.
+final class MetalPresenter {
+    let layer = CAMetalLayer()
+    private let device: MTLDevice
+    private let queue: MTLCommandQueue
+    private var textures: [MTLTexture] = []
+    private var next = 0
+    private(set) var newest: MTLTexture?
+    /// Frames on the GPU; a frame that arrives while three still are is skipped rather than waited for.
+    private let inFlight = DispatchSemaphore(value: 3)
+
+    init?() {
+        guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else { return nil }
+        self.device = device
+        self.queue = queue
+        layer.device = device
+        layer.pixelFormat = .bgra8Unorm
+        layer.framebufferOnly = false   // the drawable is a blit's destination
+        layer.isOpaque = true           // the guest's fourth byte is padding, not alpha
+        layer.maximumDrawableCount = 3
+    }
+
+    /// One BGRA frame, rows packed. False if it could not be shown (the caller keeps the old picture).
+    func present(_ pixels: UnsafeRawPointer, width: Int, height: Int) -> Bool {
+        guard inFlight.wait(timeout: .now()) == .success else { return false }
+        if textures.first.map({ $0.width != width || $0.height != height }) ?? true {
+            let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
+            d.storageMode = .shared
+            d.usage = [.shaderRead]
+            textures = (0..<3).compactMap { _ in device.makeTexture(descriptor: d) }
+            layer.drawableSize = CGSize(width: width, height: height)
+            newest = nil
+        }
+        guard textures.count == 3 else { inFlight.signal(); return false }
+        let texture = textures[next]
+        next = (next + 1) % 3
+        texture.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0, withBytes: pixels, bytesPerRow: width * 4)
+        newest = texture
+        guard let drawable = layer.nextDrawable(), let commands = queue.makeCommandBuffer(),
+            let blit = commands.makeBlitCommandEncoder()
+        else { inFlight.signal(); return false }
+        blit.copy(from: texture, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                  sourceSize: MTLSize(width: width, height: height, depth: 1), to: drawable.texture,
+                  destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
+        blit.endEncoding()
+        let semaphore = inFlight
+        commands.addCompletedHandler { _ in semaphore.signal() }
+        commands.present(drawable)
+        commands.commit()
+        return true
+    }
+
+    /// The newest frame as an image (screenshots, reports).
+    func snapshot() -> CGImage? {
+        guard let texture = newest else { return nil }
+        let w = texture.width, h = texture.height
+        var data = Data(count: w * h * 4)
+        data.withUnsafeMutableBytes { raw in
+            if let base = raw.baseAddress {
+                texture.getBytes(base, bytesPerRow: w * 4, from: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0)
+            }
+        }
+        return DisplayUIView.image(data, width: w, height: h)
+    }
+}
 
 /// The emulated screen. Polls the emulator's newest frame on a display link (the library hands back a pointer
 /// plus a serial, and says "nothing new" cheaply) and turns touches into normalised screen coordinates.
@@ -15,23 +86,32 @@ final class DisplayUIView: UIView {
     static let turnsChanged = Notification.Name("LightTouchScreenTurns")
 
     var qemu: QemuRuntime?
+    /// Settings › Sharp pixels: the guest's pixels scaled up as crisp squares (nearest) rather than smoothed.
+    nonisolated static var sharpPixels: Bool { UserDefaults.standard.object(forKey: "sharpPixels") as? Bool ?? true }
+    /// Draws the frames when Metal is there (always, on a phone that runs this); else frames are layer contents.
+    private let metal: MetalPresenter?
     /// The picture, turned inside this view; the view itself never turns, so UIKit's touch coordinates stay plain.
-    private let screen = CALayer()
+    private let screen: CALayer
     private var shownTurns = 0
     weak var keyboardBridge: UIView?
     private var link: CADisplayLink?
     private var serial: UInt64 = 0
     private var imageSize = CGSize(width: 320, height: 480)
     /// The newest guest frame as a CGImage, kept for screenshots (the framework's own buffer is recycled, so this
-    /// holds its own copy).
-    private(set) var latestFrame: CGImage?
+    /// holds its own copy). Made when asked for, on the Metal path.
+    private var latestImage: CGImage?
+    var latestFrame: CGImage? { metal != nil ? metal?.snapshot() : latestImage }
 
     override init(frame: CGRect) {
+        let presenter = MetalPresenter()
+        metal = presenter
+        screen = presenter?.layer ?? CALayer()
         super.init(frame: frame)
         backgroundColor = .black
         screen.contentsGravity = .resizeAspect
-        screen.magnificationFilter = .linear
+        applyFilter()
         layer.addSublayer(screen)
+        NotificationCenter.default.addObserver(self, selector: #selector(settingsChanged), name: UserDefaults.didChangeNotification, object: nil)
         shownTurns = Self.turns
         NotificationCenter.default.addObserver(self, selector: #selector(screenTurnsChanged), name: Self.turnsChanged, object: nil)
         // Two fingers, so a pinch lands on the device's own screen (Photos, Safari, Maps) instead of zooming
@@ -40,6 +120,23 @@ final class DisplayUIView: UIView {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    private func applyFilter() {
+        let filter: CALayerContentsFilter = Self.sharpPixels ? .nearest : .linear
+        if screen.magnificationFilter != filter { screen.magnificationFilter = filter }
+        screen.minificationFilter = .linear
+    }
+
+    @objc private func settingsChanged() {
+        DispatchQueue.main.async { [weak self] in self?.applyFilter(); self?.applyFrameRate() }
+    }
+
+    /// Settings › Cool mode asks for thirty frames a second (the guest's own screen runs at 30 Hz then too).
+    private func applyFrameRate() {
+        let cool = UserDefaults.standard.bool(forKey: "coolMode")
+        let rate = CAFrameRateRange(minimum: cool ? 20 : 30, maximum: cool ? 30 : 60, preferred: cool ? 30 : 60)
+        link?.preferredFrameRateRange = rate
+    }
 
     @objc private func screenTurnsChanged() {
         shownTurns = Self.turns
@@ -71,32 +168,45 @@ final class DisplayUIView: UIView {
         link = nil
         guard window != nil else { return }
         let l = CADisplayLink(target: self, selector: #selector(tick))
-        l.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
         l.add(to: .main, forMode: .common)
         link = l
+        applyFrameRate()
+    }
+
+    nonisolated static func image(_ data: Data, width w: Int, height h: Int) -> CGImage? {
+        guard let provider = CGDataProvider(data: data as CFData) else { return nil }
+        let info = CGBitmapInfo.byteOrder32Little.union(CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue))
+        return CGImage(
+            width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: info, provider: provider, decode: nil,
+            shouldInterpolate: !sharpPixels, intent: .defaultIntent)
     }
 
     @objc private func tick() {
         guard let qemu else { return }
         var pixels: UnsafeRawPointer?
         var w: Int32 = 0, h: Int32 = 0
+        let shown = serial
         guard qemu.frame(&pixels, &w, &h, &serial), let pixels, w > 0, h > 0 else { return }
-        let data = Data(bytes: pixels, count: Int(w) * Int(h) * 4)   // BGRA, copied: the buffer is recycled
-        ScreenRecorder.active?.append(bgra: data, width: Int(w), height: Int(h))
-        guard let provider = CGDataProvider(data: data as CFData) else { return }
-        let info = CGBitmapInfo.byteOrder32Little.union(CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue))
-        guard let image = CGImage(
-            width: Int(w), height: Int(h), bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: Int(w) * 4,
-            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: info, provider: provider, decode: nil,
-            shouldInterpolate: true, intent: .defaultIntent) else { return }
-        imageSize = CGSize(width: Int(w), height: Int(h))
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        screen.contents = image
-        CATransaction.commit()
-        latestFrame = image
+        let width = Int(w), height = Int(h)
+        if let recorder = ScreenRecorder.active {
+            recorder.append(bgra: Data(bytes: pixels, count: width * height * 4), width: width, height: height)
+        }
+        if let metal {
+            // Not shown (the GPU still had three frames): ask for this one again next tick.
+            guard metal.present(pixels, width: width, height: height) else { serial = shown; return }
+        } else {
+            let data = Data(bytes: pixels, count: width * height * 4)   // BGRA, copied: the buffer is recycled
+            guard let image = Self.image(data, width: width, height: height) else { return }
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            screen.contents = image
+            CATransaction.commit()
+            latestImage = image
+        }
+        imageSize = CGSize(width: width, height: height)
         PerfStats.frames += 1
-        if PerfStats.frames == 1 { LTMLog.note("first guest frame \(w)x\(h)") }
+        if PerfStats.frames == 1 { LTMLog.note("first guest frame \(w)x\(h)\(metal != nil ? ", Metal" : "")") }
     }
 
     /// Where the aspect-fit image sits inside the picture's (unturned) layer.
@@ -192,9 +302,11 @@ struct DisplayView: UIViewRepresentable {
 
 /// Finds the DisplayUIView inside a SwiftUI host view and hands back its newest frame.
 enum DisplaySnapshot {
+    /// The flat screen's or the 3D model's (GuestFrameSource), whichever the device is shown with.
+    @MainActor
     static func latestFrame(inside root: UIView) -> CGImage? {
-        func walk(_ v: UIView) -> DisplayUIView? {
-            if let d = v as? DisplayUIView { return d }
+        func walk(_ v: UIView) -> GuestFrameSource? {
+            if let d = v as? GuestFrameSource { return d }
             for child in v.subviews { if let d = walk(child) { return d } }
             return nil
         }

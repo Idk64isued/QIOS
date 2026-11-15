@@ -5,7 +5,7 @@ import Foundation
 ///
 /// The question it answers: when the emulator gets slow, where is the virtual CPU's thread? The emulator's own
 /// accounting (IT_VCPU_ACCT) shows it spending more and more of its time outside the guest and asleep, but not why.
-/// Fifty times a second this stops that thread for a few microseconds, reads its stack (frame pointers), and lets
+/// Ten times a second this stops that thread for a few microseconds, reads its stack (frame pointers), and lets
 /// it go; every 15 seconds it logs what share of the samples ran guest code, waited in the kernel, or ran the
 /// emulator, and the commonest stacks. Addresses in the emulator library print as `libqemu-arm.dylib+0x…`; CI keeps
 /// that library's symbol map (build-logs → qemu-symbols.txt) to turn them into function names.
@@ -15,7 +15,9 @@ import Foundation
 /// crashing.
 enum ThreadSampler {
     private static let depth = 12
-    private static let interval: useconds_t = 20_000          // 50 samples a second
+    // Ten samples a second: every sample stops the virtual CPU for a moment, so fifty a second (as it was) cost the
+    // device speed and the phone heat; a 15-second window still gets 150 samples per thread.
+    private static let interval: useconds_t = 100_000         // 10 samples a second
     private static let window: TimeInterval = 15
 
     static func start(while keepGoing: @escaping () -> Bool) {
@@ -107,7 +109,7 @@ enum ThreadSampler {
             return
         }
         let all = targets()
-        LTMLog.note("[prof] sampling \(all.map(\.name).joined(separator: ", ")) at 50 Hz")
+        LTMLog.note("[prof] sampling \(all.map(\.name).joined(separator: ", ")) at 10 Hz")
 
         let frames = UnsafeMutablePointer<UInt64>.allocate(capacity: depth)
         let state = UnsafeMutablePointer<natural_t>.allocate(capacity: 68)

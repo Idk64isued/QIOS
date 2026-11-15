@@ -197,9 +197,45 @@ preparation boots: a keybag boot for iOS 4 data protection, and a seal boot that
 cleanly. The Mac app runs these in a helper process. iOS starts no processes, and QEMU only starts once per loaded
 library, so here each boot loads its own copy of the emulator library (a copied file is a fresh image under the same
 signature), runs headless on a thread, and is left behind when it ends (`OneShotRunner.swift`, FirmwareKit's
-`InProcessOneShot` hook added by `patch-firmwarekit.py`). The memory those copies hold stays taken until the app quits,
-so restart Light Touch after preparing one of these before starting it. The iPad is prepared with its kboot chain
+`InProcessOneShot` hook added by `patch-firmwarekit.py`). Each copy's guest RAM is handed back when its boot ends
+(`qemu_ios_release_guest_memory`, `patches/qemu-ios/0014`); the rest it holds stays taken until the app quits, so
+restart Light Touch after preparing one of these before starting it. The iPad is prepared with its kboot chain
 (iBoot32Patcher, which its iBoot chain needs, is a Mac tool).
+
+The keybag boot runs the firmware's own restore ramdisk with `it_keybag` put into it. Restore ramdisks are
+case-insensitive HFS+, which the Mac edits through hdiutil and diskutil; on the phone `patch-firmwarekit.py` lets
+HFSPlusWriter edit them, ordering their catalog case-folded as HFS+ does (`BTreeFile.foldedCatalogOrder`). The
+preparation boots' time limits are three times the Mac's (eight on the interpreter).
+
+For the iPhone 4, the builds marked experimental that need no second IPSW are 4.0 (8A293), 4.1 (8B117), 4.2.1
+(8C148) and 4.3 (8F190). 4.3.1 to 4.3.5 take their keybag ramdisk from 4.3's IPSW (a sibling), which the phone
+can't download alongside yet.
+
+## Speed and heat
+
+- `patches/qemu-ios/0013`: the jump cache (guest address to translated code, 16K entries per address space) is
+  emptied by bumping a generation instead of clearing every entry. Guests invalidate position-independent
+  translations hundreds of times a second while code loads (an app starting, a game loading), and each one emptied
+  every vCPU's cache; that was 12% of the main loop in a 3GS log. A self-modifying-code test runs 2.3x faster with
+  it, and code that doesn't modify itself runs the same.
+- `build-qemu.sh` configures with `--disable-qom-cast-debug`: QEMU otherwise checks every QOM cast (each device
+  register access casts its device) by looking the type up.
+- The screen is drawn through Metal (`MetalPresenter`): one copy of each frame into a shared texture and a blit,
+  instead of a CGImage per frame that Core Animation copied and converted again.
+- The profiler samples 10 times a second (it was 50; every sample stops the virtual CPU for a moment).
+- Settings › Cool mode runs the guest's screen at 30 Hz (`refresh-hz` on both LCD models) and the display at 30 fps:
+  about half the drawing and readback work. Games that count frames instead of time run slower in it.
+- Settings › Sharp pixels (on by default): nearest-neighbour scaling, so the device's pixels are crisp squares.
+
+## 3D devices (View › 3D)
+
+The Mac app's models (`Models/*.usdz`, bundled as a folder) through RealityKit (`Model3D.swift`, a port of the Mac's
+`DeviceModelView`): the live screen is a material on the model's display, and touches on it go to the guest by
+casting a ray onto the panel. Elsewhere, drag turns the device, two fingers bring it closer, and a double tap
+stands it back up; its Home and Sleep/Wake buttons work. Device › Special trick is the Mac's kickflip with its
+chime. Models ship for the iPod touch 1G, 2G, 3G (the 2G's) and 4G, the iPhone 3GS and the iPad; the iPhone and
+iPhone 4 show With Device. Needs iOS 18. A still model is swapped for a snapshot after half a second, as on the Mac,
+so it costs nothing while nothing moves.
 
 ## Freezes under heavy storage writes (VIC watch)
 
@@ -232,7 +268,17 @@ The device's frame never turns; the picture inside its screen does (`DisplayUIVi
 reports how the front app stands (3.1.3), the picture follows it continuously: a landscape app reads upright, the
 portrait-only Home screen stays upright however the device is held. Elsewhere it follows how the device is held (the
 menu's Rotate, or this phone's tilt with Tilt and compass on). In immersive mode the screen's frame also goes wide
-for a sideways picture.
+for a sideways picture. A turn picked from the menu holds until the guest's own orientation changes; Upright hands
+the picture back to the guest. With Tilt and compass on the menu's turns do nothing: the picture stays lined up with
+this phone (Light Touch's own interface turns to landscape with it), so a guest that rotates when tilted reads upright.
+
+## Tilt and compass
+
+CoreMotion's gravity vector (not its Euler pitch and roll, which read an upright phone as flat) becomes the
+emulator's attitude in its flat pose (`DeviceControls.guestAttitude`), so the device's accelerometer reads what this
+phone's does. The iPod and A4 machines take it through their `accel-pitch`/`-roll`/`-pose` properties; the S5L8920
+boards (iPhone 3GS, iPod touch 3G) have none, so `patches/qemu-ios/0012` hands it straight to their LIS302DL. Boards
+with a gyro see each change as a turn. The heading goes to `compass-heading` where the board has a compass.
 
 ## Microphone
 

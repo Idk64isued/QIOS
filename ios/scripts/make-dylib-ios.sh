@@ -27,7 +27,7 @@ for a in "${LINK[@]}"; do
     esac
 done
 # the app ABI: everything the macOS build exports, plus the foreground hook and the microphone (0007) iOS needs
-{ sed -n "/<<.SYMS.$/,/^SYMS$/p" "$SRC/contrib/macos-app/make-dylib-macos.sh" | sed "1d;\$d"; echo _qemu_ios_set_foreground; echo _qemu_ios_mic_write; echo _qemu_ios_mic_enable; echo _qemu_ios_mic_listening; } | sort -u > ios-exports.syms
+{ sed -n "/<<.SYMS.$/,/^SYMS$/p" "$SRC/contrib/macos-app/make-dylib-macos.sh" | sed "1d;\$d"; echo _qemu_ios_set_foreground; echo _qemu_ios_mic_write; echo _qemu_ios_mic_enable; echo _qemu_ios_mic_listening; echo _qemu_ios_release_guest_memory; } | sort -u > ios-exports.syms
 # @loader_path: the ANGLE renderer opens @rpath/libEGL.dylib and libGLESv2.dylib, which sit beside this library.
 ARGS+=(-dynamiclib -o "$OUT" -install_name "@rpath/$LIBNAME" -Wl,-rpath,@loader_path "-Wl,-exported_symbols_list,$BUILD/ios-exports.syms" -Wl,-undefined,dynamic_lookup)
 "${ARGS[@]}"

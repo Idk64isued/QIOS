@@ -88,8 +88,10 @@ enum OneShotRunner {
             // hold it all means nothing is translated twice. Its pages are only used as they fill.
             argv += qemu.isJIT ? ["-accel", "tcg,tb-size=256,split-wx=on"] : ["-accel", "tcg,tb-size=64"]
         }
-        // The interpreter runs these boots several times slower than JIT; the recipes' limits are for JIT speed.
-        let timeout = request.timeout * (qemu.isJIT ? 1.5 : 6)
+        // The recipes' limits are for a Mac's speed: a phone's JIT runs these boots up to a few times slower (an
+        // iPhone 4's iOS 4 seal boot is a whole first start-up), the interpreter several times slower again. A limit
+        // only decides how long a boot that will never finish is waited for.
+        let timeout = request.timeout * (qemu.isJIT ? 3 : 8)
         log("one-shot: in-process on \(qemu.isJIT ? "JIT" : "the interpreter"), limit \(Int(timeout)) s")
         LTMLog.note("oneshot args \(argv.joined(separator: " "))")
         let flags = Flags()
@@ -130,6 +132,12 @@ enum OneShotRunner {
             }
         }
         let (exited, code) = flags.exited
+        // This copy is abandoned now (stopped, or paused when it would not stop): its guest RAM goes back to the
+        // system, so the keybag, seal and check boots of one preparation don't hold three guests' memory at once.
+        if exited || stopping, let release = qemu.releaseGuestMemory {
+            let bytes = release()
+            if bytes > 0 { log("one-shot: gave back \(bytes >> 20) MiB of guest memory") }
+        }
         return InProcessOneShot.Result(
             exited: exited && !stopping, exitCode: exited ? code : -1, marker: marker,
             seconds: Date().timeIntervalSince(start))

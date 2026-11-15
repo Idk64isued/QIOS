@@ -855,7 +855,7 @@ struct EmulatorScreen: View {
                 .overlay(VolumeWatcherView(watcher: volume))
 
             switch mode {
-            case .bezel, .plain:
+            case .bezel, .plain, .model:
                 windowed
             case .immersive:
                 immersive
@@ -881,6 +881,9 @@ struct EmulatorScreen: View {
             if let agent = emulator.agent { controls.watchGuestOrientation(agent: agent) }
             volume.onVolumeUp = { emulator.press(2) }
             volume.onVolumeDown = { emulator.press(3) }
+            // The device usually starts before this view appears, so its state has already changed by now: the
+            // tone never played when it waited for that change alone.
+            if emulator.state == .running { playStartupTone() }
         }
         .onDisappear {
             volume.stop()
@@ -906,10 +909,7 @@ struct EmulatorScreen: View {
             if confirmed { toast = "The device has shut itself down. Save & quit, or shut the emulator down." }
         }
         .onChange(of: emulator.state) { state in
-            if state == .running && startupTone && !firstFrameSeen {
-                firstFrameSeen = true
-                StartupTone.play()
-            }
+            if state == .running { playStartupTone() }
         }
         .sheet(item: $shareItem) { item in ActivityView(items: [item.url]) }
         .sheet(isPresented: $showDeviceReport) {
@@ -1156,11 +1156,21 @@ struct EmulatorScreen: View {
             Menu {
                 Button { controls.rotate(clockwise: false) } label: { Label("Rotate left", systemImage: "rotate.left") }
                 Button { controls.rotate(clockwise: true) } label: { Label("Rotate right", systemImage: "rotate.right") }
-                if controls.orientation != 1 {
+                if controls.orientation != 1 || controls.quarterTurns != 0 {
                     Button { controls.upright() } label: { Label("Upright", systemImage: "iphone") }
                 }
                 Button { controls.shake() } label: { Label("Shake", systemImage: "waveform") }
                 Button { emulator.press(1) } label: { Label("Sleep / Wake", systemImage: "power.circle") }
+                if DeviceModel3D.url(for: details.board) != nil {
+                    if mode == .model {
+                        Button { NotificationCenter.default.post(name: DeviceModel3D.specialTrick, object: nil) } label: {
+                            Label("Special trick", systemImage: "figure.skateboarding")
+                        }
+                        Button { viewModeRaw = ViewMode.bezel.rawValue } label: { Label("Show flat", systemImage: "iphone") }
+                    } else {
+                        Button { viewModeRaw = ViewMode.model.rawValue } label: { Label("Show in 3D", systemImage: "cube") }
+                    }
+                }
                 Button {
                     toast = controls.pasteIntoDevice() ? "Pasted into the device." : "Nothing on the clipboard."
                 } label: { Label("Paste into the device", systemImage: "doc.on.clipboard") }
@@ -1347,6 +1357,13 @@ struct EmulatorScreen: View {
     /// The phone's microphone follows the device's: on while something on it records (Voice Memos, a voice app),
     /// off three seconds after it stops, so the phone's orange dot only shows when the device is really listening.
     /// Only the boards whose emulated hardware has a microphone input, and only with Settings › Microphone on.
+    /// The startup tone, once per boot of this device (Settings › Startup tone).
+    private func playStartupTone() {
+        guard startupTone, !firstFrameSeen else { return }
+        firstFrameSeen = true
+        StartupTone.play()
+    }
+
     private func followGuestMicrophone() async {
         guard Microphone.supported(board: details.board?.rawValue) || Microphone.supported(board: device.details.board?.rawValue)
         else { return }

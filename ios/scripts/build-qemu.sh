@@ -21,12 +21,15 @@ else
     echo "$WANT" > "$MARK"
 fi
 export PKG_CONFIG_LIBDIR="$P/lib/pkgconfig" PKG_CONFIG_PATH=
+# --disable-qom-cast-debug: QEMU checks every QOM cast (each device register access casts its device) by looking the
+# type up, unless told not to; a release build has no use for the check, and the phone pays for it on every access.
 build() {   # NAME DYLIB EXTRA-CONFIGURE-ARGS...
     local name="$1" dylib="$2"; shift 2
     rm -rf "$OUT/build-$name"; mkdir "$OUT/build-$name"; cd "$OUT/build-$name"
     "$QEMU/configure" --cross-prefix= --cpu=aarch64 --cc="clang $FLAGS" --cxx="clang++ $FLAGS" --objcc="clang $FLAGS" \
         --target-list=arm-softmmu --without-default-features --enable-pixman --enable-slirp --enable-nettle --disable-pie \
         --disable-tools --disable-docs --audio-drv-list= --python="${QEMU_PYTHON:-python3}" \
+        --disable-qom-cast-debug \
         --extra-cflags="-I$P/include -miphoneos-version-min=16.0 -DGLES_SILENCE_DEPRECATION -ferror-limit=0" --extra-ldflags="-L$P/lib -lcrypto -miphoneos-version-min=16.0" \
         ${LTM_ANGLE:+"-Dltm_angle_prefix=$LTM_ANGLE"} "$@"
     ninja -k 0 -j"$JOBS" qemu-system-arm   # -k 0: keep going, so one run reports every failing file

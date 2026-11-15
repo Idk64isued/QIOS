@@ -18,6 +18,8 @@ struct DeviceSettingsView: View {
 
     @AppStorage("viewMode") private var viewModeRaw = ViewMode.bezel.rawValue
     @AppStorage("startupTone") private var startupTone = true
+    @AppStorage("sharpPixels") private var sharpPixels = true
+    @AppStorage("coolMode") private var coolMode = false
     @AppStorage("keepState") private var keepState = true
     @AppStorage("appearance") private var appearance = "system"
     @AppStorage("passBattery") private var passBattery = true
@@ -49,6 +51,14 @@ struct DeviceSettingsView: View {
                             }
                             .pickerStyle(.segmented)
                             toggle("Startup tone", "The chime when a device starts.", isOn: $startupTone)
+                            toggle(
+                                "Sharp pixels",
+                                "The device\u{2019}s pixels scaled up as crisp squares. Off smooths them instead.",
+                                isOn: $sharpPixels)
+                            toggle(
+                                "Cool mode",
+                                "Runs the device\u{2019}s screen at 30 frames a second instead of 60: about half the drawing work, so the phone stays cooler and its battery lasts longer. Games that count frames instead of time run slower. Takes effect the next time the device starts.",
+                                isOn: $coolMode)
                             toggle(
                                 "Survive closing the app",
                                 "Saves the device each time Light Touch goes to the background, so swiping it away doesn\u{2019}t lose what was running. Devices drawing with hardware graphics can\u{2019}t be saved yet; they get their storage flushed instead, so they always start again cleanly.",

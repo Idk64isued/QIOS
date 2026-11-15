@@ -502,6 +502,97 @@ public enum InProcessOneShot {
 }
 #endif
 '''
+# --- The keybag boot's ramdisk (iOS 4 data protection: iPhone 4, iPod touch 4G and 2G, iPhone 3GS, iPad) ---
+# Preparer.ramdiskWithHelper puts it_keybag into the build's restore ramdisk through the kernel (hdiutil + diskutil),
+# because restore ramdisks are case-insensitive HFS+ and HFSPlusWriter wrote only HFSX. iOS has no disk tools, so
+# there the writer takes case-insensitive volumes too: their catalog compares names case-folded (TN1150's
+# FastUnicodeCompare), which BTreeFile.foldedCatalogOrder does, and the ramdisk goes through the writer.
+edit(
+    "Sources/FirmwareKit/HFSPlus/BTreeFile.swift",
+    """    /// Two UTF-16BE names compared as binary code units, a prefix first: big-endian units order as their bytes.
+    static func compareNames(""",
+    """    /// Case-insensitive HFS+ catalog keys (every plain HFS+ volume, and HFSX with keyCompareType 0xCF): by parent,
+    /// then by name as TN1150's FastUnicodeCompare orders them: case-folded, the ignorable code points skipped, and
+    /// U+0000 last (so the private metadata folder, named from NULs, sorts after everything).
+    static func foldedCatalogOrder(_ a: [UInt8], _ b: [UInt8]) -> Int {
+        let pa = word(a, 2)
+        let pb = word(b, 2)
+        if pa != pb { return pa < pb ? -1 : 1 }
+        let x = folded(name(a, at: 6)), y = folded(name(b, at: 6))
+        if let (p, q) = zip(x, y).first(where: { $0 != $1 }) { return p < q ? -1 : 1 }
+        return x.count == y.count ? 0 : x.count < y.count ? -1 : 1
+    }
+
+    private static func folded(_ bytes: ArraySlice<UInt8>) -> [UInt16] {
+        var out: [UInt16] = []
+        var i = bytes.startIndex
+        while i + 1 < bytes.endIndex {
+            let unit = UInt16(bytes[i]) << 8 | UInt16(bytes[i + 1])
+            i += 2
+            if let f = fold(unit) { out.append(f) }
+        }
+        return out
+    }
+
+    /// One UTF-16 unit as FastUnicodeCompare's table maps it; nil for the ones it ignores.
+    private static func fold(_ u: UInt16) -> UInt16? {
+        switch u {
+        case 0x0000: return 0xFFFF
+        case 0x0041...0x005A: return u + 0x20
+        case 0x0001...0x007F: return u
+        case 0x200C...0x200F, 0x202A...0x202E, 0x206A...0x206F, 0xFEFF: return nil
+        case 0xD800...0xDFFF: return u
+        default:
+            guard let scalar = Unicode.Scalar(u) else { return u }
+            let lower = scalar.properties.lowercaseMapping.utf16
+            return lower.count == 1 ? lower.first! : u
+        }
+    }
+
+    /// Two UTF-16BE names compared as binary code units, a prefix first: big-endian units order as their bytes.
+    static func compareNames(""",
+    marker="static func foldedCatalogOrder",
+)
+edit(
+    "Sources/FirmwareKit/HFSPlus/HFSPlusWriter.swift",
+    """            guard vh[1] == 0x58, cat.count > 512, cat[14 + 37] == 0xBC else {
+                throw FirmwareError(.unsupported, "\\(url.lastPathComponent): not a case-sensitive (HFSX) volume")
+            }
+            catalog = try BTreeFile(cat, compare: BTreeFile.catalogOrder, wellFormed: Self.catalogRecord)""",
+    """            #if os(macOS)
+            guard vh[1] == 0x58, cat.count > 512, cat[14 + 37] == 0xBC else {
+                throw FirmwareError(.unsupported, "\\(url.lastPathComponent): not a case-sensitive (HFSX) volume")
+            }
+            catalog = try BTreeFile(cat, compare: BTreeFile.catalogOrder, wellFormed: Self.catalogRecord)
+            #else
+            // iOS: case-insensitive HFS+ as well (the restore ramdisks the keybag boot runs), ordered case-folded.
+            let folded = vh[1] == 0x2B || (cat.count > 512 && cat[14 + 37] == 0xCF)
+            guard cat.count > 512, folded || cat[14 + 37] == 0xBC else {
+                throw FirmwareError(.unsupported, "\\(url.lastPathComponent): an HFS+ catalog this writer can't order")
+            }
+            catalog = try BTreeFile(
+                cat, compare: folded ? BTreeFile.foldedCatalogOrder : BTreeFile.catalogOrder, wellFormed: Self.catalogRecord)
+            #endif""",
+    marker="ordered case-folded",
+)
+edit(
+    "Sources/FirmwareKit/Recipe/Preparer.swift",
+    """    nonisolated(nonsending) static func ramdiskWithHelper(""",
+    """    #if os(macOS)
+    static let ramdiskRoute: VolumeMount.Backend = .kernel
+    #else
+    /// iOS: no disk tools; HFSPlusWriter edits the case-insensitive ramdisk (ios/scripts/patch-firmwarekit.py).
+    static let ramdiskRoute: VolumeMount.Backend = .writer
+    #endif
+
+    nonisolated(nonsending) static func ramdiskWithHelper(""",
+    marker="static let ramdiskRoute",
+)
+edit("Sources/FirmwareKit/Recipe/Preparer.swift", "            volumes: .kernel\n", "            volumes: Self.ramdiskRoute\n",
+     marker="volumes: Self.ramdiskRoute")
+edit("Sources/FirmwareKit/Recipe/Preparer.swift", "work.appendingPathComponent(\"mnt-keybag\"), backend: .kernel)",
+     "work.appendingPathComponent(\"mnt-keybag\"), backend: Self.ramdiskRoute)", marker="backend: Self.ramdiskRoute)")
+
 for rel, content in [
     ("Sources/FirmwareKit/iOSShims.swift", SHIM + SHIM_HOST),
     ("Sources/FirmwareSchema/iOSShims.swift", SHIM),

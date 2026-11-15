@@ -1,0 +1,59 @@
+diff --git a/contrib/macos-app/qemu-macos-extras.c b/contrib/macos-app/qemu-macos-extras.c
+index 62c2a7275a..8974523a29 100644
+--- a/contrib/macos-app/qemu-macos-extras.c
++++ b/contrib/macos-app/qemu-macos-extras.c
+@@ -20,6 +20,7 @@
+ #include "qom/object.h"
+ #include "hw/core/boards.h"
+ #include "hw/arm/ipod-attitude.h"
++#include "hw/arm/ipod_touch_lis302dl.h"
+ #include "qapi/qapi-commands-qom.h"
+ #include "qobject/qnum.h"
+ #include "qemu/thread.h"
+@@ -237,21 +238,38 @@ void qemu_ios_ui_shake(void)
+ 
+ struct attitude_input { double pitch, roll; int pose; };
+ 
++/* A machine with its own accel-pitch/-roll/-pose (the iPods, the A4 boards) keeps the angles; the others (the
++ * S5L8920 boards: the iPhone 3GS and the iPod touch 3G) only alias the accelerometer's orientation, so the angles
++ * go straight to their LIS302DL. Either way the accelerometer reads the gravity of the new attitude, and a board
++ * with a gyro sees the turn. A failure is reported once per run: the app sends thirty a second. */
+ static void attitude_bh(void *opaque)
+ {
+     struct attitude_input *input = opaque;
++    static bool reported;
+     Error *err = NULL;
+     Object *machine = OBJECT(qdev_get_machine());
+-    object_property_set_str(machine, "accel-pose", input->pose ? "flat" : "upright", &err);
+-    const char *names[] = { "accel-pitch", "accel-roll" };
+-    double angles[] = { input->pitch, input->roll };
+-    for (unsigned i = 0; i < 2 && !err; i++) {
+-        QNum *value = qnum_from_double(angles[i]);
+-        qmp_qom_set("/machine", names[i], QOBJECT(value), &err);
+-        qobject_unref(value);
++    if (object_property_find(machine, "accel-pitch") && object_property_find(machine, "accel-pose")) {
++        object_property_set_str(machine, "accel-pose", input->pose ? "flat" : "upright", &err);
++        const char *names[] = { "accel-pitch", "accel-roll" };
++        double angles[] = { input->pitch, input->roll };
++        for (unsigned i = 0; i < 2 && !err; i++) {
++            QNum *value = qnum_from_double(angles[i]);
++            qmp_qom_set("/machine", names[i], QOBJECT(value), &err);
++            qobject_unref(value);
++        }
++    } else {
++        Object *accel = object_resolve_path_type("", TYPE_LIS302DL, NULL);
++        if (!accel) {
++            error_setg(&err, "this machine has no accelerometer to tilt");
++        } else if (!lis302dl_apply_attitude(LIS302DL(accel), input->pitch, input->roll, input->pose)) {
++            error_setg(&err, "pitch %.1f, roll %.1f is not an attitude", input->pitch, input->roll);
++        }
+     }
+     if (err) {
+-        fprintf(stderr, "[attitude] %s\n", error_get_pretty(err));
++        if (!reported) {
++            fprintf(stderr, "[attitude] %s\n", error_get_pretty(err));
++            reported = true;
++        }
+         error_free(err);
+     }
+     g_free(input);

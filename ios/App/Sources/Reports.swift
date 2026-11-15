@@ -65,7 +65,7 @@ enum Reports {
         }
         let defaults = UserDefaults.standard
         let settings = ["viewMode", "appearance", "keepState", "passBattery", "reportCharger", "mirrorVibration", "passMotion",
-                        "cellularModem", "enableUSB", "netRestricted", "netLAN", "codeCacheMB", "fastGL", "rect2d", "diag",
+                        "cellularModem", "enableUSB", "netRestricted", "netLAN", "codeCacheMB", "fastGL", "rect2d", "diag", "sharpPixels", "coolMode",
                         "wifiNetwork", "debugPort", "rawKeyboard", "microphone", "glRenderer"]
             .compactMap { key in defaults.object(forKey: key).map { "\(key)=\($0)" } }
             .joined(separator: " ")

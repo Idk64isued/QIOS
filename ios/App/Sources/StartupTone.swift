@@ -1,25 +1,23 @@
 import AVFoundation
 import Foundation
 
-/// A tiny original startup tone, generated in-process the first time a device boots this session. The Mac app has its
+/// A tiny original startup tone, generated in-process, each time a device starts. The Mac app has its
 /// own celebratory sound (special_trick.mp3) that we don't ship here; this is an original two-note bell written as
 /// PCM. It is quiet, short, and respects the "Startup tone" setting.
 @MainActor
 enum StartupTone {
     private static var player: AVAudioPlayer?
-    private static var played = false
 
-    /// Called once per launch, the first time a device finishes booting.
+    /// Called when a device starts (once per boot). It plays through the same audio session as the device's own
+    /// sound (playback, so the ring/silent switch doesn't swallow it, as it did the ambient session this used to
+    /// switch to, which also took the session away from the emulator's audio).
     static func play() {
-        guard !played, UserDefaults.standard.object(forKey: "startupTone") as? Bool ?? true else { return }
-        played = true
-        guard let url = cached() else { return }
-        try? AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default, options: [.mixWithOthers])
-        try? AVAudioSession.sharedInstance().setActive(true)
+        guard UserDefaults.standard.object(forKey: "startupTone") as? Bool ?? true, let url = cached() else { return }
+        AudioSessionSetup.apply()
         player = try? AVAudioPlayer(contentsOf: url)
-        player?.volume = 0.35
+        player?.volume = 0.5
         player?.prepareToPlay()
-        player?.play()
+        if player?.play() != true { LTMLog.note("startup tone: did not play") }
     }
 
     /// WAV on disk; made on first use, reused thereafter.

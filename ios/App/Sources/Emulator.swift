@@ -454,6 +454,11 @@ final class Emulator: ObservableObject {
         if QemuRuntime.renderer == .es3, let m = config.argv.firstIndex(of: "-M"), m + 1 < config.argv.count {
             config.argv[m + 1] += ",gl-renderer=es3"
         }
+        // Cool mode (Settings): the panel's frame interrupt at 30 Hz (both LCD models' refresh-hz), so the guest's
+        // Core Animation draws, and the emulator reads back, half as many frames.
+        if defaults.bool(forKey: "coolMode") {
+            config.argv += ["-global", "ipodtouch.lcd.refresh-hz=30", "-global", "s5l8930.display.refresh-hz=30"]
+        }
         // Debug port (Settings): QEMU's gdbstub for lldb/gdb from another machine on this network. It has no password,
         // so it is off unless asked for, and only for that boot.
         if defaults.bool(forKey: "debugPort") {
