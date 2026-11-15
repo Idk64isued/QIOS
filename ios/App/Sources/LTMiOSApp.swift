@@ -28,6 +28,11 @@ struct DeviceFolder: Identifiable {
     let url: URL
     var id: URL { url }
     var name: String { url.lastPathComponent }
+    /// A saved state (Save & quit, or the app going to the background) that the next start restores.
+    var hasSavedState: Bool {
+        let snaps = Snapshots(overlay: url.appendingPathComponent("overlay", isDirectory: true))
+        return FileManager.default.fileExists(atPath: snaps.file.path) && FileManager.default.fileExists(atPath: snaps.meta.path)
+    }
 }
 
 enum Library {
@@ -394,6 +399,12 @@ struct RootView: View {
                         .font(.system(size: 11, design: .rounded))
                         .foregroundStyle(Theme.secondaryText)
                         .lineLimit(1)
+                    if device.hasSavedState {
+                        Label("Picks up where it left off", systemImage: "arrow.uturn.forward.circle.fill")
+                            .font(.system(size: 10, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Theme.success)
+                            .lineLimit(1)
+                    }
                 }
                 Spacer()
                 Image(systemName: "play.circle.fill")
@@ -812,6 +823,7 @@ struct EmulatorScreen: View {
             details = device.details
             modem.qemu = emulator.qemu
             controls.start(qemu: emulator.qemu)
+            if let agent = emulator.agent { controls.watchGuestOrientation(agent: agent) }
             volume.onVolumeUp = { emulator.press(2) }
             volume.onVolumeDown = { emulator.press(3) }
         }
@@ -825,8 +837,8 @@ struct EmulatorScreen: View {
             // Only a real trip to the background pauses it. .inactive is Control Centre, Notification Centre, a
             // screen recording starting — pausing on those made the device stutter for nothing.
             switch phase {
-            case .active: controls.wake()
-            case .background: controls.suspend()
+            case .active: emulator.enterForeground(controls: controls)
+            case .background: emulator.enterBackground(controls: controls)
             default: break
             }
         }
@@ -924,17 +936,19 @@ struct EmulatorScreen: View {
             let art = details.board?.facts.art
             let aspect = art.map { $0.screenCutout.height / max($0.screenCutout.width, 1) } ?? 1.5
             // The band the screen lives in, and the Home button below it.
-            let bandTop = height * 0.13
-            let bandBottom = height * 0.79
+            // As big as the phone allows: a 6-point margin at the sides, the dot's row above, the Home button below.
+            let bandTop = height * 0.085
+            let bandBottom = height * 0.845
             let bandHeight = bandBottom - bandTop
+            let margin: CGFloat = 12
             let sideways = controls.quarterTurns % 2 != 0
-            // Upright: as tall as the band allows. Turned: as wide as the phone allows.
+            // Upright: as tall as the band allows. Turned: as wide as the band allows (the long side across).
             let screenHeight = sideways
-                ? min(width - 32, bandHeight * aspect) / aspect
-                : min(bandHeight, (width - 32) * aspect)
+                ? min(width - margin, bandHeight * aspect) / aspect
+                : min(bandHeight, (width - margin) * aspect)
             let screenWidth = sideways ? screenHeight * aspect : screenHeight / aspect
-            let home = min(max(height * 0.095, 56), 80)
-            let homeCentre = bandBottom + (height - bandBottom) * 0.55
+            let home = min(max(height * 0.08, 52), 72)
+            let homeCentre = bandBottom + (height - bandBottom) * 0.5
 
             ZStack {
                 Color.black.ignoresSafeArea()
@@ -1188,29 +1202,46 @@ struct EmulatorScreen: View {
         }
     }
 
-    /// Install an IPA: USB path first (the Mac app's real way), else the guest agent as a fallback.
+    /// Install an IPA through the guest agent (no jailbreak needed); the USB bridge is the fallback when the agent
+    /// isn't there.
     private func performInstall(url: URL) async {
         defer { try? FileManager.default.removeItem(at: url) }
         installNote = "Installing \(url.lastPathComponent)\u{2026}"
+        if let agent = emulator.agent, agent.status == .alive {
+            do {
+                let app = try await agent.installApp(ipa: url) { fraction, status in
+                    Task { @MainActor in installNote = status }
+                }
+                installNote = app.needsRestart
+                    ? "\(app.name) is installed. Restart the device to see its icon."
+                    : "\(app.name) is installed."
+            } catch {
+                installNote = error.localizedDescription
+            }
+            clearInstallNote()
+            return
+        }
         if let session = emulator.usb, case .ready = session.state {
             do {
                 try await session.install(ipa: url) { fraction, status in
                     Task { @MainActor in installNote = "\(status) " + String(format: "%.0f%%", fraction * 100) }
                 }
                 installNote = "Installed."
-                return
             } catch {
-                installNote = "USB install failed: \(error). Trying the agent\u{2026}"
+                installNote = "USB install failed: \(error)"
             }
-        }
-        guard let agent = emulator.agent else {
-            installNote = "The device is not ready to take apps yet."
+            clearInstallNote()
             return
         }
-        let ok = await agent.installIPA(localURL: url)
-        installNote = ok
-            ? (agent.hasShell ? "Installed via the agent." : "Copied to the device. Only a jailbroken device can finish installing it for now.")
-            : "Could not install it. See the log."
+        installNote = "The device is not ready to take apps yet. Wait for the Home screen, then try again."
+        clearInstallNote()
+    }
+
+    private func clearInstallNote() {
+        Task {
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            installNote = ""
+        }
     }
 
     private func takeScreenshot() {

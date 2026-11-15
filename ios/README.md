@@ -159,6 +159,30 @@ IPA install over USB works only where the device hands them out unauthenticated;
 If the device does not come up over USB on two boots in a row the bridge turns itself off, so a setting can never
 leave a device unbootable.
 
+## Installing apps (no jailbreak)
+
+Apps install through the guest agent, which runs as root inside the device. A stock image has no tool to make a
+folder, so the app puts one in: `lt-mkdirs` (ios/guest-helper), a 456-byte static armv6 program, built from
+`lt-mkdirs.S` by `build.py` and embedded in `GuestHelperBinary.swift`; `test.py` runs it under an ARM emulator. On
+iPhone OS 2 and 3 the app goes into a container in /var/mobile/Applications owned by mobile and is added to
+MobileInstallation's cache; on iPhone OS 1 it goes into /Applications. SpringBoard then restarts and shows it. The
+Apps list reads the same cache, so it works without a jailbreak too.
+
+## Closing the app
+
+With "Survive closing the app" on (Settings, on by default), going to the background saves the device, and a swipe
+away from the app switcher no longer loses it: the next start picks up from there ("Picks up where it left off" on its
+row). Coming back without being closed just carries on. A device drawing with hardware graphics (3.x) can't be saved
+on this host yet; it gets its storage flushed instead, so it always starts again cleanly.
+
+## Graphics on an iOS host
+
+Apple's GL on the phone enforces rules the Mac's doesn't, and each one cost whole textures (the white icon boxes):
+`ios/patches/qemu-ios/0005-ios-es-texture-rules.patch` gives non-power-of-two textures the clamp and no-mipmap state
+iOS needs, makes a texture's internal format match its data, and drops the ES 3.0-only row-length setting. The
+console shows `[gles] npot texture ...` for each texture it fixed and `[gles] REFUSED ...` for anything the bridge
+still turns down; send those lines when something draws wrong.
+
 ## How a build is checked
 
 1. **Before a push** (any computer with Python, no Mac needed): `bash ios/scripts/check-all.sh`. It parses every

@@ -152,6 +152,7 @@ final class Emulator: ObservableObject {
             if resumed { retireSnapshot(snaps, qemu: qemu) }
             // Start the guest agent bridge — it probes once the emulator is running.
             let ga = GuestAgent(qemu: qemu)
+            ga.guestVersion = DeviceFolder(url: directory).details.version
             agent = ga
             Task.detached {
                 // The guest takes ~10 s to reach a lit frame and its agent starts later still, so one probe three
@@ -273,6 +274,98 @@ final class Emulator: ObservableObject {
         qemu.snapshotResume()
         state = .running
         saveMessage = "Could not save (\(reason)). The device keeps running."
+    }
+
+    // MARK: - Background: surviving a swipe-away
+
+    /// A background save holds the machine stopped; coming back restarts it.
+    private var parked = false
+    private var parking = false
+    private var backToFront = false
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+
+    /// Whether this machine can be saved now: not with live guest GL (3.x with hardware graphics), which this host
+    /// can't read back into a snapshot.
+    var canSaveState: Bool {
+        guard let qemu else { return false }
+        return (qemu.glesContexts?() ?? 0) == 0
+    }
+
+    /// The app went to the background. iOS may kill it there at any time (and the app switcher's swipe does), so
+    /// the machine is saved now and the next launch picks up where it was. A machine that can't be saved has its
+    /// guest flush its storage instead, so a kill can't leave the disk half-written.
+    func enterBackground(controls: DeviceControls) {
+        guard let qemu, state == .running, !parked, !parking else { return }
+        backToFront = false
+        let keepState = UserDefaults.standard.object(forKey: "keepState") as? Bool ?? true
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Save the device") { [weak self] in
+            Task { @MainActor in self?.endBackgroundTask() }
+        }
+        guard keepState, canSaveState, let overlay = overlayURL else {
+            Task { [weak self] in
+                _ = await self?.agent?.sync()
+                if self?.backToFront == false { controls.suspend() }
+                self?.endBackgroundTask()
+            }
+            return
+        }
+        let snaps = Snapshots(overlay: overlay)
+        snaps.discardTemp()
+        parking = true
+        LTMLog.note("background: saving the device")
+        snaps.tmp.path.withCString { qemu.snapshotSave2($0) }
+        Task { [weak self] in
+            var buffer = [CChar](repeating: 0, count: 512)
+            let started = Date()
+            var saved = false
+            while Date().timeIntervalSince(started) < 25 {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                let code = qemu.snapshotStatus(&buffer, UInt(buffer.count))
+                if code == 2 {
+                    saved = (try? snaps.promote(build: qemu.buildString)) != nil
+                    break
+                }
+                if code == 3 {
+                    LTMLog.note("background: could not save (\(String(cString: buffer)))")
+                    break
+                }
+            }
+            guard let self else { return }
+            self.parking = false
+            if saved {
+                self.parked = true
+                LTMLog.note("background: saved in \(String(format: "%.1f", Date().timeIntervalSince(started))) s; a swipe-away resumes from here")
+                if self.backToFront { self.enterForeground(controls: controls) }
+            } else {
+                snaps.discardTemp()
+                qemu.snapshotResume()           // a failed or unfinished save leaves the machine stopped
+                if !self.backToFront { controls.suspend() }
+            }
+            self.endBackgroundTask()
+        }
+    }
+
+    /// Back in front: restart what the background stopped. The saved state is dropped, because from here on the
+    /// guest writes to its disk and the old RAM image would no longer match it.
+    func enterForeground(controls: DeviceControls) {
+        guard state == .running else { return }
+        backToFront = true
+        if parking { return }                   // the save's end calls back in here
+        if parked, let qemu {
+            parked = false
+            qemu.snapshotResume()
+            if let overlay = overlayURL { Snapshots(overlay: overlay).discard() }
+            controls.wake(resumeCPU: false)
+        } else {
+            controls.wake()
+        }
+    }
+
+    private func endBackgroundTask() {
+        if backgroundTask != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTask)
+            backgroundTask = .invalid
+        }
     }
 
     /// iOS kills a process that issues GL commands in the background, so the emulator is told BEFORE it happens.

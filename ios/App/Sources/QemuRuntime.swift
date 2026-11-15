@@ -56,6 +56,8 @@ final class QemuRuntime: @unchecked Sendable {
     lazy var snapshotSave2 = sym("qemu_ios_snapshot_save2", (@convention(c) (UnsafePointer<CChar>) -> Void).self)
     lazy var snapshotStatus = sym("qemu_ios_snapshot_status", (@convention(c) (UnsafeMutablePointer<CChar>, UInt) -> Int32).self)
     lazy var snapshotResume = sym("qemu_ios_snapshot_resume", (@convention(c) () -> Void).self)
+    /// Live GL contexts: a machine with any can't be saved on this host (the iOS GL bridge can't read its state back).
+    lazy var glesContexts = optionalSym("qemu_ios_gles_contexts", (@convention(c) () -> Int32).self)
 
     /// Identifies this exact emulator build (a saved state only restores into the build that wrote it).
     var buildString: String {

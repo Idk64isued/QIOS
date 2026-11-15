@@ -15,6 +15,7 @@ struct DeviceSettingsView: View {
 
     @AppStorage("viewMode") private var viewModeRaw = ViewMode.bezel.rawValue
     @AppStorage("startupTone") private var startupTone = true
+    @AppStorage("keepState") private var keepState = true
     @AppStorage("appearance") private var appearance = "system"
     @AppStorage("passBattery") private var passBattery = true
     @AppStorage("reportCharger") private var reportCharger = true
@@ -40,6 +41,10 @@ struct DeviceSettingsView: View {
                             }
                             .pickerStyle(.segmented)
                             toggle("Startup tone", "The chime when a device starts.", isOn: $startupTone)
+                            toggle(
+                                "Survive closing the app",
+                                "Saves the device each time Light Touch goes to the background, so swiping it away doesn\u{2019}t lose what was running. Devices drawing with hardware graphics can\u{2019}t be saved yet; they get their storage flushed instead, so they always start again cleanly.",
+                                isOn: $keepState)
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("Appearance")
                                     .font(.system(size: 13, weight: .medium, design: .rounded))

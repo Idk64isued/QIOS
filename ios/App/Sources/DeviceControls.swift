@@ -29,14 +29,68 @@ final class DeviceControls: ObservableObject {
     /// anticlockwise (Home on the right), 4 turned clockwise (Home on the left).
     @Published private(set) var orientation = 1
 
-    /// How far the picture of the screen turns to match, in clockwise quarter turns.
-    var quarterTurns: Int {
+    /// How far the picture of the screen turns, in clockwise quarter turns: how the device's interface stands.
+    ///
+    /// Two angles, as on the Mac and on hardware: how the device is held (`orientation`, the accelerometer, which
+    /// only the user's turns move) and how its interface stands (this), which also follows the front app. Open a
+    /// landscape-only app and the screen swings round by itself; press Home and it swings back. It follows the
+    /// guest's *changes* only, never its steady state: the Home screen is portrait-only on 3.1.3, so following the
+    /// level would undo every manual turn the instant it was made.
+    @Published private(set) var quarterTurns = 0
+
+    static func turns(forHeld orientation: Int) -> Int {
         switch orientation {
         case 4: return 1
         case 2: return 2
         case 3: return 3
         default: return 0
         }
+    }
+
+    /// SpringBoard's degrees (the agent's `orientation`) -> clockwise quarter turns of the screen.
+    /// LandscapeLeft (90) has the Home button on the right: the picture turns anticlockwise.
+    static func turns(forGuest degrees: Int) -> Int? {
+        switch degrees {
+        case 0: return 0
+        case 180: return 2
+        case 90: return 3
+        case -90, 270: return 1
+        default: return nil
+        }
+    }
+
+    private var lastGuestDegrees: Int?
+    private var orientationWatch: Task<Void, Never>?
+
+    /// Follows the front app's orientation through the guest agent (3.1.3; other builds don't answer and the
+    /// screen stays where the user put it). Four times a second, nothing while asleep or installing.
+    func watchGuestOrientation(agent: GuestAgent) {
+        orientationWatch?.cancel()
+        lastGuestDegrees = nil
+        orientationWatch = Task { [weak self] in
+            var misses = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: misses > 3 ? 5_000_000_000 : 250_000_000)
+                guard let self else { return }
+                guard self.running else { continue }
+                guard agent.status == .alive, agent.ops.contains("orientation"), !agent.isInstalling,
+                    !self.screenAsleep
+                else { continue }
+                guard let degrees = await agent.orientation() else {
+                    misses += 1
+                    continue
+                }
+                misses = 0
+                self.guestOrientation(degrees)
+            }
+        }
+    }
+
+    private func guestOrientation(_ degrees: Int) {
+        guard let turns = Self.turns(forGuest: degrees) else { return }
+        defer { lastGuestDegrees = degrees }
+        guard let previous = lastGuestDegrees, previous != degrees else { return }   // the first reading only seeds
+        if turns != quarterTurns { quarterTurns = turns }
     }
 
     // Settings the user can turn on. Plain UserDefaults rather than @AppStorage: this is not a view, and a
@@ -70,6 +124,7 @@ final class DeviceControls: ObservableObject {
         guard !running else { return }
         running = true
         orientation = 1
+        quarterTurns = 0
         vibratorPulses = 0
 
         UIDevice.current.isBatteryMonitoringEnabled = true
@@ -86,6 +141,8 @@ final class DeviceControls: ObservableObject {
     }
 
     func stop() {
+        orientationWatch?.cancel()
+        orientationWatch = nil
         timer?.invalidate()
         timer = nil
         stopMotion()
@@ -229,7 +286,10 @@ final class DeviceControls: ObservableObject {
             let clockwise = ([1: 4, 4: 2, 2: 3, 3: 1][orientation] ?? 4) == value
             step(clockwise)
             orientation = value
+        } else {
+            return
         }
+        quarterTurns = Self.turns(forHeld: value)
     }
 
     /// Sleep / Wake, for the overlay a sleeping screen shows.
@@ -299,8 +359,9 @@ final class DeviceControls: ObservableObject {
         qemu?.pause?()
     }
 
-    func wake() {
-        qemu?.resume?()
+    /// `resumeCPU` is false when the machine comes back from a background save, which restarts it its own way.
+    func wake(resumeCPU: Bool = true) {
+        if resumeCPU { qemu?.resume?() }
         applyPowerState()
     }
 

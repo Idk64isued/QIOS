@@ -1,0 +1,164 @@
+ES rules an iOS host enforces that the desktop did not: internal format = format, no UNPACK_ROW_LENGTH, NPOT 2D textures clamp with no mipmaps (white boxes).
+diff --git a/hw/arm/gles-host.c b/hw/arm/gles-host.c
+index f09e7069c6..9890e15d16 100644
+--- a/hw/arm/gles-host.c
++++ b/hw/arm/gles-host.c
+@@ -347,6 +347,35 @@ bool gles_eagl_iosurface_bind(uint32_t width, uint32_t height,
+ void *gles_eagl_iosurface_lock(size_t *stride);
+ void gles_eagl_iosurface_unlock(void);
+ 
++#ifndef GLES_HOST_ANGLE
++/*
++ * Apple's own ES on an iOS host is stricter than the desktop GL this file was written against, in two ways that
++ * cost a whole texture each:
++ *
++ *  - glTexImage2D's internal format has to equal its format (BGRA: GL_RGBA storage, APPLE_texture_format_BGRA8888).
++ *    The desktop takes GL_RGBA storage for any format, and so did every upload here: an A8, L8, LA88 or 565 surface
++ *    (status bar text, shadows, opaque layers) and a decoded PVRTC RGB texture were GL_INVALID_OPERATION.
++ *  - ES 1.1 and 2.0 have no GL_UNPACK_ROW_LENGTH (it is ES 3.0). Setting it to 0, its default, raised
++ *    GL_INVALID_ENUM, which the next error check took for the upload's own failure or handed to the guest.
++ */
++static inline void gles_eagl_tex_image_2d(GLenum target, GLint level, GLint internal, GLsizei w, GLsizei h,
++                                          GLint border, GLenum format, GLenum type, const void *pixels)
++{
++    (void)internal;
++    (glTexImage2D)(target, level, format == GL_BGRA ? GL_RGBA : (GLint)format, w, h, border, format, type, pixels);
++}
++#define glTexImage2D gles_eagl_tex_image_2d
++
++static inline void gles_eagl_pixel_store(GLenum pname, GLint value)
++{
++    if ((pname == 0x0CF2 /* UNPACK_ROW_LENGTH */ || pname == 0x0D02 /* PACK_ROW_LENGTH */) && value == 0) {
++        return;                         /* the default, and the only value an ES 1.1 guest can mean */
++    }
++    (glPixelStorei)(pname, value);
++}
++#define glPixelStorei gles_eagl_pixel_store
++#endif
++
+ #else /* macOS: legacy CGL */
+ 
+ #include <OpenGL/OpenGL.h>
+@@ -5204,6 +5233,85 @@ static float gles_u2f(uint32_t u)
+     memcpy(&f, &u, sizeof(f));
+     return f;
+ }
++
++/*
++ * Non-power-of-two 2D textures on an ES host.
++ *
++ * Apple's ES samples a 2D texture whose width or height is not a power of two only when it clamps to the edge and
++ * has no mipmaps (APPLE_texture_2D_limited_npot); otherwise the texture is incomplete, and ES draws an incomplete
++ * texture as if texturing were off: the fragment keeps its own color, which for CoreAnimation's quads is white.
++ * The desktop has no such rule, so nothing here enforced one, and every NPOT layer, icon and render target that kept
++ * GL's defaults (REPEAT, NEAREST_MIPMAP_LINEAR) drew as a white box. A texture that gets an NPOT level 0 is clamped
++ * and loses its mipmap filter, here and at every later glTexParameter, as rectangles already are; a POT surface
++ * gets MAX_LEVEL 0 (APPLE_texture_max_level), which the guest-upload path already gives guest textures.
++ */
++static GHashTable *gles_npot;           /* host names of 2D textures whose level 0 is NPOT */
++static unsigned gles_npot_logged;
++
++static bool gles_is_pot(uint32_t v)
++{
++    return v && !(v & (v - 1));
++}
++
++static bool gles_npot_bound(void)
++{
++    GLint name = 0;
++
++    if (!gles_npot || !g_hash_table_size(gles_npot)) {
++        return false;
++    }
++    glGetIntegerv(GL_TEXTURE_BINDING_2D, &name);
++    return name && g_hash_table_contains(gles_npot, GUINT_TO_POINTER(name));
++}
++
++/* The 2D texture bound now has (or is about to have) a level 0 of w x h. */
++static void gles_npot_note_bound(uint32_t w, uint32_t h, bool surface)
++{
++    GLint name = 0, ws = 0, wt = 0, minf = 0;
++    bool changed = false;
++
++    glGetIntegerv(GL_TEXTURE_BINDING_2D, &name);
++    if (!name || (gles_rects && g_hash_table_contains(gles_rects, GUINT_TO_POINTER(name)))) {
++        return;                         /* rectangles keep their own rules (gles_rect_bound) */
++    }
++    if (gles_is_pot(w) && gles_is_pot(h)) {
++        if (gles_npot) {
++            g_hash_table_remove(gles_npot, GUINT_TO_POINTER(name));
++        }
++        if (surface) {
++            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
++            while (glGetError() != GL_NO_ERROR) {
++            }
++        }
++        return;
++    }
++    if (!gles_npot) {
++        gles_npot = g_hash_table_new(g_direct_hash, g_direct_equal);
++    }
++    g_hash_table_add(gles_npot, GUINT_TO_POINTER(name));
++    glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, &ws);
++    glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, &wt);
++    glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, &minf);
++    if (ws != GL_CLAMP_TO_EDGE) {
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++        changed = true;
++    }
++    if (wt != GL_CLAMP_TO_EDGE) {
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++        changed = true;
++    }
++    if (minf >= 0x2700 && minf <= 0x2703) {
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, (minf & 1) ? GL_LINEAR : GL_NEAREST);
++        changed = true;
++    }
++    while (glGetError() != GL_NO_ERROR) {
++    }
++    if (changed && gles_npot_logged < 24) {
++        gles_npot_logged++;
++        fprintf(stderr, "[gles] npot texture %d %ux%u%s: clamped, no mipmaps (was wrap 0x%x/0x%x min 0x%x)\n",
++                name, w, h, surface ? " (surface)" : "", ws, wt, minf);
++    }
++}
+ #endif /* rectangle textures on an ES 1.1 host */
+ 
+ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a, uint32_t id)
+@@ -5266,6 +5374,8 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a, uint32_t id)
+     if (rect2d) {
+         gles_rect_bound(texture, true);
+         gles_rect_note(texture, w, h);
++    } else if (target == GL_TEXTURE_2D && gles_rect2d_enabled()) {
++        gles_npot_note_bound(w, h, true);
+     }
+ #endif
+     if (!nv12 && !bpp) {
+@@ -8422,9 +8532,9 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
+         break;
+     case GLES_SLOT_TEX_PARAMETERI:
+     case GLES_SLOT_TEX_PARAMETERF:
+-        if (b[0] == GLES_RECT_TARGET) {
++        if (b[0] == GLES_RECT_TARGET || (b[0] == GL_TEXTURE_2D && gles_npot_bound())) {
++            rect = b[0] == GLES_RECT_TARGET;
+             b[0] = GL_TEXTURE_2D;
+-            rect = true;
+             if (argc >= 3) {
+                 bool is_float = slot == GLES_SLOT_TEX_PARAMETERF;
+                 uint32_t value = is_float ? (uint32_t)gles_u2f(b[2]) : b[2];
+@@ -8471,11 +8581,15 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
+         case GLES_SLOT_COMPRESSED_TEX_IMAGE_2D:
+             if (rect && argc >= 5) {
+                 gles_rect_note_bound(b[3], b[4]);
++            } else if (b[0] == GL_TEXTURE_2D && argc >= 5 && b[1] == 0) {
++                gles_npot_note_bound(b[3], b[4], false);
+             }
+             break;
+         case GLES_SLOT_COPY_TEX_IMAGE_2D:
+             if (rect && argc >= 7) {
+                 gles_rect_note_bound(b[5], b[6]);
++            } else if (b[0] == GL_TEXTURE_2D && argc >= 7 && b[1] == 0) {
++                gles_npot_note_bound(b[5], b[6], false);
+             }
+             break;
+         default:

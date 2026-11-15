@@ -7,7 +7,18 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 SDK="$(xcrun --sdk iphoneos --show-sdk-path)"; FLAGS="-arch arm64 -isysroot $SDK -miphoneos-version-min=16.0"
 JOBS="$(sysctl -n hw.ncpu)"
 cd "$QEMU"
-for p in "$HERE"/../patches/qemu-ios/*.patch; do git apply --check "$p" 2>/dev/null && git apply "$p" || echo "patch $p: already applied or does not apply" >&2; done
+# Every patch has to apply: one that silently didn't would ship an emulator without its fix. A tree this script
+# already patched says so with a marker naming the patch set, so a local rebuild doesn't try them twice.
+MARK=".ios-patches-applied"; WANT="$(cat "$HERE"/../patches/qemu-ios/*.patch | shasum | cut -c1-16)"
+if [ -f "$MARK" ] && [ "$(cat "$MARK")" = "$WANT" ]; then
+    echo "qemu-ios patches already applied ($WANT)"
+else
+    for p in "$HERE"/../patches/qemu-ios/*.patch; do
+        if git apply --check "$p" 2>/dev/null; then git apply "$p"; echo "applied $(basename "$p")"
+        else echo "::error::$(basename "$p") does not apply to this qemu-ios (a fresh checkout of the pinned commit is needed)" >&2; git apply --check "$p"; exit 1; fi
+    done
+    echo "$WANT" > "$MARK"
+fi
 export PKG_CONFIG_LIBDIR="$P/lib/pkgconfig" PKG_CONFIG_PATH=
 build() {   # NAME DYLIB EXTRA-CONFIGURE-ARGS...
     local name="$1" dylib="$2"; shift 2

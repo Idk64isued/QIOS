@@ -19,6 +19,12 @@ final class GuestAgent: ObservableObject {
     @Published private(set) var hasShell: Bool = false   // /bin/mkdir exists → jailbroken guest
     @Published private(set) var lastLog: String = ""
     @Published private(set) var isBusy: Bool = false
+    /// An app install is running (GuestInstaller.swift).
+    @Published var isInstalling: Bool = false
+    /// The guest's iPhone OS version (the device's lock file), which decides where an app goes.
+    var guestVersion: String?
+    /// lt-mkdirs is in the guest for this session.
+    var helperReady = false
 
     enum AgentStatus: String {
         case unknown   = "unknown"
@@ -85,18 +91,20 @@ final class GuestAgent: ObservableObject {
         guard ok else { log("ping request failed"); return }
 
         // Poll for result (up to 5 seconds)
-        let result = await pollResult(id: id, timeout: 5.0)
-        guard let result else { log("ping timed out"); return }
+        guard let reply = await pollRaw(id: id, timeout: 5.0) else { log("ping timed out"); return }
 
-        // Parse: "it_agent v6\nops ping spawn sync put putpart get ..."
-        let lines = result.components(separatedBy: "\n")
+        // The body (after the status line) is "it_agent v5\nops ping spawn sync put putpart get ...\n". This used to
+        // read the status line as the version, so no op was ever found and every device looked like it had no spawn.
+        let lines = (String(data: reply.body, encoding: .utf8) ?? "").components(separatedBy: "\n")
         if let first = lines.first, first.hasPrefix("it_agent") {
             version = first
             log("Agent: \(first)")
         }
-        if lines.count > 1, lines[1].hasPrefix("ops ") {
-            ops = lines[1].dropFirst(4).components(separatedBy: " ").filter { !$0.isEmpty }
+        if let opsLine = lines.first(where: { $0.hasPrefix("ops ") }) {
+            ops = opsLine.dropFirst(4).components(separatedBy: " ").filter { !$0.isEmpty }
             log("Ops: \(ops.joined(separator: ", "))")
+        } else if version.hasPrefix("it_agent v1") {
+            log("This guest has the first agent, which can only paste. Rebuild the device for app installs.")
         }
     }
 
@@ -148,24 +156,61 @@ final class GuestAgent: ObservableObject {
         }
     }
 
-    /// Spawn a command in the guest. Returns stdout (base64-decoded).
+    /// Spawn a command in the guest. Returns its stdout+stderr, or nil when it could not be started.
     func spawn(argv: [String]) async -> Data? {
+        guard let r = await run(argv) else { return nil }
+        return r.status < 0 ? nil : r.output
+    }
+
+    /// Spawn a command in the guest: its exit status (negative = it never ran: -errno) and its stdout+stderr.
+    /// The agent's spawn has no shell; argv[0] has to be an absolute path.
+    func run(_ argv: [String], timeout: TimeInterval = 60) async -> (status: Int, output: Data)? {
         let id = UUID().uuidString
-        // argv is NUL-terminated, absolute argv[0]
-        let argStr = argv.joined(separator: "\0")
+        let argStr = argv.joined(separator: "\0") + "\0"
         let b64 = Data(argStr.utf8).base64EncodedString()
-        let ok = agentRequest("\(id) spawn\n\(b64)")
-        guard ok else { log("spawn request failed"); return nil }
-
-        guard let result = await pollResult(id: id, timeout: 60.0) else {
-            log("spawn timed out"); return nil
+        guard agentRequest("\(id) spawn\n\(b64)") else { log("spawn request failed"); return nil }
+        guard let reply = await pollRaw(id: id, timeout: timeout) else {
+            log("spawn \(argv.first ?? "") timed out"); return nil
         }
+        return (reply.status ?? -1, reply.body)
+    }
 
-        let parts = result.components(separatedBy: "\n")
-        if parts.count > 1, let decoded = Data(base64Encoded: parts[1]) {
-            return decoded
+    /// A file from the guest (any size: `get` up to 1 MiB, then `getrange` in pieces). nil if it isn't there.
+    func getFile(_ path: String) async -> Data? {
+        let id = UUID().uuidString
+        guard agentRequest("\(id) get \(path)\n") else { return nil }
+        guard let reply = await pollRaw(id: id, timeout: 30) else { return nil }
+        if reply.status == 0 { return reply.body }
+        guard reply.status == -27 /* EFBIG */ else { return nil }
+        var out = Data()
+        let piece = 512 * 1024
+        while true {
+            let rid = UUID().uuidString
+            guard agentRequest("\(rid) getrange \(out.count) \(piece) \(path)\n"),
+                let part = await pollRaw(id: rid, timeout: 30), part.status == 0
+            else { return nil }
+            out.append(part.body)
+            if part.body.count < piece { return out }
         }
-        return nil
+    }
+
+    /// The frontmost app's interface orientation in degrees (0, 90, 180, -90), or nil where the agent can't tell
+    /// (it knows SpringBoard's ABI on 3.1.3 only).
+    func orientation() async -> Int? {
+        guard ops.contains("orientation") else { return nil }
+        let id = UUID().uuidString
+        guard agentRequest("\(id) orientation\n"), let reply = await pollRaw(id: id, timeout: 2), reply.status == 0
+        else { return nil }
+        return Int((String(data: reply.body, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// sync(2) in the guest: what it has written reaches its storage, so a kill now leaves a consistent disk.
+    @discardableResult
+    func sync() async -> Bool {
+        guard ops.contains("sync") else { return false }
+        let id = UUID().uuidString
+        guard agentRequest("\(id) sync\n"), let reply = await pollRaw(id: id, timeout: 10) else { return false }
+        return reply.status == 0
     }
 
     /// Launch a bundle id in the guest.
@@ -320,71 +365,7 @@ final class GuestAgent: ObservableObject {
         }
     }
 
-    // MARK: - IPA Install (requires shell tools or future USB stack)
-
-    /// Attempt to install an IPA into the guest. Currently requires a jailbroken guest with
-    /// shell tools (mkdir, cp). The Mac app uses AFC + installation_proxy over a USB bridge;
-    /// that path needs the cross-built USB stack (probe-usb in CI).
-    func installIPA(localURL: URL) async -> Bool {
-        isBusy = true
-        defer { isBusy = false }
-
-        guard status == .alive else {
-            log("Agent not alive, cannot install"); return false
-        }
-
-        // Extract the IPA (it's a zip) to find the .app bundle
-        let fm = FileManager.default
-        let tmp = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        do {
-            try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
-            // Use unzip via Process is not available on iOS, so we use ZIPFoundation-style manual unzip
-            // For now, we just upload the IPA and let the guest-side handle it if possible
-            log("IPA install via agent: uploading \(localURL.lastPathComponent)…")
-
-            let guestIPA = "/tmp/\(localURL.lastPathComponent)"
-            let uploaded = await putFile(localURL: localURL, guestPath: guestIPA)
-            guard uploaded else { log("Upload failed"); return false }
-
-            if hasShell {
-                // Use shell tools to unzip and install
-                log("Extracting on guest…")
-                _ = await spawn(argv: ["/bin/mkdir", "-p", "/tmp/ipa_install"])
-                let unzipResult = await spawn(argv: ["/usr/bin/unzip", "-o", guestIPA, "-d", "/tmp/ipa_install"])
-                if unzipResult == nil {
-                    log("Guest unzip not available, trying alternative…")
-                    // Older iOS may not have unzip; the IPA stays uploaded for manual install
-                    log("IPA uploaded to \(guestIPA). Use Cydia or manual install.")
-                    return true
-                }
-
-                // Find the .app folder
-                if let lsResult = await spawn(argv: ["/bin/ls", "/tmp/ipa_install/Payload"]),
-                   let output = String(data: lsResult, encoding: .utf8) {
-                    let apps = output.components(separatedBy: "\n").filter { $0.hasSuffix(".app") }
-                    if let appName = apps.first {
-                        log("Found app: \(appName)")
-                        // Copy to /Applications (requires root on jailbroken device)
-                        _ = await spawn(argv: ["/bin/cp", "-R", "/tmp/ipa_install/Payload/\(appName)", "/Applications/\(appName)"])
-                        _ = await chown(uid: 0, gid: 0, path: "/Applications/\(appName)")
-                        log("Installed \(appName) to /Applications")
-                        // Clean up
-                        _ = await unlink(path: guestIPA)
-                        _ = await spawn(argv: ["/bin/rm", "-rf", "/tmp/ipa_install"])
-                        return true
-                    }
-                }
-                log("Could not find .app in IPA")
-                return false
-            } else {
-                log("No shell tools. IPA uploaded to guest at \(guestIPA). Jailbreak the device or wait for USB install support.")
-                return true
-            }
-        } catch {
-            log("IPA install error: \(error.localizedDescription)")
-            return false
-        }
-    }
+    // MARK: - IPA install: GuestInstaller.swift (no jailbreak needed)
 
     // MARK: - Internals
 
@@ -406,28 +387,41 @@ final class GuestAgent: ObservableObject {
         return status.isEmpty ? "no answer" : status
     }
 
-    private func pollResult(id: String, timeout: TimeInterval) async -> String? {
+    /// Results that arrived for other requests while one was being waited for. `agent-result` hands out whichever
+    /// result is ready, so without this a second caller (orientation polling during an install) lost the first one's.
+    private var mailbox: [String: (status: Int?, statusText: String, body: Data)] = [:]
+
+    /// Waits for the result of request `id`: its status (the agent's number when it is one) and its decoded body.
+    private func pollRaw(id: String, timeout: TimeInterval) async -> (status: Int?, statusText: String, body: Data)? {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if let raw = agentResult() {
-                // Format: "<id> <status>\n<base64 body>"
-                let parts = raw.components(separatedBy: "\n")
-                guard let header = parts.first else { continue }
-                let headerParts = header.components(separatedBy: " ")
-                guard headerParts.count >= 2, headerParts[0] == id else { continue }
-
-                let statusStr = headerParts[1]
-                if parts.count > 1, let decoded = Data(base64Encoded: parts[1]) {
-                    return statusStr + "\n" + (String(data: decoded, encoding: .utf8) ?? "")
-                }
-                return statusStr
+            if let mine = mailbox.removeValue(forKey: id) { return mine }
+            while let raw = agentResult() {
+                // "<id> <status>\n<base64 body>"
+                let newline = raw.firstIndex(of: "\n") ?? raw.endIndex
+                let header = raw[..<newline].split(separator: " ", maxSplits: 1).map(String.init)
+                guard header.count >= 1 else { continue }
+                let statusText = header.count > 1 ? header[1].trimmingCharacters(in: .whitespaces) : ""
+                let bodyText = newline < raw.endIndex ? String(raw[raw.index(after: newline)...]) : ""
+                let body = Data(base64Encoded: bodyText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? Data()
+                let entry = (status: Int(statusText), statusText: statusText, body: body)
+                if header[0] == id { return entry }
+                if mailbox.count < 64 { mailbox[header[0]] = entry }
             }
-            try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+            try? await Task.sleep(nanoseconds: 20_000_000)  // 20 ms: an install is hundreds of round trips
         }
+        agentCancel(id)
         return nil
     }
 
-    private func log(_ message: String) {
+    /// The status line and the body as text, for the callers that only check `succeeded`.
+    private func pollResult(id: String, timeout: TimeInterval) async -> String? {
+        guard let r = await pollRaw(id: id, timeout: timeout) else { return nil }
+        let text = String(data: r.body, encoding: .utf8) ?? ""
+        return text.isEmpty ? r.statusText : r.statusText + "\n" + text
+    }
+
+    func log(_ message: String) {
         lastLog = message
         LTMLog.note("[agent] \(message)")
     }

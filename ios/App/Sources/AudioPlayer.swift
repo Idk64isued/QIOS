@@ -12,6 +12,11 @@ import os
 /// waits until it holds a little audio before it plays, waits again whenever it runs dry instead of stuttering
 /// sample by sample, fades at both edges so a gap is a gap rather than a click, and trims itself back if it ever
 /// starts running late.
+///
+/// The buffer alone can't help when the emulator makes sound slower than real time, which a warm phone does for
+/// minutes on end: it runs dry every few hundred milliseconds however big it is. So playback follows the emulator's
+/// pace: a time-pitch unit plays a little slower (same pitch) while the buffer is below its target and back at full
+/// speed once it recovers, which turns "stop, start, stop" into sound that is a touch slow but continuous.
 final class AudioPlayer: @unchecked Sendable {
     private let qemu: QemuRuntime
     private let engine = AVAudioEngine()
@@ -24,7 +29,11 @@ final class AudioPlayer: @unchecked Sendable {
     private var count = 0                          // samples buffered
 
     // The jitter buffer, in stereo frames.
-    private let startFrames = 44100 * 12 / 100     // 120 ms before playing, or resuming after running dry
+    private let startFrames = 44100 * 20 / 100     // 200 ms before playing, or resuming after running dry
+    private let targetFrames = 44100 * 25 / 100    // where the pace control keeps the buffer
+    private let timePitch = AVAudioUnitTimePitch()
+    private var rate: Float = 1
+    private var dryEvents = 0                      // times it ran dry since the last report (audio thread, under lock)
     private let lateFrames = 44100 * 45 / 100      // more than 450 ms buffered means we are falling behind...
     private let trimToFrames = 44100 * 15 / 100    // ...so drop back to 150 ms
 
@@ -66,7 +75,10 @@ final class AudioPlayer: @unchecked Sendable {
             return noErr
         }
         engine.attach(node)
-        engine.connect(node, to: engine.mainMixerNode, format: format)
+        engine.attach(timePitch)
+        timePitch.rate = 1
+        engine.connect(node, to: timePitch, format: format)
+        engine.connect(timePitch, to: engine.mainMixerNode, format: format)
         try? engine.start()
 
         let thread = Thread { [weak self] in self?.pump() }
@@ -99,7 +111,10 @@ final class AudioPlayer: @unchecked Sendable {
             } else {
                 // Dry. Let the last sample die away rather than dropping to zero (that drop is the click), and
                 // wait for the buffer to fill back up before playing again.
-                if playing { playing = false }
+                if playing {
+                    playing = false
+                    dryEvents += 1
+                }
                 gain = max(0, gain - gainStep)
                 l = lastLeft
                 r = lastRight
@@ -118,7 +133,17 @@ final class AudioPlayer: @unchecked Sendable {
         guard running else { return }
         let generation = qemu.audioStart()
         var packet = [UInt8](repeating: 0, count: 16384)
+        var lastPace = Date()
+        var lastReport = Date()
         while running {
+            if Date().timeIntervalSince(lastPace) > 0.1 {
+                lastPace = Date()
+                pace()
+            }
+            if Date().timeIntervalSince(lastReport) > 15 {
+                lastReport = Date()
+                report()
+            }
             var seconds = 0.0
             let n = packet.withUnsafeMutableBytes { qemu.audioRead(generation, $0.baseAddress, 16384, &seconds) }
             if n < 0 { break }   // generation expired or failed
@@ -129,6 +154,32 @@ final class AudioPlayer: @unchecked Sendable {
             }
         }
         qemu.audioStop(generation)
+    }
+
+    /// Ten times a second: nudge the playback rate toward whatever keeps the buffer at its target. Below it, slow
+    /// down (to 70% at most, where it still sounds like the same sound); at or above it, ease back to full speed.
+    private func pace() {
+        os_unfair_lock_lock(lock)
+        let buffered = count / 2
+        let isPlaying = playing
+        os_unfair_lock_unlock(lock)
+        guard isPlaying else { return }
+        let error = Float(buffered - targetFrames) / Float(targetFrames)    // -1 empty ... 0 on target ... >0 ahead
+        let wanted = max(0.7, min(1.0, 1.0 + 0.5 * error))
+        rate += (wanted - rate) * 0.2
+        if abs(timePitch.rate - rate) > 0.01 { timePitch.rate = rate }
+    }
+
+    private func report() {
+        os_unfair_lock_lock(lock)
+        let dry = dryEvents
+        let ms = count / 2 * 1000 / 44100
+        dryEvents = 0
+        os_unfair_lock_unlock(lock)
+        if dry > 0 || rate < 0.98 {
+            LTMLog.note("[audio] ran dry \(dry)x in 15 s, playing at \(Int(rate * 100))% speed, \(ms) ms buffered"
+                + (dry > 5 ? " \u{2014} the emulator is making sound slower than real time" : ""))
+        }
     }
 
     private func enqueue(_ samples: UnsafePointer<Int16>, count incoming: Int) {

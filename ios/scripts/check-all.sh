@@ -1,7 +1,7 @@
 #!/bin/bash
 # Everything that can be checked without a Mac, in one go. Run before every push / update zip:
 #     bash ios/scripts/check-all.sh
-# Needs: python3 with tree-sitter==0.26.1 tree-sitter-swift==0.7.4 and PyYAML; actionlint if installed.
+# Needs: python3 with tree-sitter==0.26.1 tree-sitter-swift==0.7.4 and PyYAML, clang; unicorn and actionlint if installed.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 fail=0
@@ -16,6 +16,10 @@ if command -v actionlint >/dev/null; then
     step "workflow lint (actionlint)" actionlint .github/workflows/ios.yml
 fi
 step "xcodebuild options exist"      python3 ios/scripts/check-workflow-flags.py
+step "guest helper is current"       python3 ios/guest-helper/build.py --check
+if python3 -c "import unicorn" 2>/dev/null; then
+    step "guest helper runs (ARM emulator)" python3 ios/guest-helper/test.py
+fi
 step "shell scripts parse"           bash -c 'for f in ios/scripts/*.sh sync-upstream.sh; do bash -n "$f" || exit 1; done'
 step "FirmwareKit patch script"      python3 -m py_compile ios/scripts/patch-firmwarekit.py
 rm -rf ios/scripts/__pycache__

@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install tree-sitter==0.26.1 tree-sitter-swift==0.7.4
+      - run: pip install tree-sitter==0.26.1 tree-sitter-swift==0.7.4 unicorn==2.1.4
       - name: Check the app sources
         run: |
           set -o pipefail
@@ -35,6 +35,10 @@ jobs:
         run: python3 ios/scripts/precheck-selftest.py
       - name: Every xcodebuild option exists
         run: python3 ios/scripts/check-workflow-flags.py
+      - name: The guest helper matches its source and runs
+        run: |
+          python3 ios/guest-helper/build.py --check
+          python3 ios/guest-helper/test.py
 
   build:
     needs: precheck

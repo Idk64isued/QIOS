@@ -22,12 +22,18 @@ final class AppsModel: ObservableObject {
         loading = true
         error = nil
         Task {
-            let list = await agent.listApps()
+            // Apps installed from here (and from the App Store, on 2.x and later) are in MobileInstallation's cache,
+            // which the agent can read on any device; a jailbroken one also has its /Applications listed.
+            var list = await agent.installedUserApps()
+            if agent.hasShell {
+                let system = await agent.listApps()
+                let known = Set(list.map { $0.bundleID })
+                let extra = system.filter { !known.contains($0.bundleID) }
+                list += extra
+            }
             self.apps = list
-            if !agent.hasShell {
-                self.error = "The guest doesn\u{2019}t have shell tools. Jailbreak it to see the full app list."
-            } else if list.isEmpty {
-                self.error = "No apps in /Applications."
+            if list.isEmpty {
+                self.error = "No apps installed yet. Install an .ipa or get one from the Legacy Store."
             }
             self.loading = false
         }
