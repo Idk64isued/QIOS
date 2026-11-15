@@ -31,6 +31,11 @@ extension GuestAgent {
 
     /// Unpacks `ipa` here, copies its app into the guest, registers it and restarts SpringBoard.
     func installApp(ipa: URL, progress: @escaping (Double, String) -> Void) async throws -> InstalledApp {
+        if isInstalling { progress(0, "Waiting for the install before it\u{2026}") }
+        return try await oneAtATime { try await self.installAppNow(ipa: ipa, progress: progress) }
+    }
+
+    private func installAppNow(ipa: URL, progress: @escaping (Double, String) -> Void) async throws -> InstalledApp {
         guard status == .alive else { throw InstallFailure(message: "The device\u{2019}s agent isn\u{2019}t running yet. Give it a minute after the Home screen appears.") }
         guard ops.contains("spawn"), ops.contains("chown"), ops.contains("put") || ops.contains("putpart") else {
             throw InstallFailure(message: "This device\u{2019}s guest tools are too old to install apps (agent \(version.isEmpty ? "unknown" : version)). Rebuild the device to update them.")

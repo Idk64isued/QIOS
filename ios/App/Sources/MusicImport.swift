@@ -156,6 +156,10 @@ enum MusicImport {
 extension GuestAgent {
     /// Stages `song` in the guest and has itmedia add it to Music. Returns the song's title.
     func importSong(_ song: PreparedSong, progress: @escaping (String) -> Void) async throws -> String {
+        try await oneAtATime { try await self.importSongNow(song, progress: progress) }
+    }
+
+    private func importSongNow(_ song: PreparedSong, progress: @escaping (String) -> Void) async throws -> String {
         let major = Int((guestVersion ?? "3").prefix { $0 != "." }) ?? 3
         let minor = Int((guestVersion ?? "3.1").split(separator: ".").dropFirst().first ?? "0") ?? 0
         guard major > 3 || (major == 3 && minor >= 1) else {

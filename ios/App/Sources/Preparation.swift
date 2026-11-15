@@ -51,7 +51,7 @@ enum OnDevicePrep {
             // recipes ask for a helper executable; this app is the one doing the work, so it names itself.
             OneShotRunner.install()
             let options = Preparer.Options(
-                entry: entry, ipsw: ipsw, out: out, seed: seed, helper: Bundle.main.executableURL, guestTools: guestTools,
+                entry: entry, ipsw: ipsw, out: out, seed: seed, helper: OneShotRunner.helperStandIn() ?? Bundle.main.executableURL, guestTools: guestTools,
                 cache: cache)
             // .writer: volumes are read and written by FirmwareKit's own HFS+ and disk-image code. The default
             // (.kernel) mounts them with hdiutil and diskutil, which iOS does not have.

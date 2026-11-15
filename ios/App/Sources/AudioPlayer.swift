@@ -76,6 +76,10 @@ final class AudioPlayer: @unchecked Sendable {
         engine.attach(node)
         engine.attach(timePitch)
         timePitch.rate = 1
+        // The stretcher only works while the emulator is behind; at full speed the sound passes through untouched
+        // (stretching at 99% is what made music sound brassy). When it does work, the most overlap: smoothest.
+        timePitch.overlap = 32
+        timePitch.bypass = true
         engine.connect(node, to: timePitch, format: format)
         engine.connect(timePitch, to: engine.mainMixerNode, format: format)
         try? engine.start()
@@ -179,6 +183,8 @@ final class AudioPlayer: @unchecked Sendable {
         let wanted = max(0.7, min(1.0, 1.0 + 0.5 * error))
         rate += (wanted - rate) * 0.2
         if abs(timePitch.rate - rate) > 0.01 { timePitch.rate = rate }
+        let bypass = rate > 0.97
+        if timePitch.bypass != bypass { timePitch.bypass = bypass }
     }
 
     private func report() {

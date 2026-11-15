@@ -214,6 +214,10 @@ private enum Transcode {
 extension GuestAgent {
     /// Hands a prepared photo (itphoto, Saved Photos) or video (itmedia, Videos) to the device.
     func importMedia(_ media: PreparedMedia, progress: @escaping (String) -> Void) async throws {
+        try await oneAtATime { try await self.importMediaNow(media, progress: progress) }
+    }
+
+    private func importMediaNow(_ media: PreparedMedia, progress: @escaping (String) -> Void) async throws {
         let major = Int((guestVersion ?? "3").prefix { $0 != "." }) ?? 3
         let minor = Int((guestVersion ?? "3.1").split(separator: ".").dropFirst().first ?? "0") ?? 0
         guard major > 3 || (major == 3 && minor >= 1) else {

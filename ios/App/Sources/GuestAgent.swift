@@ -25,6 +25,20 @@ final class GuestAgent: ObservableObject {
     var guestVersion: String?
     /// lt-mkdirs is in the guest for this session.
     var helperReady = false
+    /// The end of the queue of installs and imports: each waits for the one before it (one at a time, so two never
+    /// write into the guest at once).
+    var jobTail: Task<Void, Never>?
+
+    /// Runs `work` after every install or import queued before it has finished.
+    func oneAtATime<T>(_ work: @escaping @MainActor () async throws -> T) async throws -> T {
+        let previous = jobTail
+        let job = Task { @MainActor () async throws -> T in
+            _ = await previous?.value
+            return try await work()
+        }
+        jobTail = Task { _ = try? await job.value }
+        return try await job.value
+    }
 
     enum AgentStatus: String {
         case unknown   = "unknown"
