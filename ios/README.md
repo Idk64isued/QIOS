@@ -158,3 +158,20 @@ IPA install over USB works only where the device hands them out unauthenticated;
 
 If the device does not come up over USB on two boots in a row the bridge turns itself off, so a setting can never
 leave a device unbootable.
+
+## How a build is checked
+
+1. **Before a push** (any computer with Python, no Mac needed): `bash ios/scripts/check-all.sh`. It parses every
+   Swift file and checks calls into the app's own types (members that don't exist, properties called like functions,
+   wrong argument labels, methods that hide system calls like `send`, Int32 values from the emulator stored as Int,
+   APIs newer than iOS 16), plus the plist, project specs, workflow and shell scripts. Needs
+   `pip install tree-sitter==0.26.1 tree-sitter-swift==0.7.4 pyyaml`.
+2. **precheck job** (Linux, ~30 s): the same Swift check, then `precheck-selftest.py`, which re-injects every mistake
+   that has broken a real build and fails if the checker stops catching one. The macOS build waits for it.
+3. **build job** (macOS): the app first (~5 min), with every error reported in one pass, shown on the commit's lines,
+   in the run summary and in `errors.txt` inside build-logs. Errors only in `ios/App/Sources` stop the run there
+   instead of retrying without firmware preparation. The emulator libraries come from cache unless something that
+   goes into them changed (qemu-ios pin, patches, build scripts, Xcode), so a code-only change no longer rebuilds
+   QEMU. A newer push cancels the older run.
+
+When a CI failure gets past the precheck, add it as a case in `precheck-selftest.py` with the fix.

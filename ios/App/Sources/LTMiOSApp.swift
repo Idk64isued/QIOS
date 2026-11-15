@@ -415,7 +415,7 @@ struct RootView: View {
         .contextMenu {
             Button(role: .destructive) {
                 Library.removeTree(device.url.appendingPathComponent("overlay", isDirectory: true))
-                devices = Library.devices()
+                devices = Library.scan()
             } label: {
                 Label("Erase content", systemImage: "arrow.counterclockwise")
             }

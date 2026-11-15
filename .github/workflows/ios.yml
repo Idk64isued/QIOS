@@ -2,40 +2,48 @@ name: iOS build
 on:
   workflow_dispatch:
   push:
-    paths: ["ios/**", ".github/workflows/ios.yml"]
+    paths: ["ios/**", "build-support/**", ".github/workflows/ios.yml"]
+
+# A newer push makes an older run pointless: cancel it instead of letting both burn macOS minutes.
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # --------------------------------------------------------------------------------------------------------------
+  # ~30 seconds on Linux. Catches the mistakes that have broken builds before a macOS runner even starts.
+  # Same thing locally:  pip install tree-sitter==0.26.1 tree-sitter-swift==0.7.4
+  #                      python3 ios/scripts/precheck.py ios/App/Sources
+  # --------------------------------------------------------------------------------------------------------------
+  precheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install tree-sitter==0.26.1 tree-sitter-swift==0.7.4
+      - name: Check the app sources
+        run: |
+          set -o pipefail
+          python3 ios/scripts/precheck.py ios/App/Sources | tee precheck.txt
+      - name: Put the errors on the right lines
+        if: failure()
+        run: |
+          sed -nE 's/^([^:]+):([0-9]+): error: (.*)$/::error file=\1,line=\2::\3/p' precheck.txt
+      - name: The checker still catches past mistakes
+        run: python3 ios/scripts/precheck-selftest.py
+
   build:
+    needs: precheck
     runs-on: macos-26
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch qemu-ios at the commit build-support/sources.json pins
-        run: |
-          URL=$(jq -r '."qemu-ios".repository' build-support/sources.json)
-          REF=$(jq -r '."qemu-ios".commit' build-support/sources.json)
-          git clone "$URL" "$RUNNER_TEMP/qemu-ios"
-          git -C "$RUNNER_TEMP/qemu-ios" checkout "$REF"
       - name: Tools
         run: brew install meson ninja pkg-config jq xcodegen ldid
       - name: Apply the HostRuntime iOS patch
         run: patch -p1 < ios/patches/0001-hostruntime-ios.patch
-      - name: Restore dependencies cache
-        id: cache
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ runner.temp }}/ios-deps
-          key: ios-deps-${{ hashFiles('build-support/dependencies.json', 'ios/scripts/build-deps.sh') }}
-      - name: Build dependencies
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: bash ios/scripts/build-deps.sh "$RUNNER_TEMP/qemu-ios" "$RUNNER_TEMP/ios-deps"
-      - name: Save dependencies cache (so later failures do not rebuild them)
-        if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ runner.temp }}/ios-deps
-          key: ios-deps-${{ hashFiles('build-support/dependencies.json', 'ios/scripts/build-deps.sh') }}
-      - name: Build emulator libraries (JIT + interpreter)
-        run: bash ios/scripts/build-qemu.sh "$RUNNER_TEMP/qemu-ios" "$RUNNER_TEMP/ios-deps/prefix" "$RUNNER_TEMP/qemu-out"
       - name: Patch FirmwareKit for iOS (on-device firmware preparation)
         id: fk
         run: |
@@ -47,6 +55,8 @@ jobs:
             echo "patched=no" >> "$GITHUB_OUTPUT"
             echo "::warning::FirmwareKit could not be patched for iOS; building without on-device firmware preparation."
           fi
+
+      # ---- The app first: nearly every failure has been here, and it takes ~5 minutes, not ~13.
       - name: Build the app
         working-directory: ios/App
         run: |
@@ -56,35 +66,95 @@ jobs:
             xcodegen generate --spec "$1" || return 1
             # -skipMacroValidation: FirmwareKit's swift-binary-parsing ships a Swift macro, which Xcode otherwise
             #   gates behind a trust prompt no CI can answer ("must be enabled before it can be used").
+            # -continueBuildingAfterErrors: one run reports every broken file, not just the first.
             xcodebuild -project LightTouchiOS.xcodeproj -scheme LightTouchiOS -configuration Release \
               -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
-              -skipMacroValidation -skipPackagePluginValidation \
+              -skipMacroValidation -skipPackagePluginValidation -continueBuildingAfterErrors \
               CODE_SIGNING_ALLOWED=NO > "$2" 2>&1
           }
-          errors() { grep -E "error:|fatal error|BUILD FAILED" "$1" | sort -u | head -80 || true; }
+          errors() { grep -E "error:|fatal error" "$1" | grep -v "failed with exit code" | sort -u | head -80 || true; }
+          report() {  # LOG TITLE -> errors.txt, the run summary, and annotations on the right lines
+            errors "$1" > "$RUNNER_TEMP/errors.txt"
+            cat "$RUNNER_TEMP/errors.txt"
+            { echo "### $2"; echo '```'; cat "$RUNNER_TEMP/errors.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            sed -nE "s#^$GITHUB_WORKSPACE/([^:]+):([0-9]+):([0-9]+): error: (.*)\$#::error file=\1,line=\2,col=\3::\4#p" \
+              "$RUNNER_TEMP/errors.txt" | head -40
+          }
           FULL="$RUNNER_TEMP/build-full.log"; LITE="$RUNNER_TEMP/build-lite.log"
           if [ "${{ steps.fk.outputs.patched }}" = "yes" ] && build project.yml "$FULL"; then
-            echo "Built with on-device firmware preparation."
             echo "### Built with on-device firmware preparation" >> "$GITHUB_STEP_SUMMARY"
-          else
-            if [ -f "$FULL" ]; then
-              echo "::warning::The build with on-device firmware preparation failed; building without it. See the build-logs artifact (build-full.log)."
-              echo "----- errors from the full build -----"; errors "$FULL"
-              { echo "### Built WITHOUT on-device firmware preparation"; echo; echo "The full build failed with:"; echo '```'; errors "$FULL"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-            fi
-            if ! build project-lite.yml "$LITE"; then
-              echo "----- errors from the fallback build -----"; errors "$LITE"; tail -40 "$LITE"
-              { echo "### The fallback build failed too"; echo '```'; errors "$LITE"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ -f "$FULL" ]; then
+            # Errors only in the app's own sources fail the lite build the same way: don't spend 4 minutes proving it.
+            if ! errors "$FULL" | grep "error:" | grep -qv "ios/App/Sources/"; then
+              report "$FULL" "The app's own code does not compile"
               exit 1
             fi
-            echo "Built without on-device firmware preparation."
+            echo "::warning::The build with on-device firmware preparation failed; building without it (build-full.log)."
+            report "$FULL" "Built WITHOUT on-device firmware preparation; the full build failed with"
           fi
+          if ! build project-lite.yml "$LITE"; then
+            report "$LITE" "The fallback build failed too"
+            tail -40 "$LITE"
+            exit 1
+          fi
+          echo "Built without on-device firmware preparation."
+
+      # ---- The emulator libraries: rebuilt only when something that goes into them changes.
+      - name: Emulator cache key
+        id: qkey
+        run: echo "xcode=$(xcodebuild -version | tr -d '\n ')" >> "$GITHUB_OUTPUT"
+      - name: Restore emulator libraries
+        id: qcache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/qemu-lib
+          key: qemu-lib-${{ steps.qkey.outputs.xcode }}-${{ hashFiles('build-support/sources.json', 'build-support/dependencies.json', 'ios/patches/qemu-ios/**', 'ios/scripts/build-qemu.sh', 'ios/scripts/make-dylib-ios.sh', 'ios/scripts/build-deps.sh') }}
+      - name: Fetch qemu-ios at the commit build-support/sources.json pins
+        if: steps.qcache.outputs.cache-hit != 'true'
+        run: |
+          URL=$(jq -r '."qemu-ios".repository' build-support/sources.json)
+          REF=$(jq -r '."qemu-ios".commit' build-support/sources.json)
+          git clone "$URL" "$RUNNER_TEMP/qemu-ios"
+          git -C "$RUNNER_TEMP/qemu-ios" checkout "$REF"
+      - name: Restore dependencies cache
+        if: steps.qcache.outputs.cache-hit != 'true'
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/ios-deps
+          key: ios-deps-${{ hashFiles('build-support/dependencies.json', 'ios/scripts/build-deps.sh') }}
+      - name: Build dependencies
+        if: steps.qcache.outputs.cache-hit != 'true' && steps.cache.outputs.cache-hit != 'true'
+        run: bash ios/scripts/build-deps.sh "$RUNNER_TEMP/qemu-ios" "$RUNNER_TEMP/ios-deps"
+      - name: Save dependencies cache
+        if: steps.qcache.outputs.cache-hit != 'true' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/ios-deps
+          key: ios-deps-${{ hashFiles('build-support/dependencies.json', 'ios/scripts/build-deps.sh') }}
+      - name: Build emulator libraries (JIT + interpreter)
+        if: steps.qcache.outputs.cache-hit != 'true'
+        run: |
+          bash ios/scripts/build-qemu.sh "$RUNNER_TEMP/qemu-ios" "$RUNNER_TEMP/ios-deps/prefix" "$RUNNER_TEMP/qemu-out"
+          mkdir -p "$RUNNER_TEMP/qemu-lib" && cp "$RUNNER_TEMP"/qemu-out/*.dylib "$RUNNER_TEMP/qemu-lib/"
+      - name: Save emulator libraries
+        if: steps.qcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/qemu-lib
+          key: ${{ steps.qcache.outputs.cache-primary-key }}
+
       - name: Package IPA
         run: |
           APP="ios/App/build/Build/Products/Release-iphoneos/LightTouch.app"
-          mkdir -p "$APP/Frameworks" && cp "$RUNNER_TEMP"/qemu-out/*.dylib "$APP/Frameworks/"
+          test -f "$RUNNER_TEMP/qemu-lib/libqemu-arm.dylib" && test -f "$RUNNER_TEMP/qemu-lib/libqemu-arm-tci.dylib"
+          mkdir -p "$APP/Frameworks" && cp "$RUNNER_TEMP"/qemu-lib/*.dylib "$APP/Frameworks/"
           ldid -Sios/App/LightTouchiOS.entitlements "$APP/LightTouch"
           mkdir Payload && cp -R "$APP" Payload/ && zip -qry LightTouch.ipa Payload
+          SRC=rebuilt; [ "${{ steps.qcache.outputs.cache-hit }}" = "true" ] && SRC="from cache"
+          echo "### LightTouch.ipa $(du -h LightTouch.ipa | cut -f1), emulator libraries $SRC" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with: { name: LightTouch-ipa, path: LightTouch.ipa }
       - uses: actions/upload-artifact@v4
@@ -93,28 +163,8 @@ jobs:
           name: build-logs
           if-no-files-found: ignore
           path: |
+            ${{ runner.temp }}/errors.txt
             ${{ runner.temp }}/build-full.log
             ${{ runner.temp }}/build-lite.log
             ${{ runner.temp }}/firmwarekit-patch.log
             ${{ runner.temp }}/ios-deps/logs
-
-  # ------------------------------------------------------------------
-  # Non-blocking probe: runs in parallel with the main build and never fails it.
-  # It finds out what the USB install stack still needs to cross-build for iOS.
-  # ------------------------------------------------------------------
-
-  probe-usb:
-    runs-on: macos-26
-    timeout-minutes: 30
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - name: Tools
-        run: brew install automake autoconf libtool pkg-config meson ninja
-      - name: Probe USB stack cross-build
-        run: bash ios/scripts/build-usb.sh
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: usb-probe-logs
-          path: usb-logs/
