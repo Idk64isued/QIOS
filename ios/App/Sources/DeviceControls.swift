@@ -355,9 +355,23 @@ final class DeviceControls: ObservableObject {
             CMMotionManager.availableAttitudeReferenceFrames().contains(.xMagneticNorthZVertical)
             ? .xMagneticNorthZVertical : .xArbitraryZVertical
         var lastHeading = -1
+        var smoothed: CMAcceleration?
+        var lastSent: (pitch: Double, roll: Double)?
         motion.startDeviceMotionUpdates(using: frame, to: .main) { [weak self] data, _ in
             guard let self, let data else { return }
-            if let (pitch, roll) = Self.guestAttitude(gravity: data.gravity) { self.qemu?.attitude?(pitch, roll, 1) }
+            // The raw accelerometer jitters, so a tiny tilt of this phone shook the device. Smooth the gravity
+            // vector (a low-pass, ~0.25 of each new reading) and send a new attitude only when it has moved more
+            // than a degree, so a still phone holds the device still.
+            let g = data.gravity
+            let s = smoothed.map { CMAcceleration(x: $0.x * 0.75 + g.x * 0.25, y: $0.y * 0.75 + g.y * 0.25, z: $0.z * 0.75 + g.z * 0.25) } ?? g
+            smoothed = s
+            if let (pitch, roll) = Self.guestAttitude(gravity: s) {
+                let moved = lastSent.map { abs($0.pitch - pitch) > 1 || abs($0.roll - roll) > 1 } ?? true
+                if moved {
+                    lastSent = (pitch, roll)
+                    self.qemu?.attitude?(pitch, roll, 1)
+                }
+            }
             let heading = Int(data.heading.rounded())
             if heading >= 0, heading != lastHeading {
                 lastHeading = heading

@@ -3,29 +3,74 @@ import QuartzCore
 import SwiftUI
 import UIKit
 
-/// Puts guest frames on screen through Metal: each frame is copied once into a shared texture and blitted into a
-/// drawable the guest's size, and Core Animation scales the layer (nearest or linear, the layer's filter). The other
-/// way (a CGImage per frame as a layer's contents) copied the frame twice on the main thread and had Core Animation
-/// convert it again, sixty times a second.
+/// Puts guest frames on screen through Metal: each frame is copied once into a shared guest-sized texture, then a
+/// render pass draws it into a drawable the size of the layer on screen, sampled nearest, so the pixels stay crisp
+/// however far the picture is scaled up (Settings › Sharp pixels). Letting Core Animation scale a guest-sized
+/// drawable instead smoothed it — "sharp" barely showed, worst of all in the full-screen Immersive view where the
+/// upscale is largest. The old CGImage-per-frame path copied the frame twice on the main thread besides.
+///
+/// `targetPixels` is the drawable's pixel size, which the view keeps equal to its own on-screen pixels; the aspect
+/// fit (black bars, nearest scaling) is done here in the render pass rather than by the layer.
 final class MetalPresenter {
     let layer = CAMetalLayer()
     private let device: MTLDevice
     private let queue: MTLCommandQueue
+    /// The nearest-sampling upscale pass. Nil only if it could not be built, when present() falls back to scaling a
+    /// guest-sized drawable through Core Animation (soft, but a picture rather than nothing).
+    private let pipeline: MTLRenderPipelineState?
     private var textures: [MTLTexture] = []
     private var next = 0
     private(set) var newest: MTLTexture?
     /// Frames on the GPU; a frame that arrives while three still are is skipped rather than waited for.
     private let inFlight = DispatchSemaphore(value: 3)
 
+    /// The drawable's pixel size: the layer's own size on screen, set by the view as it lays out. In the fallback
+    /// path the drawable is the guest's size instead, so this is ignored there.
+    var targetPixels = CGSize(width: 320, height: 480) {
+        didSet { if pipeline != nil, targetPixels.width > 0, targetPixels.height > 0 { layer.drawableSize = targetPixels } }
+    }
+
     init?() {
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else { return nil }
         self.device = device
         self.queue = queue
+        pipeline = Self.buildPipeline(device: device)
         layer.device = device
         layer.pixelFormat = .bgra8Unorm
-        layer.framebufferOnly = false   // the drawable is a blit's destination
+        layer.framebufferOnly = false   // the drawable is a render target (and a blit destination in the fallback)
         layer.isOpaque = true           // the guest's fourth byte is padding, not alpha
         layer.maximumDrawableCount = 3
+        if pipeline != nil { layer.drawableSize = targetPixels }
+    }
+
+    /// A fullscreen triangle whose fragment samples the guest texture nearest. Built from inline Metal source so no
+    /// .metal file or default library is needed.
+    private static func buildPipeline(device: MTLDevice) -> MTLRenderPipelineState? {
+        let source = """
+            #include <metal_stdlib>
+            using namespace metal;
+            struct VOut { float4 pos [[position]]; float2 uv; };
+            vertex VOut ltm_vertex(uint vid [[vertex_id]]) {
+                float2 p[3] = { float2(-1.0, -1.0), float2(3.0, -1.0), float2(-1.0, 3.0) };
+                VOut o;
+                o.pos = float4(p[vid], 0.0, 1.0);
+                o.uv = float2((p[vid].x + 1.0) * 0.5, (1.0 - p[vid].y) * 0.5);
+                return o;
+            }
+            fragment float4 ltm_fragment(VOut in [[stage_in]], texture2d<float> tex [[texture(0)]]) {
+                constexpr sampler s(mag_filter::nearest, min_filter::linear, address::clamp_to_edge);
+                return tex.sample(s, in.uv);
+            }
+            """
+        guard let library = try? device.makeLibrary(source: source, options: nil),
+            let vertex = library.makeFunction(name: "ltm_vertex"),
+            let fragment = library.makeFunction(name: "ltm_fragment")
+        else { return nil }
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.vertexFunction = vertex
+        descriptor.fragmentFunction = fragment
+        descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+        return try? device.makeRenderPipelineState(descriptor: descriptor)
     }
 
     /// One BGRA frame, rows packed. False if it could not be shown (the caller keeps the old picture).
@@ -36,7 +81,7 @@ final class MetalPresenter {
             d.storageMode = .shared
             d.usage = [.shaderRead]
             textures = (0..<3).compactMap { _ in device.makeTexture(descriptor: d) }
-            layer.drawableSize = CGSize(width: width, height: height)
+            if pipeline == nil { layer.drawableSize = CGSize(width: width, height: height) }
             newest = nil
         }
         guard textures.count == 3 else { inFlight.signal(); return false }
@@ -44,13 +89,41 @@ final class MetalPresenter {
         next = (next + 1) % 3
         texture.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0, withBytes: pixels, bytesPerRow: width * 4)
         newest = texture
-        guard let drawable = layer.nextDrawable(), let commands = queue.makeCommandBuffer(),
-            let blit = commands.makeBlitCommandEncoder()
+        guard layer.drawableSize.width > 0, layer.drawableSize.height > 0,
+            let drawable = layer.nextDrawable(), let commands = queue.makeCommandBuffer()
         else { inFlight.signal(); return false }
-        blit.copy(from: texture, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
-                  sourceSize: MTLSize(width: width, height: height, depth: 1), to: drawable.texture,
-                  destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
-        blit.endEncoding()
+        let drawn: Bool
+        if let pipeline {
+            // Clear the drawable black, then draw the guest picture aspect-fit inside it, nearest-sampled.
+            let pass = MTLRenderPassDescriptor()
+            pass.colorAttachments[0].texture = drawable.texture
+            pass.colorAttachments[0].loadAction = .clear
+            pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+            pass.colorAttachments[0].storeAction = .store
+            if let encoder = commands.makeRenderCommandEncoder(descriptor: pass) {
+                let dw = Double(drawable.texture.width), dh = Double(drawable.texture.height)
+                let scale = min(dw / Double(width), dh / Double(height))
+                let vw = Double(width) * scale, vh = Double(height) * scale
+                encoder.setViewport(MTLViewport(
+                    originX: (dw - vw) / 2, originY: (dh - vh) / 2, width: vw, height: vh, znear: 0, zfar: 1))
+                encoder.setRenderPipelineState(pipeline)
+                encoder.setFragmentTexture(texture, index: 0)
+                encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+                encoder.endEncoding()
+                drawn = true
+            } else {
+                drawn = false
+            }
+        } else if let blit = commands.makeBlitCommandEncoder() {
+            blit.copy(from: texture, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                      sourceSize: MTLSize(width: width, height: height, depth: 1), to: drawable.texture,
+                      destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
+            blit.endEncoding()
+            drawn = true
+        } else {
+            drawn = false
+        }
+        guard drawn else { inFlight.signal(); return false }
         let semaphore = inFlight
         commands.addCompletedHandler { _ in semaphore.signal() }
         commands.present(drawable)
@@ -154,13 +227,18 @@ final class DisplayUIView: UIView {
         CATransaction.commit()
     }
 
-    /// The picture's layer: its long side along the view's when turned sideways, then turned into place.
+    /// The picture's layer: its long side along the view's when turned sideways, then turned into place. On the Metal
+    /// path the layer fills the view and its drawable is sized to the view's own pixels (the render pass aspect-fits
+    /// inside); the layer's own content filter only matters on the CGImage fallback.
     private func layoutScreen() {
         let sideways = shownTurns % 2 != 0
         screen.bounds = CGRect(x: 0, y: 0, width: sideways ? bounds.height : bounds.width,
                                height: sideways ? bounds.width : bounds.height)
         screen.position = CGPoint(x: bounds.midX, y: bounds.midY)
         screen.setAffineTransform(CGAffineTransform(rotationAngle: CGFloat(shownTurns) * .pi / 2))
+        let scale = window?.screen.scale ?? UIScreen.main.scale
+        screen.contentsScale = scale
+        metal?.targetPixels = CGSize(width: screen.bounds.width * scale, height: screen.bounds.height * scale)
     }
     override func didMoveToWindow() {
         super.didMoveToWindow()

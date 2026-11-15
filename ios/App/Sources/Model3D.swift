@@ -65,8 +65,8 @@ struct ModelStage: View {
             } else if let board {
                 if #available(iOS 18, *) {
                     ModelRepresentable(
-                        board: board, url: url, qemu: qemu, keyboardBridge: keyboardBridge, onHome: onHome,
-                        onFailure: { failed = true })
+                        board: board, url: url, qemu: qemu, keyboardBridge: keyboardBridge, asleep: controls.screenAsleep,
+                        onHome: onHome, onFailure: { failed = true })
                 }
             }
         }
@@ -86,6 +86,7 @@ private struct ModelRepresentable: UIViewRepresentable {
     let url: URL
     let qemu: QemuRuntime?
     let keyboardBridge: UIView?
+    let asleep: Bool
     let onHome: () -> Void
     let onFailure: () -> Void
 
@@ -94,6 +95,7 @@ private struct ModelRepresentable: UIViewRepresentable {
         host.qemu = qemu
         host.keyboardBridge = keyboardBridge
         host.onHome = onHome
+        host.asleep = asleep
         host.load(url: url, board: board, onFailure: onFailure)
         return host
     }
@@ -102,6 +104,7 @@ private struct ModelRepresentable: UIViewRepresentable {
         view.qemu = qemu
         view.keyboardBridge = keyboardBridge
         view.onHome = onHome
+        view.asleep = asleep
     }
 }
 
@@ -112,6 +115,15 @@ final class ModelHostView: UIView, GuestFrameSource {
     var qemu: QemuRuntime?
     weak var keyboardBridge: UIView?
     var onHome: () -> Void = {}
+    /// The device has switched its own screen off. The model's display goes dark (as on a real sleeping phone, and
+    /// as the Mac app does it) and new frames stop being pushed, so the model holds still and the sleep overlay that
+    /// SwiftUI draws over it animates smoothly instead of fighting the model's redraw.
+    var asleep = false {
+        didSet {
+            guard asleep != oldValue else { return }
+            model?.setScreenOff(asleep)
+        }
+    }
     private var model: DeviceModelUIView?
     private var link: CADisplayLink?
     private var serial: UInt64 = 0
@@ -146,6 +158,7 @@ final class ModelHostView: UIView, GuestFrameSource {
                 model.autoresizingMask = [.flexibleWidth, .flexibleHeight]
                 self.insertSubview(model, at: 0)
                 if let latestImage = self.latestImage { model.updateFrame(latestImage) }
+                model.setScreenOff(self.asleep)
                 self.repose(animated: false)
             } catch {
                 LTMLog.note("3D model: \(url.lastPathComponent) did not load: \(error.localizedDescription)")
@@ -172,7 +185,7 @@ final class ModelHostView: UIView, GuestFrameSource {
     }
 
     @objc private func tick() {
-        if let qemu {
+        if let qemu, !asleep {
             var pixels: UnsafeRawPointer?
             var w: Int32 = 0, h: Int32 = 0
             if qemu.frame(&pixels, &w, &h, &serial), let pixels, w > 0, h > 0 {
