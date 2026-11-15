@@ -191,6 +191,7 @@ struct RootView: View {
     @AppStorage("enableUSB") private var enableUSB = false
     @AppStorage("codeCacheMB") private var codeCacheMB = 512
     @State private var showLegacyStore = false
+    @State private var showReport = false
     @State private var showAddDevice = false
     @State private var showStorage = false
     @State private var swept = false
@@ -251,10 +252,13 @@ struct RootView: View {
             reload()
             emulator.load()
         }
+        .sheet(isPresented: $showReport) {
+            ReportSheet(deviceName: nil, deviceDetails: nil, screen: nil) { showReport = false }
+        }
         .sheet(item: $shareItem) { item in
             ActivityView(items: [item.url])
         }
-        .sheet(isPresented: $showLegacyStore) {
+        .fullScreenCover(isPresented: $showLegacyStore) {
             LegacyStoreView(agent: nil, target: devices.first?.storeTarget ?? StoreTarget()) { showLegacyStore = false }
         }
         .sheet(isPresented: $showAddDevice) {
@@ -278,8 +282,17 @@ struct RootView: View {
                     .fill(Theme.accentGlow)
                     .frame(width: 120, height: 120)
                     .blur(radius: 45)
-                // The Mac app's own picture of the iPod touch.
-                DeviceThumbnail(model: DeviceModel(board: "n72ap"), height: 132)
+                // The app's logo (its icon), or the Mac app's picture of the iPod touch in a build without it.
+                if let logo = UIImage(named: "Logo") {
+                    Image(uiImage: logo)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 124, height: 124)
+                        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                        .shadow(color: .black.opacity(0.35), radius: 10, y: 5)
+                } else {
+                    DeviceThumbnail(model: DeviceModel(board: "n72ap"), height: 132)
+                }
             }
             .frame(height: 140)
             .padding(.top, 14)
@@ -552,6 +565,18 @@ struct RootView: View {
                 }
                 .buttonStyle(.plain)
 
+                Button {
+                    showReport = true
+                } label: {
+                    Label("Report", systemImage: "paperplane")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Theme.accent)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Theme.accent.opacity(0.12), in: Capsule())
+                }
+                .buttonStyle(.plain)
+
                 Button(role: .destructive) {
                     try? FileManager.default.removeItem(at: LTMLog.url)
                     logNote = "Log cleared."
@@ -776,6 +801,14 @@ struct EmulatorScreen: View {
     @StateObject private var modem = ModemController()
     @StateObject private var controls = DeviceControls()
     @State private var showSettings = false
+    @State private var showDeviceReport = false
+    @State private var showMusic = false
+    @State private var showMedia = false
+    @State private var showTweaks = false
+    @State private var microphone: Microphone?
+    @State private var micOn = false
+    @State private var recorder: ScreenRecorder?
+    @State private var reportScreen: CGImage?
     @Environment(\.scenePhase) private var scenePhase
     @State private var keyboardBridge: KeyboardBridge?
     @State private var firstFrameSeen = false
@@ -791,7 +824,7 @@ struct EmulatorScreen: View {
             // notices iPhone volume changes and turns them into emulator button presses.
             Color.clear.frame(width: 0, height: 0)
                 .overlay(
-                    KeyboardBridgeView(agent: emulator.agent) { bridge in
+                    KeyboardBridgeView(agent: emulator.agent, qemu: emulator.qemu) { bridge in
                         Task { @MainActor in
                             keyboardBridge = bridge
                             bridge?.becomeFirstResponder()
@@ -830,6 +863,8 @@ struct EmulatorScreen: View {
         .onDisappear {
             volume.stop()
             controls.stop()
+            microphone?.stop()
+            recorder?.stop { _ in }
         }
         // Stop the emulated CPU while this app is in the background: an old iPhone running in a pocket is just
         // this phone's battery going down for nothing.
@@ -855,12 +890,28 @@ struct EmulatorScreen: View {
             }
         }
         .sheet(item: $shareItem) { item in ActivityView(items: [item.url]) }
-        .sheet(isPresented: $showStore) {
+        .sheet(isPresented: $showDeviceReport) {
+            ReportSheet(deviceName: device.name, deviceDetails: device.subtitle, screen: reportScreen) {
+                showDeviceReport = false
+            }
+        }
+        .fullScreenCover(isPresented: $showStore) {
             LegacyStoreView(agent: emulator.agent, target: device.storeTarget) { showStore = false }
         }
         .sheet(isPresented: $showIPAPicker) { ipaPickerSheet }
         .sheet(isPresented: $showApps) {
             if let agent = emulator.agent { AppsBrowserView(agent: agent) { showApps = false } }
+        }
+        .sheet(isPresented: $showMusic) {
+            if let agent = emulator.agent { MusicImportView(agent: agent) { showMusic = false } }
+        }
+        .sheet(isPresented: $showMedia) {
+            if let agent = emulator.agent {
+                MediaImportView(agent: agent, hd: Self.playsHD(details.board?.rawValue)) { showMedia = false }
+            }
+        }
+        .sheet(isPresented: $showTweaks) {
+            if let agent = emulator.agent { TweaksView(agent: agent) { showTweaks = false } }
         }
         .sheet(isPresented: $showFiles) {
             if let agent = emulator.agent { FilesBrowserView(agent: agent) { showFiles = false } }
@@ -1065,12 +1116,23 @@ struct EmulatorScreen: View {
             }
             Button { controls.shake() } label: { Label("Shake", systemImage: "waveform") }
             Button { emulator.press(1) } label: { Label("Sleep / Wake", systemImage: "power.circle") }
+            if Microphone.supported(board: details.board?.rawValue), emulator.qemu?.micWrite != nil {
+                Button { toggleMicrophone() } label: {
+                    Label(micOn ? "Turn the microphone off" : "Use this phone\u{2019}s microphone",
+                          systemImage: micOn ? "mic.slash" : "mic")
+                }
+            }
+            if emulator.agent != nil {
+                Button { showTweaks = true } label: { Label("Tweaks\u{2026}", systemImage: "wand.and.stars") }
+            }
         }
         Section("Apps") {
             Button { showStore = true } label: { Label("Legacy Store", systemImage: "bag") }
             if emulator.agent != nil {
                 Button { showApps = true } label: { Label("Apps on the device", systemImage: "square.grid.2x2") }
                 Button { showFiles = true } label: { Label("Files on the device", systemImage: "folder") }
+                Button { showMusic = true } label: { Label("Add music\u{2026}", systemImage: "music.note") }
+                Button { showMedia = true } label: { Label("Add photos & videos\u{2026}", systemImage: "photo.on.rectangle") }
             }
             Button { showIPAPicker = true } label: { Label("Install an IPA\u{2026}", systemImage: "doc.zipper") }
         }
@@ -1085,7 +1147,12 @@ struct EmulatorScreen: View {
             }
         }
         Section("Capture") {
+            Button { openReport() } label: { Label("Send report\u{2026}", systemImage: "paperplane") }
             Button { takeScreenshot() } label: { Label("Save screenshot", systemImage: "camera") }
+            Button { toggleRecording() } label: {
+                Label(recorder == nil ? "Record the screen" : "Stop recording",
+                      systemImage: recorder == nil ? "record.circle" : "stop.circle")
+            }
             Button {
                 if let url = LTMLog.exportCopy() { shareItem = ShareItem(url: url) }
             } label: { Label("Export log", systemImage: "square.and.arrow.up") }
@@ -1241,6 +1308,79 @@ struct EmulatorScreen: View {
         Task {
             try? await Task.sleep(nanoseconds: 6_000_000_000)
             installNote = ""
+        }
+    }
+
+    /// The report sheet, with the device's screen as it is now.
+    private func openReport() {
+        let window = UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.keyWindow }.first
+        reportScreen = window.flatMap { DisplaySnapshot.latestFrame(inside: $0) }
+        showDeviceReport = true
+    }
+
+    /// The A4 boards' Videos app plays 720p; the rest want 640×480.
+    static func playsHD(_ board: String?) -> Bool { ["n81ap", "n90ap", "k48ap"].contains(board ?? "") }
+
+    private func toggleMicrophone() {
+        if micOn {
+            microphone?.stop()
+            micOn = false
+            toast = "Microphone off."
+            return
+        }
+        guard let qemu = emulator.qemu, let mic = microphone ?? Microphone(qemu: qemu) else { return }
+        microphone = mic
+        Task {
+            if let why = await mic.start() {
+                toast = why
+            } else {
+                micOn = true
+                toast = "The device hears this phone\u{2019}s microphone."
+            }
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            toast = ""
+        }
+    }
+
+    private func toggleRecording() {
+        if let active = recorder {
+            recorder = nil
+            toast = "Finishing the movie\u{2026}"
+            active.stop { url in
+                guard let url else {
+                    toast = "The recording couldn\u{2019}t be saved."
+                    return
+                }
+                Task {
+                    let result = await Screenshot.save(video: url)
+                    switch result {
+                    case .saved, .savedFile: toast = "Recording saved to Photos (Light Touch album)."
+                    default:
+                        toast = "Photos wouldn\u{2019}t take it; share it instead."
+                        shareItem = ShareItem(url: url)
+                    }
+                    try? await Task.sleep(nanoseconds: 2_500_000_000)
+                    toast = ""
+                }
+            }
+            return
+        }
+        guard let window = UIApplication.shared.connectedScenes
+            .compactMap({ ($0 as? UIWindowScene)?.keyWindow }).first,
+            let frame = DisplaySnapshot.latestFrame(inside: window)
+        else {
+            toast = "No screen to record yet."
+            return
+        }
+        do {
+            recorder = try ScreenRecorder.start(width: frame.width, height: frame.height)
+            toast = "Recording. Choose Stop recording in the menu to finish."
+            Task {
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                if toast.hasPrefix("Recording.") { toast = "" }
+            }
+        } catch {
+            toast = error.localizedDescription
         }
     }
 

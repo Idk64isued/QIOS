@@ -183,6 +183,64 @@ iOS needs, makes a texture's internal format match its data, and drops the ES 3.
 console shows `[gles] npot texture ...` for each texture it fixed and `[gles] REFUSED ...` for anything the bridge
 still turns down; send those lines when something draws wrong.
 
+## Music
+
+Menu › Add music: songs from Files or from this phone's own music library (bought or added songs; Apple Music
+songs are protected) go into the device's Music app with their tags and covers. The song is staged in
+/var/mobile/Media/LightTouch/<id>/ and the Mac app's guest helper `itmedia` (in the guest tools this app already
+downloads) adds it through iOS's own MusicLibrary. iPhone OS 3.1 and later.
+
+## Newer devices (prepared on the phone)
+
+The iPhone 3GS, iPod touch 3G, iPod touch 4G, iPhone 4 and iPad (and the iPod touch 2G on iOS 4) need one or more
+preparation boots: a keybag boot for iOS 4 data protection, and a seal boot that runs the device once until it halts
+cleanly. The Mac app runs these in a helper process. iOS starts no processes, and QEMU only starts once per loaded
+library, so here each boot loads its own copy of the emulator library (a copied file is a fresh image under the same
+signature), runs headless on a thread, and is left behind when it ends (`OneShotRunner.swift`, FirmwareKit's
+`InProcessOneShot` hook added by `patch-firmwarekit.py`). The memory those copies hold stays taken until the app quits,
+so restart Light Touch after preparing one of these before starting it. The iPad is prepared with its kboot chain
+(iBoot32Patcher, which its iBoot chain needs, is a Mac tool).
+
+## Microphone
+
+On the S5L8920 and A4 machines (iPhone 3GS, iPod touch 3G and 4G, iPhone 4, iPad) the device menu's "Use this
+phone's microphone" feeds this phone's microphone into the codec's I2S capture (`patches/qemu-ios/0007`): converted
+to 44.1 kHz, doubled to stereo, read by the guest when it records. The iPod touch 2G and the 1.x boards have no
+capture path in their I2S models, so the item isn't offered there.
+
+## Photos, videos, recording, tweaks
+
+- **Add photos & videos**: a photo becomes an upright baseline JPEG (≤ 2048 px) that the guest's `itphoto` saves
+  into Saved Photos; a video becomes H.264 + AAC (640×480 Baseline, or 720p Main on the A4 boards) that `itmedia`
+  adds to Videos. iPhone OS 3.1 or later.
+- **Record the screen**: every frame the guest draws and the sound it makes, into an .mp4 saved to Photos.
+- **Tweaks**: Apple's hidden switches (Signal as Numbers, Keynote Clock, Slow Animations, Emoji Everywhere, Safari
+  debugging) written as the mobile user's preferences, plus Core Animation's debug colors through the agent.
+- **Install placeholder**: an app being installed shows SpringBoard's own "Waiting…" icon (the agent's `dlicon`).
+
+## Settings added in update 33
+
+- **Wi-Fi**: the device's Wi-Fi card on QEMU's user network (slirp). Plain HTTP works; HTTPS sites that refuse
+  old TLS don't, because the Mac app's TLS-upgrading web proxy and its certificate trust aren't ported yet.
+- **Hardware keyboard keys**: on the boards with a USB host the emulator attaches a USB keyboard and gets raw keys.
+- **Debug port**: QEMU's gdbstub on TCP 1234, for one boot. It has no password; leave it off otherwise.
+
+## Reports
+
+Files › LightTouch › Reports keeps the last ten sessions' logs (saved when the next session starts, so a crash or a
+swipe-away loses nothing) and every report made. Menu › Send report packs a zip (what happened, device, phone,
+settings, the log and the last session's, the screen, compatibility notes) for the share sheet, or copies a short
+summary. The log also carries `[prof]` lines every 15 seconds: where the emulator's CPU thread spends its time, with
+addresses in libqemu-arm.dylib that `qemu-symbols.txt` (in the build-logs artifact) turns into function names.
+
+## Legacy Store
+
+Full screen, laid out like iPhone OS 3's App Store, on Legacy Store's open API: Featured (apps for this device, and
+the site's collections), Top 50 (any chart type, as it stood on any archived day; arrows step between days),
+Categories and Search. Each app's page has its archived screenshots (by version), star rating, description,
+information, reviews and every archived version. "Report" on an app's page records how it ran (kept on this phone,
+shown in the lists, put into reports, and postable as a GitHub issue; Legacy Store's API takes no submissions).
+
 ## How a build is checked
 
 1. **Before a push** (any computer with Python, no Mac needed): `bash ios/scripts/check-all.sh`. It parses every

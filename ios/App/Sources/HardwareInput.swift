@@ -65,10 +65,66 @@ final class KeyboardBridge: UITextField, UITextFieldDelegate {
         onText?("\n")
         return false
     }
+
+    /// Raw keys: on the boards with a USB host (iPad, iPhone 4, iPod touch 4G) the emulator attaches a USB keyboard
+    /// and takes key presses as they are, arrows, Escape and modifiers included. Returns false where it can't, and
+    /// the press goes on to the text path above (the agent's `type`).
+    var onRawKey: ((Int32, Bool) -> Bool)?
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let rest = route(presses, down: true)
+        if !rest.isEmpty { super.pressesBegan(rest, with: event) }
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let rest = route(presses, down: false)
+        if !rest.isEmpty { super.pressesEnded(rest, with: event) }
+    }
+
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let rest = route(presses, down: false)
+        if !rest.isEmpty { super.pressesCancelled(rest, with: event) }
+    }
+
+    /// The presses the raw path didn't take.
+    private func route(_ presses: Set<UIPress>, down: Bool) -> Set<UIPress> {
+        guard let onRawKey else { return presses }
+        var rest = Set<UIPress>()
+        for press in presses {
+            if let key = press.key, let code = MacKeyCode.from(hid: key.keyCode.rawValue), onRawKey(code, down) { continue }
+            rest.insert(press)
+        }
+        return rest
+    }
+}
+
+/// HID usage (UIKey.keyCode) to macOS virtual key code (kVK_*), which qemu_ios_ui_key_mac takes.
+enum MacKeyCode {
+    private static let letters: [Int32] = [
+        0x00, 0x0B, 0x08, 0x02, 0x0E, 0x03, 0x05, 0x04, 0x22, 0x26, 0x28, 0x25, 0x2E,  // a-m
+        0x2D, 0x1F, 0x23, 0x0C, 0x0F, 0x01, 0x11, 0x20, 0x09, 0x0D, 0x07, 0x10, 0x06,  // n-z
+    ]
+    private static let digits: [Int32] = [0x12, 0x13, 0x14, 0x15, 0x17, 0x16, 0x1A, 0x1C, 0x19, 0x1D]  // 1-9, 0
+    private static let others: [Int: Int32] = [
+        0x28: 0x24, 0x29: 0x35, 0x2A: 0x33, 0x2B: 0x30, 0x2C: 0x31,             // return escape delete tab space
+        0x2D: 0x1B, 0x2E: 0x18, 0x2F: 0x21, 0x30: 0x1E, 0x31: 0x2A,             // - = [ ] \
+        0x33: 0x29, 0x34: 0x27, 0x35: 0x32, 0x36: 0x2B, 0x37: 0x2F, 0x38: 0x2C, // ; ' ` , . /
+        0x39: 0x39, 0x4A: 0x73, 0x4B: 0x74, 0x4C: 0x75, 0x4D: 0x77, 0x4E: 0x79, // caps home pgup fwd-del end pgdn
+        0x4F: 0x7C, 0x50: 0x7B, 0x51: 0x7D, 0x52: 0x7E,                         // right left down up
+        0xE0: 0x3B, 0xE1: 0x38, 0xE2: 0x3A, 0xE3: 0x37,                         // left ctrl shift option command
+        0xE4: 0x3E, 0xE5: 0x3C, 0xE6: 0x3D, 0xE7: 0x36,                         // right ctrl shift option command
+    ]
+
+    static func from(hid: Int) -> Int32? {
+        if (0x04...0x1D).contains(hid) { return letters[hid - 0x04] }
+        if (0x1E...0x27).contains(hid) { return digits[hid - 0x1E] }
+        return others[hid]
+    }
 }
 
 struct KeyboardBridgeView: UIViewRepresentable {
     let agent: GuestAgent?
+    var qemu: QemuRuntime? = nil
     /// A reference to the created view, so other parts of the screen can call becomeFirstResponder on it.
     let bridgeRef: (KeyboardBridge?) -> Void
 
@@ -82,6 +138,20 @@ struct KeyboardBridgeView: UIViewRepresentable {
         field.onBackspace = {
             guard let agent else { return }
             Task { @MainActor in await agent.backspace() }
+        }
+        // The emulated USB keyboard is attached on the first key press, only on machines that have one.
+        var attached: Bool?
+        field.onRawKey = { [qemu] code, down in
+            guard UserDefaults.standard.object(forKey: "rawKeyboard") as? Bool ?? true,
+                let qemu, let keyMac = qemu.keyMac, let attach = qemu.hardwareKeyboard
+            else { return false }
+            if attached == nil {
+                attached = attach(true)
+                LTMLog.note("keyboard: " + (attached == true ? "USB keyboard attached, keys go straight to the device" : "no USB host on this machine; typing through the agent"))
+            }
+            guard attached == true else { return false }
+            keyMac(code, down)
+            return true
         }
         bridgeRef(field)
         return field
@@ -117,12 +187,7 @@ final class VolumeWatcher: NSObject, ObservableObject {
     func start(in host: UIView) {
         guard observation == nil else { return }
         if hidden.superview == nil { host.addSubview(hidden) }
-        do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
-            try AVAudioSession.sharedInstance().setActive(true)
-        } catch {
-            LTMLog.note("volume: audio session not active: \(error.localizedDescription)")
-        }
+        AudioSessionSetup.apply()
         let session = AVAudioSession.sharedInstance()
         expected = session.outputVolume
         observation = session.observe(\.outputVolume, options: [.new, .old]) { [weak self] _, change in
@@ -206,6 +271,29 @@ enum Screenshot {
             try await PHPhotoLibrary.shared().performChanges {
                 let request = PHAssetCreationRequest.forAsset()
                 request.addResource(with: .photo, data: pngData(image) ?? Data(), options: nil)
+                if let album, let placeholder = request.placeholderForCreatedAsset,
+                    let change = PHAssetCollectionChangeRequest(for: album)
+                {
+                    change.addAssets([placeholder] as NSArray)
+                }
+            }
+            return .saved
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+    }
+
+    /// Saves a recorded movie into the Light Touch album, as save(image:) does a screenshot.
+    static func save(video url: URL) async -> Result {
+        let status = await withCheckedContinuation { (c: CheckedContinuation<PHAuthorizationStatus, Never>) in
+            PHPhotoLibrary.requestAuthorization(for: .addOnly) { c.resume(returning: $0) }
+        }
+        guard status == .authorized || status == .limited else { return .noAccess }
+        let album = await Self.album(named: "Light Touch")
+        do {
+            try await PHPhotoLibrary.shared().performChanges {
+                let request = PHAssetCreationRequest.forAsset()
+                request.addResource(with: .video, fileURL: url, options: nil)
                 if let album, let placeholder = request.placeholderForCreatedAsset,
                     let change = PHAssetCollectionChangeRequest(for: album)
                 {

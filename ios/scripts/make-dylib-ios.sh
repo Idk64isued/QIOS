@@ -26,8 +26,8 @@ for a in "${LINK[@]}"; do
         *) ARGS+=("$a") ;;
     esac
 done
-# the app ABI: everything the macOS build exports, plus the foreground hook iOS needs
-{ sed -n "/<<.SYMS.$/,/^SYMS$/p" "$SRC/contrib/macos-app/make-dylib-macos.sh" | sed "1d;\$d"; echo _qemu_ios_set_foreground; } | sort -u > ios-exports.syms
+# the app ABI: everything the macOS build exports, plus the foreground hook and the microphone (0007) iOS needs
+{ sed -n "/<<.SYMS.$/,/^SYMS$/p" "$SRC/contrib/macos-app/make-dylib-macos.sh" | sed "1d;\$d"; echo _qemu_ios_set_foreground; echo _qemu_ios_mic_write; echo _qemu_ios_mic_enable; echo _qemu_ios_mic_listening; } | sort -u > ios-exports.syms
 ARGS+=(-dynamiclib -o "$OUT" -install_name "@rpath/$LIBNAME" "-Wl,-exported_symbols_list,$BUILD/ios-exports.syms" -Wl,-undefined,dynamic_lookup)
 "${ARGS[@]}"
 codesign -f -s - "$OUT"

@@ -64,6 +64,17 @@ extension GuestAgent {
         if let minimum = info["MinimumOSVersion"] as? String, let need = Int(minimum.prefix { $0 != "." }), need > major {
             log("\(display) asks for iPhone OS \(minimum); this device runs \(guestVersion ?? "?"). Installing anyway.")
         }
+        // The Home screen's "Waiting…" icon while the app is copied in (the agent's dlicon, SpringBoard's own download
+        // placeholder), as the Mac app raises it; dropped when the install ends, and the real icon takes its place.
+        let safe = bundleID.filter { $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" || $0 == "_" }
+        let placeholder = "qemu-install-" + safe
+        var raised = false
+        if ops.contains("dlicon"), let reply = await request("dlicon add \(placeholder)" + (safe == bundleID ? " \(bundleID)" : "")) {
+            raised = reply.status == 0
+        }
+        defer {
+            if raised { Task { @MainActor in _ = await self.request("dlicon cancel \(placeholder)") } }
+        }
 
         // 2. Where it goes, and who owns it.
         var cache: [String: Any]?
@@ -188,7 +199,7 @@ extension GuestAgent {
     }
 
     /// Puts lt-mkdirs into the guest once per session.
-    private func ensureHelper() async throws {
+    func ensureHelper() async throws {
         if helperReady { return }
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("lt-mkdirs")
         try GuestHelperBinary.data.write(to: tmp)
@@ -199,14 +210,20 @@ extension GuestAgent {
         helperReady = true
     }
 
-    /// lt-mkdirs UID GID PATH..., in batches that keep each request well under the agent's 256 KiB.
-    private func runHelper(uid: Int, gid: Int, paths: [String], what: String) async throws {
+    /// lt-mkdirs UID GID PATH..., in batches the agent takes: its spawn holds at most 64 arguments (agent-ops.h
+    /// MAXARGS, the helper and its two numbers included) and a request at most 256 KiB.
+    func runHelper(uid: Int, gid: Int, paths: [String], what: String) async throws {
         var batch: [String] = []
         var bytes = 0
         func flush() async throws {
             guard !batch.isEmpty else { return }
-            guard let r = await run([GuestHelperBinary.guestPath, String(uid), String(gid)] + batch, timeout: 60), r.status == 0 else {
-                throw InstallFailure(message: "The device couldn\u{2019}t \(what). \(lastLog)")
+            guard let r = await run([GuestHelperBinary.guestPath, String(uid), String(gid)] + batch, timeout: 60) else {
+                throw InstallFailure(message: "The device couldn\u{2019}t \(what): the helper didn\u{2019}t answer.")
+            }
+            guard r.status == 0 else {
+                let reason = r.status < 0 ? String(cString: strerror(Int32(-r.status))) : "exit \(r.status)"
+                log("lt-mkdirs failed: \(reason)")
+                throw InstallFailure(message: "The device couldn\u{2019}t \(what) (\(reason)).")
             }
             batch.removeAll()
             bytes = 0
@@ -214,7 +231,7 @@ extension GuestAgent {
         for path in paths {
             batch.append(path)
             bytes += path.utf8.count + 1
-            if batch.count >= 400 || bytes > 96 * 1024 { try await flush() }
+            if batch.count >= 60 || bytes > 96 * 1024 { try await flush() }
         }
         try await flush()
     }

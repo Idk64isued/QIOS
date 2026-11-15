@@ -1,0 +1,158 @@
+Level-0-only textures keep a non-mipmap filter until their chain is complete (sprites missing: Doodle Jump yellow); host extensions in the log.
+diff --git a/hw/arm/gles-host.c b/hw/arm/gles-host.c
+index 9890e15d16..3b2e57ad2c 100644
+--- a/hw/arm/gles-host.c
++++ b/hw/arm/gles-host.c
+@@ -1496,6 +1496,18 @@ static bool gles_host_init(void)
+     fprintf(stderr, "[gles] host GL up: %s / %s, present by %s\n",
+             glGetString(GL_VERSION), glGetString(GL_RENDERER),
+             gh.iosurface ? "IOSurface" : "readback");
++#if defined(GLES_HOST_EAGL) && !defined(GLES_HOST_ANGLE)
++    {
++        static bool said;
++        const char *ext = (const char *)glGetString(GL_EXTENSIONS);
++        if (!said && ext) {
++            said = true;
++            fprintf(stderr, "[gles] host extensions: %s\n", ext);
++            fprintf(stderr, "[gles] host APPLE_texture_max_level: %s\n",
++                    strstr(ext, "GL_APPLE_texture_max_level") ? "yes" : "NO (level-0 textures get a plain filter instead)");
++        }
++    }
++#endif
+     return true;
+ }
+ 
+@@ -5312,6 +5324,94 @@ static void gles_npot_note_bound(uint32_t w, uint32_t h, bool surface)
+                 name, w, h, surface ? " (surface)" : "", ws, wt, minf);
+     }
+ }
++
++/*
++ * Textures with only a level 0 and a mipmapping filter.
++ *
++ * GL's default minification filter (NEAREST_MIPMAP_LINEAR) needs a full mipmap chain; a texture that only ever gets
++ * a level 0 is incomplete with it, and ES draws an incomplete texture as untextured: a game's sprites disappear and
++ * what is left is the colour under them (Doodle Jump: a plain yellow screen). The desktop path caps MAX_LEVEL at the
++ * level the guest gave, which needs APPLE_texture_max_level on this host; this doesn't. While a texture has only its
++ * level 0, a mipmapping filter is replaced by the same filter without mipmaps -- which samples exactly what the
++ * capped texture would -- and the guest's own choice comes back once the chain is complete (a 1x1 level arrives, or
++ * glGenerateMipmap runs, or GL_GENERATE_MIPMAP is on).
++ */
++static GHashTable *gles_mipless;        /* host name -> the min filter the guest asked for */
++static unsigned gles_mipless_logged;
++
++static GLint gles_bound_2d(void)
++{
++    GLint name = 0;
++
++    glGetIntegerv(GL_TEXTURE_BINDING_2D, &name);
++    return name;
++}
++
++static bool gles_is_mip_filter(uint32_t f)
++{
++    return f >= 0x2700 && f <= 0x2703;
++}
++
++/* The bound 2D texture just got its level 0. */
++static void gles_mipless_level0(void)
++{
++    GLint name = gles_bound_2d(), minf = 0, automip = 0;
++
++    if (!name || (gles_rects && g_hash_table_contains(gles_rects, GUINT_TO_POINTER(name)))) {
++        return;
++    }
++    glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, &minf);
++    glGetTexParameteriv(GL_TEXTURE_2D, 0x8191 /* GL_GENERATE_MIPMAP */, &automip);
++    while (glGetError() != GL_NO_ERROR) {
++    }
++    if (automip) {
++        return;                         /* the host makes the chain itself */
++    }
++    if (!gles_mipless) {
++        gles_mipless = g_hash_table_new(g_direct_hash, g_direct_equal);
++    }
++    g_hash_table_insert(gles_mipless, GUINT_TO_POINTER(name), GUINT_TO_POINTER((uint32_t)minf));
++    if (gles_is_mip_filter(minf)) {
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, (minf & 1) ? GL_LINEAR : GL_NEAREST);
++        while (glGetError() != GL_NO_ERROR) {
++        }
++        if (gles_mipless_logged < 24) {
++            gles_mipless_logged++;
++            fprintf(stderr, "[gles] texture %d has only level 0: min filter 0x%x drawn as 0x%x until it has mipmaps\n",
++                    name, minf, (minf & 1) ? GL_LINEAR : GL_NEAREST);
++        }
++    }
++}
++
++/* The bound 2D texture's mipmap chain is complete: give it back the filter the guest asked for. */
++static void gles_mipless_complete(void)
++{
++    GLint name = gles_bound_2d();
++    gpointer v;
++
++    if (!name || !gles_mipless || !g_hash_table_lookup_extended(gles_mipless, GUINT_TO_POINTER(name), NULL, &v)) {
++        return;
++    }
++    g_hash_table_remove(gles_mipless, GUINT_TO_POINTER(name));
++    if (gles_npot && g_hash_table_contains(gles_npot, GUINT_TO_POINTER(name))) {
++        return;                         /* an NPOT texture can't mipmap here anyway */
++    }
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, (GLint)GPOINTER_TO_UINT(v));
++    while (glGetError() != GL_NO_ERROR) {
++    }
++}
++
++/* A guest glTexParameter(MIN_FILTER) on the bound 2D texture: remember it, and keep it drawable. */
++static uint32_t gles_mipless_filter(uint32_t requested)
++{
++    GLint name = gles_bound_2d();
++
++    if (!name || !gles_mipless || !g_hash_table_contains(gles_mipless, GUINT_TO_POINTER(name))) {
++        return requested;
++    }
++    g_hash_table_insert(gles_mipless, GUINT_TO_POINTER(name), GUINT_TO_POINTER(requested));
++    return gles_is_mip_filter(requested) ? ((requested & 1) ? GL_LINEAR : GL_NEAREST) : requested;
++}
+ #endif /* rectangle textures on an ES 1.1 host */
+ 
+ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a, uint32_t id)
+@@ -8532,6 +8632,17 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
+         break;
+     case GLES_SLOT_TEX_PARAMETERI:
+     case GLES_SLOT_TEX_PARAMETERF:
++        if (b[0] == GL_TEXTURE_2D && argc >= 3 && !gles_npot_bound()) {
++            bool is_float = slot == GLES_SLOT_TEX_PARAMETERF;
++            uint32_t value = is_float ? (uint32_t)gles_u2f(b[2]) : b[2];
++            if (b[1] == GL_TEXTURE_MIN_FILTER) {
++                value = gles_mipless_filter(value);
++                b[2] = is_float ? gles_f2u((float)value) : value;
++            } else if (b[1] == 0x8191 /* GL_GENERATE_MIPMAP */ && value) {
++                gles_mipless_complete();
++            }
++            break;
++        }
+         if (b[0] == GLES_RECT_TARGET || (b[0] == GL_TEXTURE_2D && gles_npot_bound())) {
+             rect = b[0] == GLES_RECT_TARGET;
+             b[0] = GL_TEXTURE_2D;
+@@ -8583,13 +8694,20 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
+                 gles_rect_note_bound(b[3], b[4]);
+             } else if (b[0] == GL_TEXTURE_2D && argc >= 5 && b[1] == 0) {
+                 gles_npot_note_bound(b[3], b[4], false);
++                gles_mipless_level0();
++            } else if (b[0] == GL_TEXTURE_2D && argc >= 5 && b[3] == 1 && b[4] == 1) {
++                gles_mipless_complete();    /* the last level of a chain */
+             }
+             break;
++        case GLES_SLOT_GENERATE_MIPMAP:
++            gles_mipless_complete();
++            break;
+         case GLES_SLOT_COPY_TEX_IMAGE_2D:
+             if (rect && argc >= 7) {
+                 gles_rect_note_bound(b[5], b[6]);
+             } else if (b[0] == GL_TEXTURE_2D && argc >= 7 && b[1] == 0) {
+                 gles_npot_note_bound(b[5], b[6], false);
++                gles_mipless_level0();
+             }
+             break;
+         default:

@@ -443,6 +443,7 @@ struct AddDeviceView: View {
                 steps.append(("checkmark.circle", "Use the \(entry.systemName) IPSW that is already here."))
             }
             steps.append(("hammer", "Prepare the device on this iPhone: decrypt the firmware, build its storage, add the guest tools. A minute or two."))
+            if let boots = entry.preparationBoots { steps.append(("bolt.horizontal.circle", boots)) }
             if let note = entry.statusNote, !note.isEmpty { steps.append(("info.circle", note)) }
             if entry.isExperimental { steps.append(("flask", "This version is \(entry.status == "untested" ? "untested" : "experimental"): it may not start or may misbehave.")) }
             if !OnDevicePrep.available { steps.append(("exclamationmark.triangle", "This build cannot prepare firmware, so this device cannot be created here yet.")) }

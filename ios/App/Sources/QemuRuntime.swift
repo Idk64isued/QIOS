@@ -78,6 +78,10 @@ final class QemuRuntime: @unchecked Sendable {
     lazy var orientation = optionalSym("qemu_ios_ui_orientation", (@convention(c) (Int32) -> Bool).self)
     lazy var shake = optionalSym("qemu_ios_ui_shake", (@convention(c) () -> Void).self)
     lazy var keyMac = optionalSym("qemu_ios_ui_key_mac", (@convention(c) (Int32, Bool) -> Void).self)
+    // The phone's microphone into the S5L8920/A4 machines' I2S capture (ios/patches/qemu-ios/0007).
+    lazy var micWrite = optionalSym("qemu_ios_mic_write", (@convention(c) (UnsafePointer<Int16>?, Int32) -> Int32).self)
+    lazy var micEnable = optionalSym("qemu_ios_mic_enable", (@convention(c) (Bool) -> Void).self)
+    lazy var micListening = optionalSym("qemu_ios_mic_listening", (@convention(c) () -> Bool).self)
     lazy var hardwareKeyboard = optionalSym("qemu_ios_ui_hardware_keyboard", (@convention(c) (Bool) -> Bool).self)
     lazy var cancelInput = optionalSym("qemu_ios_ui_cancel_input", (@convention(c) () -> Void).self)
     // Sensors the real phone can stand in for

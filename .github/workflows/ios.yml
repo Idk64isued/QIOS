@@ -148,6 +148,8 @@ jobs:
         run: |
           bash ios/scripts/build-qemu.sh "$RUNNER_TEMP/qemu-ios" "$RUNNER_TEMP/ios-deps/prefix" "$RUNNER_TEMP/qemu-out"
           mkdir -p "$RUNNER_TEMP/qemu-lib" && cp "$RUNNER_TEMP"/qemu-out/*.dylib "$RUNNER_TEMP/qemu-lib/"
+          # The profiler's addresses (ThreadSampler) -> function names: libqemu-arm.dylib+0x... is an nm address.
+          nm -n "$RUNNER_TEMP/qemu-lib/libqemu-arm.dylib" > "$RUNNER_TEMP/qemu-lib/qemu-symbols.txt" || true
       - name: Save emulator libraries
         if: steps.qcache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -173,6 +175,7 @@ jobs:
           if-no-files-found: ignore
           path: |
             ${{ runner.temp }}/errors.txt
+            ${{ runner.temp }}/qemu-lib/qemu-symbols.txt
             ${{ runner.temp }}/build-full.log
             ${{ runner.temp }}/build-lite.log
             ${{ runner.temp }}/firmwarekit-patch.log

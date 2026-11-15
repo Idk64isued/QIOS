@@ -223,7 +223,7 @@ final class LegacyStoreClient: ObservableObject {
     }
 
     /// The search-result form of one archived copy (it carries the download address), judged for this device.
-    func copy(ipaID: String, of app: CatalogApp) async throws -> CatalogApp {
+    func copy(ipaID: String) async throws -> CatalogApp {
         guard let url = appsURL([URLQueryItem(name: "ipa_id", value: ipaID)]) else { throw URLError(.badURL) }
         struct Envelope: Decodable { let apps: [CatalogApp] }
         let apps: [CatalogApp]
@@ -411,6 +411,8 @@ struct ClassicPriceButton: View {
 
 // MARK: - Legacy Store View
 
+/// The store, as iPhone OS 3's App Store was laid out: Featured, the charts as they stood on a given day, Categories
+/// and Search, each app with its own page (screenshots, ratings, reviews, every archived version). Full screen.
 struct LegacyStoreView: View {
     @StateObject private var store = LegacyStoreClient()
     /// The running device's agent; nil when no device is running (the store can still be browsed).
@@ -418,25 +420,61 @@ struct LegacyStoreView: View {
     let target: StoreTarget
     let onDismiss: () -> Void
 
-    enum Tab: Hashable { case featured, top, search }
+    enum Tab: Hashable { case featured, charts, categories, search }
+    enum FeaturedPart: Hashable { case forDevice, collections }
+
+    /// A list opened from Featured or Categories.
+    struct Drill: Identifiable {
+        let id = UUID()
+        let title: String
+        var apps: [StoreApp]
+        var loading = true
+        var error: String?
+    }
 
     @State private var tab: Tab = .featured
+    @State private var featuredPart: FeaturedPart = .forDevice
     @State private var busy: Int?  // the ipa_id being downloaded or installed
     @State private var progress: Double = 0
     @State private var message = ""
     @State private var messageIsGood = false
-    @State private var details: CatalogApp?
     @State private var armed: Int?  // the row whose FREE has turned into INSTALL
     @State private var suggested: [CatalogApp] = []
+    @State private var page: StoreApp?
+    @State private var drill: Drill?
+
+    // Charts
+    @State private var chartTypes: [ChartType] = ChartType.defaults
+    @State private var chartType = "top-free"
+    @State private var chart: StoreChart?
+    @State private var chartDate = LegacyStoreView.fifteenYearsAgo()
+    @State private var chartLoading = false
+    @State private var chartError: String?
+    @State private var pickingDate = false
+
+    // Featured collections and categories
+    @State private var collections: [StoreCollection] = []
+    @State private var genres: [StoreGenre] = []
+    @State private var listError: String?
 
     var body: some View {
         VStack(spacing: 0) {
-            ClassicNavBar(title: title, left: nil, right: ("Done", onDismiss))
-            if tab == .search { searchBar }
-            if agent == nil {
-                notice("Start a device to install apps. You can browse meanwhile.")
+            ClassicNavBar(title: title, left: backButton, right: ("Done", onDismiss))
+            if tab == .search && drill == nil { searchBar }
+            if agent == nil { notice("Start a device to install apps. You can browse meanwhile.") }
+            Group {
+                if let drill {
+                    appList(drill)
+                } else {
+                    switch tab {
+                    case .featured: featured
+                    case .charts: charts
+                    case .categories: categories
+                    case .search: searchResults
+                    }
+                }
             }
-            content
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             if busy != nil || !message.isEmpty { statusStrip }
             tabBar
         }
@@ -449,23 +487,332 @@ struct LegacyStoreView: View {
         .onChange(of: store.results.map(\.ipaID)) { _ in
             if store.query.isEmpty { suggested = store.results }
         }
-        .sheet(item: $details) { app in
-            AppVersionsView(app: app, store: store, canInstall: agent != nil && busy == nil) { copy in
-                details = nil
+        .fullScreenCover(item: $page) { app in
+            StoreAppPage(app: app, store: store, canInstall: agent != nil && busy == nil) { copy in
+                page = nil
                 install(copy)
-            }
+            } onClose: { page = nil }
         }
+        .sheet(isPresented: $pickingDate) { datePicker }
+    }
+
+    private var backButton: (String, () -> Void)? {
+        guard drill != nil else { return nil }
+        return ("Back", { self.drill = nil })
     }
 
     private var title: String {
+        if let drill { return drill.title }
         switch tab {
         case .featured: return "Featured"
-        case .top: return "Top 25"
+        case .charts: return chart?.type.name ?? "Top Charts"
+        case .categories: return "Categories"
         case .search: return "Search"
         }
     }
 
-    // MARK: Pieces
+    static func fifteenYearsAgo() -> String {
+        let date = Calendar.current.date(byAdding: .year, value: -15, to: Date()) ?? Date()
+        return Self.day(date)
+    }
+
+    static func day(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: date)
+    }
+
+    static func pretty(_ day: String) -> String {
+        guard let date = StoreAPI.date(day) else { return day }
+        let f = DateFormatter()
+        f.dateStyle = .long
+        f.timeZone = TimeZone(identifier: "UTC")
+        return f.string(from: date)
+    }
+
+    // MARK: Featured
+
+    @ViewBuilder private var featured: some View {
+        VStack(spacing: 0) {
+            ClassicSegments(items: [("For \(target.name)", FeaturedPart.forDevice), ("Collections", .collections)],
+                            selection: $featuredPart)
+            if featuredPart == .forDevice {
+                catalogList(suggested.isEmpty ? store.results : suggested, ranked: false)
+            } else if collections.isEmpty {
+                centred {
+                    if let listError { errorText(listError) { loadCollections() } } else { ProgressView().tint(Classic.rowDetail) }
+                }
+                .onAppear(perform: loadCollections)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(collections.enumerated()), id: \.element.id) { index, c in
+                            Button { openCollection(c) } label: {
+                                plainRow(title: c.title, subtitle: [c.series, c.count.map { "\($0) apps" }].compactMap { $0 }.joined(separator: " \u{00B7} "),
+                                         shaded: index % 2 == 1)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func loadCollections() {
+        listError = nil
+        Task {
+            do { collections = try await StoreAPI.collections() } catch { listError = error.localizedDescription }
+        }
+    }
+
+    private func openCollection(_ c: StoreCollection) {
+        drill = Drill(title: c.title, apps: [])
+        Task {
+            do {
+                let apps = try await StoreAPI.collection(c.slug)
+                if drill?.title == c.title { drill?.apps = apps; drill?.loading = false }
+            } catch {
+                drill?.loading = false
+                drill?.error = error.localizedDescription
+            }
+        }
+    }
+
+    // MARK: Charts
+
+    @ViewBuilder private var charts: some View {
+        VStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(chartTypes) { t in
+                        Button {
+                            chartType = t.slug
+                            loadChart()
+                        } label: {
+                            Text(t.name)
+                                .font(Classic.font(12, bold: true))
+                                .foregroundStyle(chartType == t.slug ? .white : Classic.hex(0x4C566C))
+                                .padding(.horizontal, 12)
+                                .frame(height: 28)
+                                .background(chartType == t.slug
+                                    ? AnyShapeStyle(LinearGradient(colors: [Classic.hex(0x6D84A2), Classic.hex(0x4A6589)], startPoint: .top, endPoint: .bottom))
+                                    : AnyShapeStyle(Color.white), in: Capsule())
+                                .overlay(Capsule().stroke(Classic.hex(0x8796AA), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 7)
+            }
+            .background(LinearGradient(colors: [Classic.searchTop, Classic.searchBottom], startPoint: .top, endPoint: .bottom))
+            dateBar
+            if chartLoading && chart == nil {
+                centred { ProgressView().tint(Classic.rowDetail) }
+            } else if let chartError, chart == nil {
+                centred { errorText(chartError) { loadChart() } }
+            } else if let chart {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(chart.entries) { entry in
+                            Button { page = entry.app } label: { chartRow(entry) }
+                                .buttonStyle(.plain)
+                        }
+                        Text("Titles in grey haven\u{2019}t been preserved in the archive yet. Charts from the archive of Legacy Store.")
+                            .font(Classic.font(11))
+                            .foregroundStyle(Classic.rowDetail)
+                            .multilineTextAlignment(.center)
+                            .padding(16)
+                    }
+                }
+            }
+        }
+        .onAppear {
+            if chart == nil { loadChart() }
+            Task { chartTypes = await StoreAPI.chartTypes() }
+        }
+    }
+
+    private var dateBar: some View {
+        let dates = chart?.availableDates ?? []
+        let index = chart.flatMap { c in dates.firstIndex(of: c.snapshotDate) }
+        return HStack {
+            Button { step(-1) } label: { Image(systemName: "arrowtriangle.backward.fill") }
+                .disabled(index == nil || index == 0)
+            Spacer()
+            Button { pickingDate = true } label: {
+                VStack(spacing: 1) {
+                    Text(chart.map { Self.pretty($0.snapshotDate) } ?? Self.pretty(chartDate))
+                        .font(Classic.font(15, bold: true))
+                        .foregroundStyle(Classic.hex(0x2E3D52))
+                    Text("Top 50 on this day \u{00B7} change").font(Classic.font(10)).foregroundStyle(Classic.rowDetail)
+                }
+            }
+            .buttonStyle(.plain)
+            Spacer()
+            Button { step(1) } label: { Image(systemName: "arrowtriangle.forward.fill") }
+                .disabled(index == nil || index == dates.count - 1)
+        }
+        .font(.system(size: 16))
+        .foregroundStyle(Classic.hex(0x3D6EBF))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(Classic.hex(0xEEF1F5))
+        .overlay(alignment: .bottom) { Classic.separator.frame(height: 1) }
+    }
+
+    private func step(_ by: Int) {
+        guard let chart, let i = chart.availableDates.firstIndex(of: chart.snapshotDate) else { return }
+        let j = i + by
+        guard chart.availableDates.indices.contains(j) else { return }
+        chartDate = chart.availableDates[j]
+        loadChart()
+    }
+
+    private func loadChart() {
+        chartLoading = true
+        chartError = nil
+        let type = chartType, date = chartDate
+        Task {
+            do {
+                let c = try await StoreAPI.chart(type: type, date: date)
+                if type == chartType { chart = c }
+            } catch {
+                chartError = error.localizedDescription
+            }
+            chartLoading = false
+        }
+    }
+
+    /// Every archived day, newest year first, to pick one.
+    private var datePicker: some View {
+        let dates = chart?.availableDates ?? []
+        let years = Dictionary(grouping: dates) { String($0.prefix(4)) }
+        return VStack(spacing: 0) {
+            ClassicNavBar(title: "Pick a Day", left: nil, right: ("Done", { pickingDate = false }))
+            if dates.isEmpty {
+                centred { Text("No dates yet. Load a chart first.").font(Classic.font(14)).foregroundStyle(Classic.rowDetail) }
+            } else {
+                List {
+                    ForEach(years.keys.sorted(by: >), id: \.self) { year in
+                        Section(year) {
+                            ForEach((years[year] ?? []).sorted(by: >), id: \.self) { day in
+                                Button {
+                                    chartDate = day
+                                    pickingDate = false
+                                    loadChart()
+                                } label: {
+                                    HStack {
+                                        Text(Self.pretty(day)).foregroundStyle(.black)
+                                        Spacer()
+                                        if day == chart?.snapshotDate { Image(systemName: "checkmark").foregroundStyle(Classic.hex(0x3D6EBF)) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                .listStyle(.grouped)
+            }
+        }
+        .environment(\.colorScheme, .light)
+    }
+
+    private func chartRow(_ entry: ChartEntry) -> some View {
+        HStack(spacing: 10) {
+            Text("\(entry.position)")
+                .font(Classic.font(15, bold: true))
+                .foregroundStyle(Classic.rowDetail)
+                .frame(width: 26, alignment: .trailing)
+            StoreIcon(url: entry.app.iconURL, size: 57)
+                .opacity(entry.preserved ? 1 : 0.35)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.app.name)
+                    .font(Classic.font(15, bold: true))
+                    .foregroundStyle(entry.preserved ? Color.black : Classic.rowDetail.opacity(0.7))
+                    .lineLimit(2)
+                if let developer = entry.app.developer {
+                    Text(developer).font(Classic.font(12)).foregroundStyle(Classic.rowDetail).lineLimit(1)
+                }
+                if !entry.preserved {
+                    Text("Not in the archive yet").font(Classic.font(11)).foregroundStyle(Classic.rowDetail.opacity(0.7))
+                } else if let note = Compatibility.note(for: entry.app.id) {
+                    Label(note.verdict.title, systemImage: note.verdict.symbol).font(Classic.font(11)).foregroundStyle(Classic.hex(0x385487))
+                }
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(Classic.hex(0xB0B6BE))
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(entry.position % 2 == 0 ? Classic.hex(0xF4F5F7) : Color.white)
+        .overlay(alignment: .bottom) { Classic.separator.frame(height: 1) }
+    }
+
+    // MARK: Categories
+
+    @ViewBuilder private var categories: some View {
+        if genres.isEmpty {
+            centred {
+                if let listError { errorText(listError) { loadGenres() } } else { ProgressView().tint(Classic.rowDetail) }
+            }
+            .onAppear(perform: loadGenres)
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(genres.enumerated()), id: \.element.id) { index, g in
+                        Button { openGenre(g) } label: {
+                            plainRow(title: g.name, subtitle: g.count.map { "\($0) apps" } ?? "", shaded: index % 2 == 1)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+
+    private func loadGenres() {
+        listError = nil
+        Task {
+            do { genres = try await StoreAPI.genres() } catch { listError = error.localizedDescription }
+        }
+    }
+
+    private func openGenre(_ g: StoreGenre) {
+        drill = Drill(title: g.name, apps: [])
+        Task {
+            do {
+                let apps = try await StoreAPI.apps(genre: g.id)
+                if drill?.title == g.name { drill?.apps = apps; drill?.loading = false }
+            } catch {
+                drill?.loading = false
+                drill?.error = error.localizedDescription
+            }
+        }
+    }
+
+    private func appList(_ drill: Drill) -> some View {
+        Group {
+            if drill.loading {
+                centred { ProgressView().tint(Classic.rowDetail) }
+            } else if let error = drill.error {
+                centred { errorText(error) { self.drill = nil } }
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(drill.apps.enumerated()), id: \.element.id) { index, app in
+                            Button { page = app } label: { storeRow(app, shaded: index % 2 == 1) }
+                                .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: Search
 
     private var searchBar: some View {
         HStack(spacing: 6) {
@@ -496,6 +843,41 @@ struct LegacyStoreView: View {
         .overlay(alignment: .bottom) { Classic.hex(0x8796AA).frame(height: 1) }
     }
 
+    @ViewBuilder private var searchResults: some View {
+        if store.query.isEmpty {
+            centred {
+                Text("Search for apps that run on \(target.name), \(target.os).")
+                    .font(Classic.font(15, bold: true))
+                    .foregroundStyle(Classic.hex(0x9AA3AE))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 30)
+            }
+        } else {
+            catalogList(store.results, ranked: false)
+        }
+    }
+
+    // MARK: Rows
+
+    @ViewBuilder private func catalogList(_ rows: [CatalogApp], ranked: Bool) -> some View {
+        if store.isLoading && rows.isEmpty {
+            centred { ProgressView().tint(Classic.rowDetail) }
+        } else if let error = store.error, rows.isEmpty {
+            centred { errorText(error) { store.search() } }
+        } else if rows.isEmpty {
+            centred { Text("No Results").font(Classic.font(18, bold: true)).foregroundStyle(Classic.hex(0x9AA3AE)) }
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, app in
+                        appRow(app, rank: ranked ? index + 1 : nil, shaded: index % 2 == 1)
+                    }
+                }
+            }
+            .background(Color.white)
+        }
+    }
+
     private func notice(_ text: String) -> some View {
         Text(text)
             .font(Classic.font(12, bold: true))
@@ -507,64 +889,68 @@ struct LegacyStoreView: View {
             .overlay(alignment: .bottom) { Classic.separator.frame(height: 1) }
     }
 
-    private var rows: [CatalogApp] {
-        switch tab {
-        case .featured: return suggested.isEmpty ? store.results : suggested
-        case .top: return Array((suggested.isEmpty ? store.results : suggested).filter(\.isCompatible).prefix(25))
-        case .search: return store.query.isEmpty ? [] : store.results
-        }
-    }
-
-    @ViewBuilder private var content: some View {
-        if store.isLoading && rows.isEmpty {
-            centred { ProgressView().tint(Classic.rowDetail) }
-        } else if let error = store.error, rows.isEmpty {
-            centred {
-                VStack(spacing: 10) {
-                    Text(error).font(Classic.font(14)).foregroundStyle(Classic.rowDetail).multilineTextAlignment(.center)
-                    ClassicBarButton(title: "Retry") { store.search() }
-                }
-                .padding(.horizontal, 30)
-            }
-        } else if tab == .search && store.query.isEmpty {
-            centred {
-                Text("Search for apps that run on \(target.name), \(target.os).")
-                    .font(Classic.font(15, bold: true))
-                    .foregroundStyle(Classic.hex(0x9AA3AE))
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 30)
-            }
-        } else if rows.isEmpty {
-            centred {
-                Text(tab == .search ? "No Results" : "Nothing to show yet.")
-                    .font(Classic.font(18, bold: true))
-                    .foregroundStyle(Classic.hex(0x9AA3AE))
-            }
-        } else {
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, app in
-                        appRow(app, rank: tab == .top ? index + 1 : nil, shaded: index % 2 == 1)
-                    }
-                }
-            }
-            .background(Color.white)
-        }
-    }
-
     private func centred<V: View>(@ViewBuilder _ inner: () -> V) -> some View {
         VStack { Spacer(); inner(); Spacer() }.frame(maxWidth: .infinity).background(Color.white)
     }
 
+    private func errorText(_ text: String, retry: @escaping () -> Void) -> some View {
+        VStack(spacing: 10) {
+            Text(text).font(Classic.font(14)).foregroundStyle(Classic.rowDetail).multilineTextAlignment(.center)
+            ClassicBarButton(title: "Retry", action: retry)
+        }
+        .padding(.horizontal, 30)
+    }
+
+    private func plainRow(title: String, subtitle: String, shaded: Bool) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(Classic.font(16, bold: true)).foregroundStyle(.black)
+                if !subtitle.isEmpty { Text(subtitle).font(Classic.font(12)).foregroundStyle(Classic.rowDetail) }
+            }
+            Spacer()
+            Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(Classic.hex(0xB0B6BE))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 12)
+        .background(shaded ? Classic.hex(0xF4F5F7) : Color.white)
+        .overlay(alignment: .bottom) { Classic.separator.frame(height: 1) }
+        .contentShape(Rectangle())
+    }
+
+    private func storeRow(_ app: StoreApp, shaded: Bool) -> some View {
+        HStack(spacing: 10) {
+            StoreIcon(url: app.iconURL, size: 57)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(app.name).font(Classic.font(15, bold: true)).foregroundStyle(.black).lineLimit(2)
+                if let developer = app.developer { Text(developer).font(Classic.font(12)).foregroundStyle(Classic.rowDetail).lineLimit(1) }
+                if let label = app.label {
+                    Text(label).font(Classic.font(11)).foregroundStyle(Classic.hex(0x385487)).lineLimit(1)
+                } else if let count = app.versionCount {
+                    Text("\(count) archived versions").font(Classic.font(11)).foregroundStyle(Classic.rowDetail)
+                }
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(Classic.hex(0xB0B6BE))
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(shaded ? Classic.hex(0xF4F5F7) : Color.white)
+        .overlay(alignment: .bottom) { Classic.separator.frame(height: 1) }
+        .contentShape(Rectangle())
+    }
+
+    /// A row from the device-aware catalog: it knows whether the app runs here, so it has a price button.
     private func appRow(_ app: CatalogApp, rank: Int?, shaded: Bool) -> some View {
         HStack(spacing: 10) {
-            Button { details = app } label: {
+            Button {
+                if let key = app.appURL?.lastPathComponent ?? app.bundleID {
+                    page = StoreApp(["app_store_id": key, "name": app.name, "developer": app.developer as Any,
+                                     "icon_url": app.iconURL?.absoluteString as Any])
+                }
+            } label: {
                 HStack(spacing: 10) {
                     if let rank {
-                        Text("\(rank)")
-                            .font(Classic.font(15, bold: true))
-                            .foregroundStyle(Classic.rowDetail)
-                            .frame(width: 24, alignment: .trailing)
+                        Text("\(rank)").font(Classic.font(15, bold: true)).foregroundStyle(Classic.rowDetail).frame(width: 24, alignment: .trailing)
                     }
                     StoreIcon(url: app.iconURL, size: 57)
                     VStack(alignment: .leading, spacing: 2) {
@@ -572,18 +958,12 @@ struct LegacyStoreView: View {
                             .font(Classic.font(15, bold: true))
                             .foregroundStyle(app.isCompatible ? Classic.rowText : Classic.rowText.opacity(0.4))
                             .lineLimit(2)
-                        Text(app.developer ?? "")
-                            .font(Classic.font(12))
-                            .foregroundStyle(Classic.rowDetail)
-                            .lineLimit(1)
+                        Text(app.developer ?? "").font(Classic.font(12)).foregroundStyle(Classic.rowDetail).lineLimit(1)
                         if !app.isCompatible {
                             Text(app.subtitle).font(Classic.font(11)).foregroundStyle(Classic.warning).lineLimit(1)
                         } else {
                             let facts = [app.version.map { "Version \($0)" }, app.size.map { Transfer.format($0) }].compactMap { $0 }
-                            Text(facts.joined(separator: "  \u{00B7}  "))
-                                .font(Classic.font(11))
-                                .foregroundStyle(Classic.rowDetail)
-                                .lineLimit(1)
+                            Text(facts.joined(separator: "  \u{00B7}  ")).font(Classic.font(11)).foregroundStyle(Classic.rowDetail).lineLimit(1)
                         }
                     }
                     Spacer(minLength: 0)
@@ -623,11 +1003,12 @@ struct LegacyStoreView: View {
                 Image(systemName: messageIsGood ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                     .foregroundStyle(messageIsGood ? Classic.installTop : Classic.hex(0xF0A050))
             }
-            Text(message)
-                .font(Classic.font(12, bold: true))
-                .foregroundStyle(.white)
-                .lineLimit(2)
+            Text(message).font(Classic.font(12, bold: true)).foregroundStyle(.white).lineLimit(3)
             Spacer(minLength: 0)
+            if busy == nil {
+                Button { message = "" } label: { Image(systemName: "xmark").foregroundStyle(.white.opacity(0.7)) }
+                    .buttonStyle(.plain)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -637,7 +1018,8 @@ struct LegacyStoreView: View {
     private var tabBar: some View {
         HStack(spacing: 0) {
             tabItem(.featured, "Featured", "star.fill")
-            tabItem(.top, "Top 25", "list.number")
+            tabItem(.charts, "Top 50", "list.number")
+            tabItem(.categories, "Categories", "square.grid.2x2.fill")
             tabItem(.search, "Search", "magnifyingglass")
         }
         .frame(height: 49)
@@ -654,21 +1036,16 @@ struct LegacyStoreView: View {
         let selected = tab == which
         return Button {
             tab = which
+            drill = nil
             armed = nil
-            if which != .search, !store.query.isEmpty {
-                store.query = ""
-                store.search()
-            }
         } label: {
             VStack(spacing: 2) {
                 Image(systemName: symbol)
-                    .font(.system(size: 22, weight: .regular))
+                    .font(.system(size: 21, weight: .regular))
                     .foregroundStyle(selected
                         ? AnyShapeStyle(LinearGradient(colors: [Classic.hex(0xD8F0FF), Classic.hex(0x2E9BF0)], startPoint: .top, endPoint: .bottom))
                         : AnyShapeStyle(Classic.tabIdle))
-                Text(label)
-                    .font(Classic.font(10, bold: true))
-                    .foregroundStyle(selected ? Color.white : Classic.tabIdle)
+                Text(label).font(Classic.font(10, bold: true)).foregroundStyle(selected ? Color.white : Classic.tabIdle)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(selected ? Color.white.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 4))
@@ -709,72 +1086,112 @@ struct LegacyStoreView: View {
     }
 }
 
-/// An app icon as the store drew it: rounded, with the gloss across its top half.
-struct StoreIcon: View {
-    let url: URL?
-    var size: CGFloat = 44
+/// The store's segmented control of the time.
+struct ClassicSegments<T: Hashable>: View {
+    let items: [(String, T)]
+    @Binding var selection: T
 
     var body: some View {
-        AsyncImage(url: url) { phase in
-            if let image = phase.image {
-                image.resizable().aspectRatio(contentMode: .fill)
-            } else {
-                LinearGradient(colors: [Classic.hex(0xE6E9ED), Classic.hex(0xC9CED6)], startPoint: .top, endPoint: .bottom)
-                    .overlay(Image(systemName: "app").foregroundStyle(Classic.hex(0x9AA3AE)))
+        HStack(spacing: 0) {
+            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                let on = selection == item.1
+                Button { selection = item.1 } label: {
+                    Text(item.0)
+                        .font(Classic.font(12, bold: true))
+                        .foregroundStyle(on ? .white : Classic.hex(0x4C566C))
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 28)
+                        .background(on
+                            ? AnyShapeStyle(LinearGradient(colors: [Classic.hex(0x6D84A2), Classic.hex(0x4A6589)], startPoint: .top, endPoint: .bottom))
+                            : AnyShapeStyle(LinearGradient(colors: [.white, Classic.hex(0xE3E7EC)], startPoint: .top, endPoint: .bottom)))
+                }
+                .buttonStyle(.plain)
+                if index < items.count - 1 { Classic.hex(0x8796AA).frame(width: 1, height: 28) }
             }
         }
-        .frame(width: size, height: size)
-        .overlay(alignment: .top) {
-            // The gloss: a soft white ellipse over the top half.
-            Ellipse()
-                .fill(LinearGradient(colors: [.white.opacity(0.55), .white.opacity(0.08)], startPoint: .top, endPoint: .bottom))
-                .frame(width: size * 1.5, height: size * 0.9)
-                .offset(y: -size * 0.38)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: size * 0.18, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: size * 0.18, style: .continuous).stroke(.black.opacity(0.15), lineWidth: 0.5))
-        .shadow(color: .black.opacity(0.35), radius: 1.5, y: 1.5)
+        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).stroke(Classic.hex(0x8796AA), lineWidth: 1))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity)
+        .background(LinearGradient(colors: [Classic.searchTop, Classic.searchBottom], startPoint: .top, endPoint: .bottom))
     }
 }
 
-// MARK: - The app's page: its versions
+/// Stars as the store drew them: five, filled to the average (halves included).
+struct ClassicStars: View {
+    let rating: Double
+    var size: CGFloat = 13
 
-/// One app's page: the header the store showed, then every archived version on pinstripes. Pick the one to
-/// install: an older version often runs where the newest one needs a newer system.
-struct AppVersionsView: View {
-    let app: CatalogApp
+    var body: some View {
+        HStack(spacing: 1) {
+            ForEach(0..<5, id: \.self) { i in
+                let fill = rating - Double(i)
+                Image(systemName: fill >= 0.75 ? "star.fill" : fill >= 0.25 ? "star.leadinghalf.filled" : "star")
+                    .font(.system(size: size))
+                    .foregroundStyle(Classic.hex(0xF0A030))
+            }
+        }
+    }
+}
+
+// MARK: - The app's page
+
+/// One app's page, like the store's: the header with its rating and price button, archived screenshots (by the
+/// version they were captured for), the description, information, customer reviews, every archived version, and a
+/// place to note how it ran here.
+struct StoreAppPage: View {
+    let app: StoreApp
     @ObservedObject var store: LegacyStoreClient
     let canInstall: Bool
     let onInstall: (CatalogApp) -> Void
+    let onClose: () -> Void
 
-    @Environment(\.dismiss) private var dismiss
-    @State private var versions: [CatalogVersion] = []
-    @State private var loading = true
+    @State private var detail: StoreAppDetail?
+    @State private var screenshots: [ScreenshotSet] = []
+    @State private var shotSet = 0
+    @State private var ratings: [RatingCapture] = []
+    @State private var reviews: [StoreReview] = []
     @State private var error: String?
     @State private var resolving: String?
     @State private var armed: String?
+    @State private var headerArmed = false
+    @State private var moreText = false
+    @State private var reporting = false
+    @State private var myNote: CompatibilityNote?
+
+    private var shown: StoreApp { detail?.app ?? app }
+
+    /// The newest copy this device can run, with its version.
+    private var best: (version: CatalogVersion, copy: CatalogVersion.Copy)? {
+        for v in detail?.versions ?? [] {
+            for c in v.copies where store.target.problem(with: c, minimumOS: v.minimumOSVersion) == nil { return (v, c) }
+        }
+        return nil
+    }
+
+    /// The last capture that has an average.
+    private var rating: RatingCapture? { ratings.last { $0.average != nil } ?? ratings.last }
 
     var body: some View {
         VStack(spacing: 0) {
-            ClassicNavBar(title: "Info", left: ("Back", { dismiss() }), right: nil)
+            ClassicNavBar(title: "Info", left: ("Back", onClose), right: nil)
             ScrollView {
                 VStack(spacing: 14) {
                     header
-                    if loading {
-                        ProgressView().tint(Classic.rowDetail).padding(.top, 30)
-                    } else if let error {
-                        group {
-                            Text(error).font(Classic.font(13)).foregroundStyle(Classic.warning).padding(12)
-                        }
-                        ClassicBarButton(title: "Retry") { load() }
-                    } else if versions.isEmpty {
-                        Text("The archive lists no versions for this app.")
-                            .font(Classic.font(14, bold: true))
-                            .foregroundStyle(Classic.hex(0x4C566C))
-                            .shadow(color: .white.opacity(0.7), radius: 0, y: 1)
-                    } else {
-                        sectionTitle("Versions")
+                    if let error {
+                        Text(error).font(Classic.font(13)).foregroundStyle(Classic.warning).padding(8)
+                    }
+                    if !screenshots.isEmpty { screenshotSection }
+                    if let text = detail?.description, !text.isEmpty { descriptionSection(text) }
+                    informationSection
+                    if !reviews.isEmpty { reviewsSection }
+                    if let versions = detail?.versions, !versions.isEmpty {
+                        sectionTitle("All versions")
                         ForEach(versions) { version in versionGroup(version) }
+                    } else if detail == nil && error == nil {
+                        ProgressView().tint(Classic.rowDetail).padding(.top, 20)
                     }
                 }
                 .padding(.horizontal, 10)
@@ -783,26 +1200,198 @@ struct AppVersionsView: View {
             .background(Classic.Pinstripes().ignoresSafeArea())
         }
         .environment(\.colorScheme, .light)
-        .onAppear { load() }
+        .task { await load() }
+        .sheet(isPresented: $reporting) {
+            CompatibilityReportView(app: shown, version: best?.version.version ?? detail?.versions.first?.version ?? "?",
+                                    device: "\(store.target.name), \(store.target.os)") { saved in
+                reporting = false
+                if let saved { myNote = saved }
+            }
+        }
     }
 
+    private func load() async {
+        myNote = Compatibility.note(for: app.id)
+        do { detail = try await StoreAPI.detail(app.id) } catch { self.error = error.localizedDescription }
+        async let shots = StoreAPI.screenshots(app.id)
+        async let rates = StoreAPI.ratings(app.id)
+        async let revs = StoreAPI.reviews(app.id)
+        screenshots = await shots
+        ratings = await rates
+        reviews = await revs
+    }
+
+    // MARK: Sections
+
     private var header: some View {
-        HStack(alignment: .top, spacing: 12) {
-            StoreIcon(url: app.iconURL, size: 57)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(app.name).font(Classic.font(17, bold: true)).foregroundStyle(.black).lineLimit(2)
-                if let developer = app.developer {
-                    Text(developer).font(Classic.font(13)).foregroundStyle(Classic.hex(0x4C566C))
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                StoreIcon(url: shown.iconURL, size: 72)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(shown.name).font(Classic.font(17, bold: true)).foregroundStyle(.black).lineLimit(3)
+                    if let developer = shown.developer {
+                        Text(developer).font(Classic.font(13)).foregroundStyle(Classic.hex(0x4C566C))
+                    }
+                    if let r = rating, let average = r.average {
+                        HStack(spacing: 4) {
+                            ClassicStars(rating: average)
+                            if let count = r.count {
+                                Text("\(count.formatted()) ratings").font(Classic.font(11)).foregroundStyle(Classic.rowDetail)
+                            }
+                        }
+                    } else if let r = rating, let count = r.count {
+                        Text("\(count.formatted()) ratings").font(Classic.font(11)).foregroundStyle(Classic.rowDetail)
+                    }
+                    if let best {
+                        Text("Version \(best.version.version ?? "?") runs on \(store.target.name)")
+                            .font(Classic.font(11)).foregroundStyle(Classic.hex(0x385487))
+                    } else if detail != nil {
+                        Text("No archived copy runs on \(store.target.name), \(store.target.os)")
+                            .font(Classic.font(11)).foregroundStyle(Classic.warning)
+                    }
                 }
-                Text("For \(store.target.name), iPhone OS \(store.target.os)")
-                    .font(Classic.font(11))
-                    .foregroundStyle(Classic.rowDetail)
+                Spacer(minLength: 0)
+                if let best {
+                    if resolving == best.copy.ipaID {
+                        ProgressView().tint(Classic.rowDetail)
+                    } else {
+                        ClassicPriceButton(enabled: canInstall && resolving == nil, armed: headerArmed) {
+                            if headerArmed {
+                                headerArmed = false
+                                choose(best.copy)
+                            } else {
+                                headerArmed = true
+                            }
+                        }
+                    }
+                }
             }
-            Spacer(minLength: 0)
+            Classic.separator.frame(height: 1)
+            HStack {
+                if let myNote {
+                    Label("You said: \(myNote.verdict.title)", systemImage: myNote.verdict.symbol)
+                        .font(Classic.font(12, bold: true)).foregroundStyle(Classic.hex(0x385487))
+                } else {
+                    Text("Tried it? Say how it runs.").font(Classic.font(12)).foregroundStyle(Classic.rowDetail)
+                }
+                Spacer()
+                ClassicBarButton(title: myNote == nil ? "Report" : "Update") { reporting = true }
+            }
         }
         .padding(12)
         .background(Color.white, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Classic.groupBorder, lineWidth: 1))
+    }
+
+    private var screenshotSection: some View {
+        let set = screenshots[min(shotSet, screenshots.count - 1)]
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                sectionTitle("Screenshots")
+                Spacer()
+                if screenshots.count > 1 {
+                    Menu {
+                        ForEach(Array(screenshots.enumerated()), id: \.element.id) { index, s in
+                            Button(s.title.isEmpty ? "Set \(index + 1)" : s.title) { shotSet = index }
+                        }
+                    } label: {
+                        Label(set.title.isEmpty ? "Other captures" : set.title, systemImage: "chevron.up.chevron.down")
+                            .font(Classic.font(12, bold: true))
+                            .foregroundStyle(Classic.hex(0x3D6EBF))
+                    }
+                    .padding(.trailing, 10)
+                }
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(set.shots, id: \.url) { shot in
+                        let height: CGFloat = 320
+                        let width = height * CGFloat(shot.width) / CGFloat(max(shot.height, 1))
+                        AsyncImage(url: shot.url) { phase in
+                            if let image = phase.image {
+                                image.resizable().aspectRatio(contentMode: .fit)
+                            } else {
+                                Rectangle().fill(Classic.hex(0xDDE2E8)).overlay(ProgressView().tint(Classic.rowDetail))
+                            }
+                        }
+                        .frame(width: width, height: height)
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).stroke(Classic.groupBorder, lineWidth: 1))
+                    }
+                }
+                .padding(.horizontal, 2)
+            }
+        }
+    }
+
+    private func descriptionSection(_ text: String) -> some View {
+        group {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(text)
+                    .font(Classic.font(13))
+                    .foregroundStyle(Classic.hex(0x333333))
+                    .lineLimit(moreText ? nil : 5)
+                if !moreText && text.count > 220 {
+                    Button("More \u{25BE}") { moreText = true }
+                        .font(Classic.font(13, bold: true))
+                        .foregroundStyle(Classic.hex(0x3D6EBF))
+                }
+            }
+            .padding(12)
+        }
+    }
+
+    private var informationSection: some View {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        var rows: [(String, String)] = []
+        if let price = detail?.price { rows.append(("Price", price)) }
+        if let genre = detail?.genre { rows.append(("Category", genre)) }
+        if let released = detail?.released { rows.append(("Released", f.string(from: released))) }
+        if let count = detail?.versionCount ?? detail?.versions.count { rows.append(("Versions", "\(count) archived")) }
+        if let best {
+            if let minimum = best.version.minimumOSVersion, !minimum.isEmpty { rows.append(("Requires", "iPhone OS \(minimum) or later")) }
+            if let size = best.copy.size { rows.append(("Size", Transfer.format(size))) }
+        }
+        if let bundle = shown.bundleID { rows.append(("Bundle ID", bundle)) }
+        return VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("Information")
+            group {
+                ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                    if index > 0 { Classic.separator.frame(height: 1) }
+                    HStack(alignment: .top) {
+                        Text(row.0).font(Classic.font(13, bold: true)).foregroundStyle(Classic.hex(0x4C566C)).frame(width: 90, alignment: .leading)
+                        Text(row.1).font(Classic.font(13)).foregroundStyle(.black)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                }
+            }
+        }
+    }
+
+    private var reviewsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("Customer Reviews")
+            group {
+                ForEach(Array(reviews.prefix(12).enumerated()), id: \.element.id) { index, review in
+                    if index > 0 { Classic.separator.frame(height: 1) }
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(review.title.isEmpty ? "Review" : review.title).font(Classic.font(13, bold: true)).foregroundStyle(.black)
+                            Spacer()
+                            ClassicStars(rating: Double(review.stars), size: 11)
+                        }
+                        if let author = review.author {
+                            Text("by \(author)").font(Classic.font(11)).foregroundStyle(Classic.rowDetail)
+                        }
+                        Text(review.body).font(Classic.font(12)).foregroundStyle(Classic.hex(0x333333))
+                    }
+                    .padding(12)
+                }
+            }
+        }
     }
 
     private func sectionTitle(_ text: String) -> some View {
@@ -815,7 +1404,7 @@ struct AppVersionsView: View {
     }
 
     private func group<V: View>(@ViewBuilder _ inner: () -> V) -> some View {
-        VStack(spacing: 0) { inner() }
+        VStack(alignment: .leading, spacing: 0) { inner() }
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.white, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Classic.groupBorder, lineWidth: 1))
@@ -853,9 +1442,7 @@ struct AppVersionsView: View {
                 Text(facts.isEmpty ? "Archived copy" : facts.joined(separator: "  \u{00B7}  "))
                     .font(Classic.font(13))
                     .foregroundStyle(problem == nil ? Color.black : Classic.rowDetail)
-                if let problem {
-                    Text(problem).font(Classic.font(11)).foregroundStyle(Classic.warning)
-                }
+                if let problem { Text(problem).font(Classic.font(11)).foregroundStyle(Classic.warning) }
             }
             Spacer(minLength: 0)
             if resolving == copy.ipaID {
@@ -875,20 +1462,11 @@ struct AppVersionsView: View {
         .padding(.vertical, 9)
     }
 
-    private func load() {
-        loading = true
-        error = nil
-        Task {
-            do { versions = try await store.versions(for: app) } catch { self.error = error.localizedDescription }
-            loading = false
-        }
-    }
-
     private func choose(_ copy: CatalogVersion.Copy) {
         resolving = copy.ipaID
         Task {
             do {
-                let resolved = try await store.copy(ipaID: copy.ipaID, of: app)
+                let resolved = try await store.copy(ipaID: copy.ipaID)
                 resolving = nil
                 onInstall(resolved)
             } catch {
@@ -898,3 +1476,114 @@ struct AppVersionsView: View {
         }
     }
 }
+
+// MARK: - Saying how an app ran
+
+struct CompatibilityReportView: View {
+    let app: StoreApp
+    let version: String
+    let device: String
+    let onDone: (CompatibilityNote?) -> Void
+
+    @Environment(\.openURL) private var openURL
+    @State private var verdict: CompatibilityNote.Verdict = .works
+    @State private var note = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ClassicNavBar(title: "How It Runs", left: ("Cancel", { onDone(nil) }), right: ("Save", save))
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack(spacing: 12) {
+                        StoreIcon(url: app.iconURL, size: 44)
+                        VStack(alignment: .leading) {
+                            Text(app.name).font(Classic.font(15, bold: true)).foregroundStyle(.black)
+                            Text("Version \(version) on \(device)").font(Classic.font(12)).foregroundStyle(Classic.rowDetail)
+                        }
+                    }
+                    VStack(spacing: 0) {
+                        ForEach(CompatibilityNote.Verdict.allCases, id: \.self) { v in
+                            Button { verdict = v } label: {
+                                HStack {
+                                    Label(v.title, systemImage: v.symbol).font(Classic.font(15)).foregroundStyle(.black)
+                                    Spacer()
+                                    if verdict == v { Image(systemName: "checkmark").foregroundStyle(Classic.hex(0x3D6EBF)) }
+                                }
+                                .padding(12)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            if v != CompatibilityNote.Verdict.allCases.last { Classic.separator.frame(height: 1) }
+                        }
+                    }
+                    .background(Color.white, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Classic.groupBorder, lineWidth: 1))
+                    Text("What did you see?").font(Classic.font(14, bold: true)).foregroundStyle(Classic.hex(0x4C566C))
+                    TextEditor(text: $note)
+                        .frame(minHeight: 100)
+                        .scrollContentBackground(.hidden)
+                        .padding(6)
+                        .background(Color.white, in: RoundedRectangle(cornerRadius: 10))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Classic.groupBorder, lineWidth: 1))
+                    Text("Saved on this phone, shown on the app\u{2019}s page and in the store\u{2019}s lists, and included in every report you send. Legacy Store itself takes no submissions, so to share it with everyone, post it to the project on GitHub.")
+                        .font(Classic.font(11))
+                        .foregroundStyle(Classic.hex(0x4C566C))
+                    ClassicBarButton(title: "Save and post on GitHub\u{2026}") {
+                        let saved = makeNote()
+                        Compatibility.save(saved)
+                        if let url = Compatibility.issueURL(saved) { openURL(url) }
+                        onDone(saved)
+                    }
+                }
+                .padding(14)
+            }
+            .background(Classic.Pinstripes().ignoresSafeArea())
+        }
+        .environment(\.colorScheme, .light)
+        .onAppear {
+            if let existing = Compatibility.note(for: app.id) {
+                verdict = existing.verdict
+                note = existing.note
+            }
+        }
+    }
+
+    private func makeNote() -> CompatibilityNote {
+        CompatibilityNote(appKey: app.id, name: app.name, version: version, device: device, verdict: verdict,
+                          note: note.trimmingCharacters(in: .whitespacesAndNewlines), date: Date())
+    }
+
+    private func save() {
+        let saved = makeNote()
+        Compatibility.save(saved)
+        onDone(saved)
+    }
+}
+
+struct StoreIcon: View {
+    let url: URL?
+    var size: CGFloat = 44
+
+    var body: some View {
+        AsyncImage(url: url) { phase in
+            if let image = phase.image {
+                image.resizable().aspectRatio(contentMode: .fill)
+            } else {
+                LinearGradient(colors: [Classic.hex(0xE6E9ED), Classic.hex(0xC9CED6)], startPoint: .top, endPoint: .bottom)
+                    .overlay(Image(systemName: "app").foregroundStyle(Classic.hex(0x9AA3AE)))
+            }
+        }
+        .frame(width: size, height: size)
+        .overlay(alignment: .top) {
+            // The gloss: a soft white ellipse over the top half.
+            Ellipse()
+                .fill(LinearGradient(colors: [.white.opacity(0.55), .white.opacity(0.08)], startPoint: .top, endPoint: .bottom))
+                .frame(width: size * 1.5, height: size * 0.9)
+                .offset(y: -size * 0.38)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: size * 0.18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: size * 0.18, style: .continuous).stroke(.black.opacity(0.15), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.35), radius: 1.5, y: 1.5)
+    }
+}
+

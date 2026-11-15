@@ -62,8 +62,7 @@ final class AudioPlayer: @unchecked Sendable {
     func start() {
         guard !running else { return }
         running = true
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
-        try? AVAudioSession.sharedInstance().setActive(true)
+        AudioSessionSetup.apply()
 
         let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false)!
         let node = AVAudioSourceNode(format: format) { [weak self] _, _, frames, abl -> OSStatus in
@@ -80,6 +79,13 @@ final class AudioPlayer: @unchecked Sendable {
         engine.connect(node, to: timePitch, format: format)
         engine.connect(timePitch, to: engine.mainMixerNode, format: format)
         try? engine.start()
+        // Turning the microphone on changes the session's category, which stops the engine: start it again.
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+        ) { [weak self] _ in
+            guard let self, self.running, !self.engine.isRunning else { return }
+            try? self.engine.start()
+        }
 
         let thread = Thread { [weak self] in self?.pump() }
         thread.name = "ltm-audio"
@@ -90,7 +96,11 @@ final class AudioPlayer: @unchecked Sendable {
     func stop() {
         running = false
         engine.stop()
+        if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
+        configObserver = nil
     }
+
+    private var configObserver: NSObjectProtocol?
 
     // MARK: - Audio thread
 
@@ -151,6 +161,7 @@ final class AudioPlayer: @unchecked Sendable {
             packet.withUnsafeBytes { raw in
                 let samples = raw.bindMemory(to: Int16.self)
                 enqueue(samples.baseAddress!, count: Int(n) / 2)
+                ScreenRecorder.active?.appendAudio(samples.baseAddress!, count: Int(n) / 2)
             }
         }
         qemu.audioStop(generation)

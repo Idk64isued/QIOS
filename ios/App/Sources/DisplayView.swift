@@ -44,6 +44,7 @@ final class DisplayUIView: UIView {
         var w: Int32 = 0, h: Int32 = 0
         guard qemu.frame(&pixels, &w, &h, &serial), let pixels, w > 0, h > 0 else { return }
         let data = Data(bytes: pixels, count: Int(w) * Int(h) * 4)   // BGRA, copied: the buffer is recycled
+        ScreenRecorder.active?.append(bgra: data, width: Int(w), height: Int(h))
         guard let provider = CGDataProvider(data: data as CFData) else { return }
         let info = CGBitmapInfo.byteOrder32Little.union(CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue))
         guard let image = CGImage(

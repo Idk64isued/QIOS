@@ -16,5 +16,8 @@
   <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
   <key>UIBackgroundModes</key><array><string>audio</string></array>
   <key>NSPhotoLibraryAddUsageDescription</key><string>Light Touch saves screenshots of the emulated device into Photos.</string>
+  <key>NSAppleMusicUsageDescription</key><string>Light Touch copies songs you pick from your music library into the emulated device's Music app.</string>
+  <key>NSMicrophoneUsageDescription</key><string>The emulated iPhone 3GS, iPhone 4, iPod touch and iPad hear through this phone's microphone when you turn it on, for Voice Memos and apps that record.</string>
+  <key>NSPhotoLibraryUsageDescription</key><string>Light Touch copies the photos and videos you pick into the emulated device's Photos and Videos apps.</string>
   <key>NSMotionUsageDescription</key><string>Tilting this phone tilts the emulated device, so apps that use its accelerometer and compass work.</string>
 </dict></plist>

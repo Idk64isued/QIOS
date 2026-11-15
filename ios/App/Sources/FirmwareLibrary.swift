@@ -97,32 +97,31 @@ struct CatalogFirmware: Decodable, Identifiable, Hashable {
         case comingSoon
     }
 
-    /// Whether this phone can make the device itself. Preparation on the phone is file work only; firmware that needs
-    /// a preparation boot (iOS 4 data protection, the iPad's seal) still has to be prepared on a Mac. For devices in
-    /// the second case, you can still download the IPSW on the phone and prepare the device on a Mac later, then copy
-    /// the base/ folder over — the IPSW browser and the device-folder import path handle that.
+    /// Whether this phone can make the device itself. Most preparation is file work. Firmware that also needs
+    /// preparation boots (iOS 4 data protection's keybag, the A4 and S5L8920 boards' seal) runs those boots here
+    /// too, each on its own copy of the emulator library (OneShotRunner) — the Mac app runs them in a helper.
     var support: Support {
         if status == "coming_soon" { return .comingSoon }
         if source.kind != "ipsw" || source.url == nil || source.sha1 == nil {
             return .needsMac("Archived as a developer beta package; Light Touch can\u{2019}t fetch this one itself.")
         }
         switch board {
-        case "n72ap":
-            return major < 4 ? .onDevice : .needsMac("iOS 4 data protection needs a keybag boot in a helper process iOS can\u{2019}t start. Prepare it on the Mac and copy the base over.")
-        case "n45ap", "m68ap":
+        case "n72ap", "n45ap", "m68ap", "n18ap", "n88ap", "n81ap", "n90ap", "k48ap":
             return .onDevice
-        case "n18ap":
-            return .needsMac("iPod touch 3G preparation needs a keybag boot (Mac only). The emulator can boot a Mac-prepared base.")
-        case "n88ap":
-            return .needsMac("iPhone 3GS preparation needs a seal boot (Mac only). The emulator can boot a Mac-prepared base.")
-        case "n81ap":
-            return .needsMac("iPod touch 4G preparation needs a seal boot (Mac only). The emulator can boot a Mac-prepared base.")
-        case "n90ap":
-            return .needsMac("iPhone 4 preparation needs a seal boot (Mac only). The emulator can boot a Mac-prepared base \u{2014} download the IPSW here, prepare on the Mac, and bring over the base/ folder.")
-        case "k48ap":
-            return .needsMac("iPad preparation needs a seal boot (Mac only). The emulator can boot a Mac-prepared base.")
         default:
-            return .needsMac("This device needs preparation boots, which only the Mac app can run.")
+            return .needsMac("This device needs preparation boots Light Touch doesn\u{2019}t know how to run here.")
+        }
+    }
+
+    /// The preparation boots this firmware needs on the phone, in a line for the plan; nil when it needs none.
+    var preparationBoots: String? {
+        switch board {
+        case "n72ap":
+            return major < 4 ? nil : "Preparing includes a keybag boot of the device (a few minutes)."
+        case "n18ap", "n88ap", "n81ap", "n90ap", "k48ap":
+            return "Preparing includes \(major >= 4 ? "a keybag boot and " : "")a seal boot of the device: allow 10\u{2013}30 minutes, keep Light Touch open, and restart it before the first start."
+        default:
+            return nil
         }
     }
 

@@ -25,6 +25,9 @@ struct DeviceSettingsView: View {
     @AppStorage("enableUSB") private var enableUSB = false
     @AppStorage("netRestricted") private var netRestricted = false
     @AppStorage("netLAN") private var netLAN = false
+    @AppStorage("wifiNetwork") private var wifiNetwork = false
+    @AppStorage("debugPort") private var debugPort = false
+    @AppStorage("rawKeyboard") private var rawKeyboard = true
     @AppStorage("codeCacheMB") private var codeCacheMB = 512
 
     var body: some View {
@@ -79,6 +82,9 @@ struct DeviceSettingsView: View {
 
                         GlassCard("Network", symbol: "network") {
                             toggle(
+                                "Wi-Fi", "Gives the device a Wi-Fi card on this phone\u{2019}s internet connection. Plain web pages and most app servers work; sites that need modern encryption don\u{2019}t (old iOS can\u{2019}t speak it). Takes effect on the next boot.",
+                                isOn: $wifiNetwork)
+                            toggle(
                                 "Restricted", "The device reaches nothing but this app's own services.",
                                 isOn: $netRestricted,
                                 onChange: { _ in controls.setNetwork(restricted: netRestricted, lanAllowed: netLAN) })
@@ -95,6 +101,14 @@ struct DeviceSettingsView: View {
                                     "The fake modem that makes the carrier, calls and texts work. Takes effect on the next boot.",
                                     isOn: $cellularModem)
                             }
+                            toggle(
+                                "Hardware keyboard keys",
+                                "On the iPad, iPhone 4 and iPod touch 4G, a keyboard connected to this phone is the device\u{2019}s own USB keyboard (arrows, Escape and all). Elsewhere, keys are typed into the focused text field.",
+                                isOn: $rawKeyboard)
+                            toggle(
+                                "Debug port",
+                                "QEMU\u{2019}s gdbstub on port 1234, for lldb or gdb on another computer on this Wi-Fi (gdb-remote <this phone\u{2019}s IP>:1234). Anyone on the network can reach it while it\u{2019}s on. Takes effect on the next boot.",
+                                isOn: $debugPort)
                             toggle(
                                 "USB bridge",
                                 "Lets this app talk to the device the way a computer would. Experimental; takes effect on the next boot.",

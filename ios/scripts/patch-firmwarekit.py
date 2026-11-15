@@ -121,6 +121,52 @@ wrap_span(
     public static func cancel(staging: URL) async throws {}""",
     "iOS: preparation runs in this process",
 )
+# The preparation boots (keybag, seal, check) run in this process instead: the app sets InProcessOneShot.run, which
+# boots a fresh copy of the emulator library on a thread (QEMU starts once per library image) and reports the same
+# OneShot a helper would have. Without the app's runner, spawn above still says why.
+edit(
+    "Sources/FirmwareKit/Recipe/Preparer.swift",
+    "    ) throws -> (OneShot, String) {\n        var config: [String: Any] = [",
+    """    ) throws -> (OneShot, String) {
+        #if !os(macOS)
+        if let run = InProcessOneShot.run {
+            let r = try InProcessOneShot.boot(
+                run, argv: argv, machine: machine, serial: serial, stop: stop, stopPattern: stopPattern,
+                timeout: timeout, log: log, during: during)
+            let text = (try? String(contentsOf: serial, encoding: .isoLatin1)) ?? ""
+            log(String(format: "one-shot: %@ after %.0f s (exit %d)",
+                       r.marker ? "marker" : r.exited ? "halted" : "timed out", r.seconds, r.exitCode))
+            return (OneShot(exited: r.exited, exitCode: r.exitCode, marker: r.marker, seconds: r.seconds), text)
+        }
+        #endif
+        var config: [String: Any] = [""",
+    marker="if let run = InProcessOneShot.run",
+)
+# The iPod touch 2G's 4.x keybag boot talks to the gdbstub over a Unix socket. An app container's temporary folder
+# is longer than a socket address holds (104 bytes), so on iOS the socket is named relative to it.
+edit("Sources/FirmwareKit/N72/N72Keybag.swift",
+     '        let socket = DebugPort.socketPath("keybag")\n',
+     '        #if os(macOS)\n        let socket = DebugPort.socketPath("keybag")\n        #else\n'
+     '        // iOS: the container path is too long for a socket address; bind it relative to the temporary folder.\n'
+     '        FileManager.default.changeCurrentDirectoryPath(NSTemporaryDirectory())\n'
+     '        let socket = "kb-" + UUID().uuidString.prefix(8) + ".sock"\n        #endif\n',
+     marker='let socket = "kb-" + UUID()')
+# The iPod bootrom the keybag boot loads: the app keeps it in Documents/Device, which it names in LTM_FILES.
+edit("Sources/FirmwareKit/N72/N72Recipe.swift",
+     "        #else\n            let roots = [bundled]\n        #endif\n",
+     "        #else\n            #if os(macOS)\n            let roots = [bundled]\n            #else\n"
+     "            let roots = [bundled, ProcessInfo.processInfo.environment[\"LTM_FILES\"].map { URL(fileURLWithPath: $0) }]\n"
+     "            #endif\n        #endif\n",
+     marker='environment["LTM_FILES"].map { URL(fileURLWithPath: $0) }]\n            #endif')
+# Machines on iOS is the table the app set from its library; naming a helper would empty it (no helper to list from).
+edit("Sources/FirmwareKit/K48/K48Recipe.swift",
+     "        patcher = K48IBoot.patcher(helper: helper)\n        Machines.helper = helper\n",
+     "        patcher = K48IBoot.patcher(helper: helper)\n        #if os(macOS)\n        Machines.helper = helper\n        #endif\n",
+     marker="patcher(helper: helper)\n        #if os(macOS)")
+edit("Sources/FirmwareKit/N72/N72Keybag.swift",
+     "        Machines.helper = helper\n        guard let hardware = HostRuntime.Board.n72.hardware",
+     "        #if os(macOS)\n        Machines.helper = helper\n        #endif\n        guard let hardware = HostRuntime.Board.n72.hardware",
+     marker="#if os(macOS)\n        Machines.helper = helper")
 edit("Sources/FirmwareKit/N72/N72Recipe.swift", "FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(",
      "URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(", marker="URL(fileURLWithPath: NSHomeDirectory())")
 
@@ -388,6 +434,61 @@ struct HelperLaunch {
 extension HelperSandbox {
     static func isSandboxed(_ helper: URL) -> Bool { false }
     static func emulatorGrants(helper: URL) -> [SandboxExtension.Grant] { [] }
+}
+
+/// The preparation boots (keybag, seal, check) in this process: the app sets `run`, which boots `Request.argv` on a
+/// fresh copy of the emulator library, watches the serial log and returns when the guest halts, the stop marker or
+/// pattern shows, `shouldStop` turns true, or the timeout passes. Preparer.oneshot calls it in place of a helper.
+public enum InProcessOneShot {
+    public struct Request: Sendable {
+        public let argv: [String]
+        public let machine: String
+        public let serial: URL
+        public let stopMarker: String?
+        public let stopPattern: String?
+        public let timeout: Double
+        /// Polled by the runner: true asks it to quit the boot now (the `during` work failed).
+        public let shouldStop: @Sendable () -> Bool
+    }
+    public struct Result: Sendable {
+        public var exited: Bool, exitCode: Int32, marker: Bool, seconds: Double
+        public init(exited: Bool, exitCode: Int32, marker: Bool, seconds: Double) {
+            self.exited = exited
+            self.exitCode = exitCode
+            self.marker = marker
+            self.seconds = seconds
+        }
+    }
+    public typealias Runner = (Request, _ log: (String) -> Void) throws -> Result
+    nonisolated(unsafe) public static var run: Runner?
+
+    static func boot(
+        _ run: Runner, argv: [String], machine: String, serial: URL, stop: String?, stopPattern: String?,
+        timeout: Double, log: (String) -> Void, during: (@Sendable () throws -> Void)?
+    ) throws -> Result {
+        final class Failure: @unchecked Sendable {
+            let lock = NSLock()
+            var error: Error?
+            var failed: Bool { lock.withLock { error != nil } }
+        }
+        let failure = Failure()
+        let finished = DispatchSemaphore(value: 0)
+        if let during {
+            Thread.detachNewThread {
+                do { try during() } catch { failure.lock.withLock { failure.error = error } }
+                finished.signal()
+            }
+        } else {
+            finished.signal()
+        }
+        try? FileManager.default.removeItem(at: serial)
+        let request = Request(argv: argv, machine: machine, serial: serial, stopMarker: stop, stopPattern: stopPattern,
+                              timeout: timeout, shouldStop: { failure.failed })
+        let result = try run(request, log)
+        finished.wait()
+        if let error = failure.lock.withLock({ failure.error }) { throw error }
+        return result
+    }
 }
 #endif
 '''

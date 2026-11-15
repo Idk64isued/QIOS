@@ -156,6 +156,24 @@ final class GuestAgent: ObservableObject {
         }
     }
 
+    /// Put bytes into the guest filesystem (through a temporary file, so large ones go in parts too).
+    func putData(_ data: Data, guestPath: String, mode: String = "0644") async -> Bool {
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("ltm-put-\(UUID().uuidString)")
+        guard (try? data.write(to: temp)) != nil else { return false }
+        defer { try? FileManager.default.removeItem(at: temp) }
+        return await putFile(localURL: temp, guestPath: guestPath, mode: mode)
+    }
+
+    /// Any agent op by its request line ("cadebug 4 4"), with an optional body: its status (negative = -errno) and
+    /// reply body, or nil when the agent didn't answer.
+    func request(_ line: String, body: Data = Data(), timeout: TimeInterval = 10) async -> (status: Int, body: Data)? {
+        let id = UUID().uuidString
+        guard agentRequest("\(id) \(line)\n\(body.isEmpty ? "" : body.base64EncodedString())"),
+            let reply = await pollRaw(id: id, timeout: timeout)
+        else { return nil }
+        return (reply.status ?? -1, reply.body)
+    }
+
     /// Spawn a command in the guest. Returns its stdout+stderr, or nil when it could not be started.
     func spawn(argv: [String]) async -> Data? {
         guard let r = await run(argv) else { return nil }

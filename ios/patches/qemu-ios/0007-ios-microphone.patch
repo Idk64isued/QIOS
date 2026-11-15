@@ -1,0 +1,99 @@
+diff --git a/hw/arm/s5l8930_i2s.c b/hw/arm/s5l8930_i2s.c
+index 0235c765e5..0ae424f4bb 100644
+--- a/hw/arm/s5l8930_i2s.c
++++ b/hw/arm/s5l8930_i2s.c
+@@ -219,6 +219,83 @@ static void i2s_set_in_rate(S5L8930I2SState *s, unsigned rate)
+     }
+ }
+ 
++/*
++ * The iOS app's microphone: stereo S16 frames at 44.1 kHz, written by the app's audio thread
++ * (qemu_ios_mic_write) and read here, on the vCPU thread, by the port that reaches the host (audio-out).
++ * One writer, one reader: the writer owns mic_w, the reader mic_r. The reader resamples to the guest's
++ * capture rate (nearest frame) and, when the guest was not reading, skips to the newest audio so the
++ * delay stays short.
++ */
++#define MIC_FRAMES      32768u          /* ~0.74 s at 44.1 kHz; a power of two */
++#define MIC_HOST_RATE   44100.0
++#define MIC_KEEP        2048u           /* frames kept when catching up (~46 ms) */
++static int16_t mic_ring[MIC_FRAMES * 2];
++static uint32_t mic_w, mic_r;
++static bool mic_on;
++static double mic_phase;
++static int64_t mic_last_read_us;
++
++int qemu_ios_mic_write(const int16_t *frames, int count);
++void qemu_ios_mic_enable(bool on);
++bool qemu_ios_mic_listening(void);
++
++int qemu_ios_mic_write(const int16_t *frames, int count)
++{
++    uint32_t w = qatomic_read(&mic_w);
++    uint32_t r = qatomic_load_acquire(&mic_r);
++    int n = 0;
++
++    if (!frames || count <= 0) {
++        return 0;
++    }
++    for (; n < count && w - r < MIC_FRAMES; n++, w++) {
++        mic_ring[(w & (MIC_FRAMES - 1)) * 2] = frames[2 * n];
++        mic_ring[(w & (MIC_FRAMES - 1)) * 2 + 1] = frames[2 * n + 1];
++    }
++    qatomic_store_release(&mic_w, w);
++    return n;
++}
++
++void qemu_ios_mic_enable(bool on)
++{
++    qatomic_set(&mic_on, on);
++}
++
++/* The guest read the microphone within the last second (a recording app is open). */
++bool qemu_ios_mic_listening(void)
++{
++    int64_t last = qatomic_read(&mic_last_read_us);
++    return qatomic_read(&mic_on) && last && g_get_monotonic_time() - last < 1000000;
++}
++
++static void mic_next_frame(S5L8930I2SState *s)
++{
++    uint32_t w = qatomic_load_acquire(&mic_w);
++    uint32_t r = qatomic_read(&mic_r);
++    unsigned rate = s->in_rate ? s->in_rate : 44100;
++    int64_t now = g_get_monotonic_time();
++
++    if (w - r > MIC_FRAMES / 2 || now - mic_last_read_us > 250000) {
++        /* the guest was away: drop what queued meanwhile */
++        r = w - MIN(w - r, MIC_KEEP);
++        mic_phase = 0;
++    }
++    mic_last_read_us = now;
++    if (w == r) {
++        memset(s->rx_frame, 0, 4);
++        qatomic_store_release(&mic_r, r);
++        return;
++    }
++    stw_le_p(s->rx_frame, mic_ring[(r & (MIC_FRAMES - 1)) * 2]);
++    stw_le_p(s->rx_frame + 2, mic_ring[(r & (MIC_FRAMES - 1)) * 2 + 1]);
++    mic_phase += MIC_HOST_RATE / rate;
++    while (mic_phase >= 1.0 && r != w) {
++        r++;
++        mic_phase -= 1.0;
++    }
++    qatomic_store_release(&mic_r, r);
++}
++
+ /* Next captured stereo S16 frame: the tone, the host's input, or silence. */
+ static void i2s_next_frame(S5L8930I2SState *s)
+ {
+@@ -230,6 +307,10 @@ static void i2s_next_frame(S5L8930I2SState *s)
+         stw_le_p(s->rx_frame + 2, v);
+         return;
+     }
++    if (s->audio_out && qatomic_read(&mic_on)) {
++        mic_next_frame(s);
++        return;
++    }
+     if (s->in_level < 4) {
+         memset(s->rx_frame, 0, 4);
+         return;

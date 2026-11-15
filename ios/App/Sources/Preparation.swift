@@ -44,8 +44,15 @@ enum OnDevicePrep {
             // gles_shim off: the stock OpenGLES stays in place and the device composites its own screen (SystemEdits
             // then sets CA_ENABLE_OGL=0, and on 1.x LayerKit does the same). Slower, but it draws what it should.
             if softwareGraphics { entry.recipe?.options["gles_shim"] = false }
+            // The iPad's default boot chain patches iBoot with iBoot32Patcher, a Mac tool; its kboot chain (the one
+            // its iPod touch 4G and iPhone 4 siblings always use) is built in-process.
+            if entry.board == "k48ap" { entry.recipe?.boot = "kboot" }
+            // The keybag and seal boots run here, each on a fresh copy of the emulator library (OneShotRunner). The
+            // recipes ask for a helper executable; this app is the one doing the work, so it names itself.
+            OneShotRunner.install()
             let options = Preparer.Options(
-                entry: entry, ipsw: ipsw, out: out, seed: seed, helper: nil, guestTools: guestTools, cache: cache)
+                entry: entry, ipsw: ipsw, out: out, seed: seed, helper: Bundle.main.executableURL, guestTools: guestTools,
+                cache: cache)
             // .writer: volumes are read and written by FirmwareKit's own HFS+ and disk-image code. The default
             // (.kernel) mounts them with hdiutil and diskutil, which iOS does not have.
             try await VolumeMount.$backend.withValue(.writer) {
@@ -89,6 +96,27 @@ enum OnDevicePrep {
 }
 
 extension Library {
+    /// Keeps only the most recently written decrypt-cache entry (FirmwareKit's decrypted-v*/<key>/), and the
+    /// lock files beside it; everything older goes.
+    static func pruneDecrypted() {
+        let fm = FileManager.default
+        guard let versions = try? fm.contentsOfDirectory(at: decrypted, includingPropertiesForKeys: nil) else { return }
+        for version in versions where version.lastPathComponent.hasPrefix("decrypted-v") {
+            let entries = ((try? fm.contentsOfDirectory(
+                at: version, includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey])) ?? [])
+                .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+            func date(_ u: URL) -> Date {
+                (try? u.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            }
+            for old in entries.sorted(by: { date($0) > date($1) }).dropFirst() {
+                removeTree(old)
+                try? fm.removeItem(at: version.appendingPathComponent(old.lastPathComponent + ".lock"))
+            }
+        }
+        // Anything else the preparer left at the top (an older layout): not reusable.
+        for item in versions where !item.lastPathComponent.hasPrefix("decrypted-v") { removeTree(item) }
+    }
+
     /// Deletes a folder even when a preparation left it read-only (a finished base is: its NAND must not change).
     static func removeTree(_ url: URL) {
         let fm = FileManager.default
@@ -376,7 +404,10 @@ final class DeviceCreator: ObservableObject {
             Library.ensure(Library.decrypted)
             defer {
                 Library.removeTree(staging)
-                Library.removeTree(Library.decrypted)  // decrypted firmware is only needed while preparing
+                // The decrypted firmware is kept for next time (Prepare Again, a second device of the same version):
+                // decrypting is a large part of a preparation. Only the newest one is kept, and it is a cache, so
+                // iOS or Storage can clear it whenever.
+                Library.pruneDecrypted()
             }
             // The preparer's own notes (what it found, what it left out and why) go to prepare.log in Files.
             let log = Library.documents.appendingPathComponent("prepare.log")

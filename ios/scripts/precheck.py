@@ -214,6 +214,9 @@ def params_of(src, func):
         if c.type == "parameter" and i + 1 < len(kids) and kids[i + 1].type == "=":
             pos = sum(1 for k in kids[:i] if k.type == "parameter")
             out[pos][1] = True
+    # A variadic parameter (`_ keys: String...`) takes any number of arguments: no label check for this overload.
+    if any(c.type == "parameter" and text(src, c).rstrip().endswith("...") for c in func.children):
+        return None
     return [tuple(p) for p in out]
 
 
@@ -238,6 +241,8 @@ def index_body(src, idx, info, body):
                             info.members.add(pname)
                             ann = next((c for c in member.children if c.type == "type_annotation"), None)
                             ptype = simple_type(src, ann.child_by_field_name("name")) if ann is not None else None
+                            if ann is not None and text(src, ann).rstrip().endswith(("?", "!")):
+                                ptype = None    # an Optional: .map, .flatMap and ?? are the Optional's, not the type's
                             if ptype is None:
                                 value = member.child_by_field_name("value")
                                 if value is not None and value.type == "call_expression":
@@ -279,6 +284,10 @@ def index_decl(src, idx, node, parent=None):
     name = type_name_of(src, node)
     if not name:
         return
+    if parent:
+        # A nested type is only visible by its simple name inside its parent; elsewhere the simple name means
+        # something else (Reports.Context is not SwiftUI's Context). Index it qualified, so nothing outside resolves to it.
+        name = parent + "." + name
     info = idx.info(name)
     if kind != "extension":
         info.primary = True
@@ -349,9 +358,15 @@ class Report:
         self.warnings.append(f"{f}:{line}: warning: {msg}")
 
 
+def is_subscript(src, call):
+    suffix = next((c for c in call.children if c.type == "call_suffix"), None)
+    args = next((c for c in suffix.children if c.type == "value_arguments"), None) if suffix is not None else None
+    return args is not None and text(src, args).startswith("[")
+
+
 def call_labels(src, call):
     suffix = next((c for c in call.children if c.type == "call_suffix"), None)
-    if suffix is None:
+    if suffix is None or is_subscript(src, call):
         return None, False
     labels = []
     trailing = False
@@ -377,6 +392,8 @@ def call_labels(src, call):
 
 def matches(params, labels, trailing):
     """Can these call labels fill this parameter list (defaults may be skipped, a trailing closure fills the rest)?"""
+    if params is None:      # variadic
+        return True
     i = 0
     for lab in labels:
         while i < len(params) and params[i][0] != lab and params[i][1]:
@@ -506,7 +523,8 @@ def check_file(path, src, tree, idx, report):
             if not info.primary or info.open:
                 continue
             parent = node.parent
-            if parent is not None and parent.type == "call_expression" and member in info.plain_props \
+            if parent is not None and parent.type == "call_expression" and not is_subscript(src, parent) \
+                    and member in info.plain_props \
                     and member not in info.funcs and not info.open:
                 report.error(short, line_of(node), f"{resolved}.{member} is a property, not a function — "
                                                    f"it can't be called with ()")
@@ -518,7 +536,7 @@ def check_file(path, src, tree, idx, report):
                     labels, trailing = call_labels(src, parent)
                     if labels is not None and not any(matches(p, labels, trailing) for p in info.funcs[member]):
                         sigs = [
-                            "(" + ", ".join((lab or "_") + ":" for lab, _ in p) + ")" for p in info.funcs[member]
+                            "(" + ", ".join((lab or "_") + ":" for lab, _ in p) + ")" for p in info.funcs[member] if p
                         ]
                         got = "(" + ", ".join((lab or "_") + ":" for lab in labels) + ")"
                         report.error(short, line_of(node),
@@ -545,7 +563,7 @@ def check_file(path, src, tree, idx, report):
                              f"'{fname}(...)' here resolves to {owner}.{fname}, not the system call — "
                              f"rename the method")
             elif fname not in idx.globals:
-                sigs = ["(" + ", ".join((lab or "_") + ":" for lab, _ in p) + ")" for p in idx.types[owner].funcs[fname]]
+                sigs = ["(" + ", ".join((lab or "_") + ":" for lab, _ in p) + ")" for p in idx.types[owner].funcs[fname] if p]
                 got = "(" + ", ".join((lab or "_") + ":" for lab in labels) + ")"
                 report.error(short, line_of(node),
                              f"{owner}.{fname}{got} matches none of its declarations {' '.join(sigs)}")

@@ -101,6 +101,8 @@ final class Emulator: ObservableObject {
             let configured = UserDefaults.standard.integer(forKey: "codeCacheMB")
             let cacheMB = configured > 0 ? configured : 512
             argv += qemu.isJIT ? ["-accel", "tcg,tb-size=\(cacheMB),split-wx=on"] : ["-accel", "tcg,tb-size=32"]
+            // Named threads ("CPU 0/TCG"), so the profiler (ThreadSampler) can find the virtual CPU.
+            argv += ["-name", "LightTouch,debug-threads=on"]
 
             // A saved state (Save & quit) restores in seconds instead of booting again.
             let overlay = directory.appendingPathComponent("overlay", isDirectory: true)
@@ -118,6 +120,7 @@ final class Emulator: ObservableObject {
             for (key, value) in config.environment { setenv(key, value, 1) }
             // Diagnostics: the emulator's own log (stderr) goes to lighttouch.log, and IT_VCPU_ACCT=5 makes it report every
             // five seconds whether the guest CPU is running, halted (waiting for an interrupt) or doing I/O.
+            Reports.archivePreviousLog()   // the last session's log, before this one replaces it
             LTMLog.start()
             if UserDefaults.standard.object(forKey: "diag") as? Bool ?? true {
                 setenv("IT_VCPU_ACCT", "5", 1)
@@ -146,6 +149,9 @@ final class Emulator: ObservableObject {
             thread.qualityOfService = .userInteractive
             thread.start()
             LTMLog.sample { [weak self] in self != nil }
+            if UserDefaults.standard.object(forKey: "diag") as? Bool ?? true {
+                ThreadSampler.start { [weak self] in self != nil }
+            }
             watchLifecycle(qemu)
             audio = AudioPlayer(qemu: qemu)
             audio?.start()
@@ -432,8 +438,23 @@ final class Emulator: ObservableObject {
                 chmod(item.path, isFolder ? 0o755 : 0o644)
             }
         }
-        return try prepared.configuration(
-            hardware: hardware, bootArgs: "amfi_allow_any_signature=1 cs_enforcement_disable=1", usbAddress: usbAddress, wifi: false,
-            guestPackage: nil, serial: "null", audio: ["-audio", "driver=none"], netdev: nil)
+        // Wi-Fi (Settings): the machine's own Wi-Fi card on QEMU's user network (slirp, in this process), the way the
+        // Mac app's device reaches the internet, minus its web proxy. Off, the card isn't there at all.
+        let defaults = UserDefaults.standard
+        let wifi = defaults.bool(forKey: "wifiNetwork")
+        let netdev = wifi
+            ? "user,id=wifi0" + (defaults.bool(forKey: "netRestricted") ? ",restrict=on" : "")
+                + (defaults.bool(forKey: "netLAN") ? "" : ",lan=off")
+            : nil
+        var config = try prepared.configuration(
+            hardware: hardware, bootArgs: "amfi_allow_any_signature=1 cs_enforcement_disable=1", usbAddress: usbAddress, wifi: wifi,
+            guestPackage: nil, serial: "null", audio: ["-audio", "driver=none"], netdev: netdev)
+        // Debug port (Settings): QEMU's gdbstub for lldb/gdb from another machine on this network. It has no password,
+        // so it is off unless asked for, and only for that boot.
+        if defaults.bool(forKey: "debugPort") {
+            let port = defaults.integer(forKey: "debugPortNumber")
+            config.argv += ["-gdb", "tcp::\(port > 0 ? port : 1234)"]
+        }
+        return config
     }
 }
