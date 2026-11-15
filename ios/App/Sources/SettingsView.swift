@@ -15,6 +15,7 @@ struct DeviceSettingsView: View {
 
     @AppStorage("viewMode") private var viewModeRaw = ViewMode.bezel.rawValue
     @AppStorage("startupTone") private var startupTone = true
+    @AppStorage("appearance") private var appearance = "system"
     @AppStorage("passBattery") private var passBattery = true
     @AppStorage("reportCharger") private var reportCharger = true
     @AppStorage("mirrorVibration") private var mirrorVibration = true
@@ -39,6 +40,20 @@ struct DeviceSettingsView: View {
                             }
                             .pickerStyle(.segmented)
                             toggle("Startup tone", "The chime when a device starts.", isOn: $startupTone)
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Appearance")
+                                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                                    .foregroundStyle(Theme.primaryText)
+                                Picker("", selection: $appearance) {
+                                    Text("System").tag("system")
+                                    Text("Light").tag("light")
+                                    Text("Dark").tag("dark")
+                                }
+                                .pickerStyle(.segmented)
+                                Text("The device's own screen stays dark either way.")
+                                    .font(.system(size: 11, design: .rounded))
+                                    .foregroundStyle(Theme.secondaryText)
+                            }
                         }
 
                         GlassCard("This phone stands in for", symbol: "iphone.radiowaves.left.and.right") {
@@ -96,7 +111,7 @@ struct DeviceSettingsView: View {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("Translation cache: \(codeCacheMB) MB")
                                     .font(.system(size: 13, weight: .medium, design: .rounded))
-                                    .foregroundStyle(.white)
+                                    .foregroundStyle(Theme.primaryText)
                                 Text("How much translated code the emulator keeps. More is faster and uses more memory. Takes effect on the next boot.")
                                     .font(.system(size: 11, design: .rounded))
                                     .foregroundStyle(Theme.secondaryText)
@@ -153,7 +168,7 @@ struct DeviceSettingsView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.system(size: 13, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.primaryText)
                 Text(note)
                     .font(.system(size: 11, design: .rounded))
                     .foregroundStyle(Theme.secondaryText)
@@ -171,7 +186,7 @@ struct DeviceSettingsView: View {
             Spacer()
             Text(value)
                 .font(.system(size: 12, weight: .medium, design: .rounded))
-                .foregroundStyle(.white)
+                .foregroundStyle(Theme.primaryText)
         }
     }
 }

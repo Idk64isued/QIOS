@@ -1,3 +1,4 @@
+import CoreHaptics
 import CoreMotion
 import Foundation
 import SwiftUI
@@ -24,6 +25,19 @@ final class DeviceControls: ObservableObject {
     @Published private(set) var guestWantsShutdown = false
     /// Text the guest copied, waiting to go to the real pasteboard.
     @Published private(set) var guestCopied: String?
+    /// Which way up the device is, as UIDeviceOrientation numbers it: 1 portrait, 2 upside down, 3 turned
+    /// anticlockwise (Home on the right), 4 turned clockwise (Home on the left).
+    @Published private(set) var orientation = 1
+
+    /// How far the picture of the screen turns to match, in clockwise quarter turns.
+    var quarterTurns: Int {
+        switch orientation {
+        case 4: return 1
+        case 2: return 2
+        case 3: return 3
+        default: return 0
+        }
+    }
 
     // Settings the user can turn on. Plain UserDefaults rather than @AppStorage: this is not a view, and a
     // property wrapper built for views does not publish changes from here.
@@ -37,6 +51,12 @@ final class DeviceControls: ObservableObject {
 
     private var timer: Timer?
     private var vibratorPulses: UInt64 = 0
+    private var vibrating = false
+    private var haptics: CHHapticEngine?
+    private var buzz: CHHapticAdvancedPatternPlayer?
+    /// Calls this machine turned out not to have (the 1G boards have no battery or USB-attach property). Asked
+    /// once, then left alone, so the log isn't filled with the same refusal.
+    private var unsupported: Set<String> = []
     private var pasteboardSerial: UInt64 = 0
     private let motion = CMMotionManager()
     private var lastBattery: (level: Int, charging: Int)?
@@ -49,6 +69,8 @@ final class DeviceControls: ObservableObject {
         self.qemu = qemu
         guard !running else { return }
         running = true
+        orientation = 1
+        vibratorPulses = 0
 
         UIDevice.current.isBatteryMonitoringEnabled = true
         applyPowerState()
@@ -67,6 +89,7 @@ final class DeviceControls: ObservableObject {
         timer?.invalidate()
         timer = nil
         stopMotion()
+        stopBuzz()
         running = false
     }
 
@@ -87,15 +110,22 @@ final class DeviceControls: ObservableObject {
             guestWantsShutdown = confirmed
         }
 
-        // The device buzzed: buzz this phone too.
+        // The device's vibration motor. Its answer is whether the motor runs right now, and `pulses` counts every
+        // start, so a buzz shorter than this poll still shows up. Mirror both: a continuous buzz for as long as
+        // the motor runs (a ringing phone), and a sharp tap for a start that came and went between polls.
         if mirrorVibration, let vibrator = qemu.vibrator {
             var pulses: UInt64 = 0
-            if vibrator(&pulses), pulses != vibratorPulses {
-                if pulses > vibratorPulses, vibratorPulses != 0 || pulses == 1 {
-                    UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
-                }
-                vibratorPulses = pulses
+            let runningNow = vibrator(&pulses)
+            if runningNow != vibrating {
+                vibrating = runningNow
+                runningNow ? startBuzz() : stopBuzz()
+            } else if pulses > vibratorPulses, !runningNow {
+                UINotificationFeedbackGenerator().notificationOccurred(.warning)
             }
+            vibratorPulses = pulses
+        } else if vibrating {
+            vibrating = false
+            stopBuzz()
         }
 
         // Something was copied inside the device.
@@ -116,7 +146,7 @@ final class DeviceControls: ObservableObject {
 
     /// Tells the device what this phone's battery is doing, so the old status bar matches.
     private func applyBattery() {
-        guard let battery = qemu?.battery else { return }
+        guard let battery = qemu?.battery, !unsupported.contains("battery") else { return }
         let device = UIDevice.current
         let raw = device.batteryLevel
         guard raw >= 0 else { return }   // -1 while monitoring is still starting
@@ -124,21 +154,89 @@ final class DeviceControls: ObservableObject {
         let charging = device.batteryState == .charging || device.batteryState == .full ? 1 : 0
         if let last = lastBattery, last.level == level, last.charging == charging { return }
         lastBattery = (level, charging)
-        _ = battery(Int32(level), Int32(charging))
+        if !battery(Int32(level), Int32(charging)) { unsupported.insert("battery") }
     }
 
     /// A cable and a high-power port. iOS reports "external power" and stops idle-sleeping when it sees one, which
     /// is also what keeps a device awake while you are looking at it.
     func applyPowerState() {
-        _ = qemu?.usbConnection?(reportCharger)
-        _ = qemu?.usbCharger?(reportCharger)
+        if !unsupported.contains("usb"), let connect = qemu?.usbConnection, !connect(reportCharger) {
+            unsupported.insert("usb")
+        }
+        if !unsupported.contains("charger"), let charger = qemu?.usbCharger, !charger(reportCharger) {
+            unsupported.insert("charger")
+        }
+    }
+
+    // MARK: - Vibration on this phone
+
+    /// A continuous buzz that lasts until stopBuzz, the closest this phone's Taptic Engine gets to a motor.
+    private func startBuzz() {
+        guard CHHapticEngine.capabilitiesForHardware().supportsHaptics else {
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+            return
+        }
+        do {
+            if haptics == nil {
+                let engine = try CHHapticEngine()
+                engine.isAutoShutdownEnabled = true
+                engine.resetHandler = { [weak self] in
+                    Task { @MainActor in self?.buzz = nil }
+                }
+                haptics = engine
+            }
+            try haptics?.start()
+            let event = CHHapticEvent(
+                eventType: .hapticContinuous,
+                parameters: [
+                    CHHapticEventParameter(parameterID: .hapticIntensity, value: 1.0),
+                    CHHapticEventParameter(parameterID: .hapticSharpness, value: 0.35),
+                ],
+                relativeTime: 0, duration: 30)
+            let player = try haptics?.makeAdvancedPlayer(with: CHHapticPattern(events: [event], parameters: []))
+            try player?.start(atTime: CHHapticTimeImmediate)
+            buzz = player
+        } catch {
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        }
+    }
+
+    private func stopBuzz() {
+        try? buzz?.stop(atTime: CHHapticTimeImmediate)
+        buzz = nil
     }
 
     // MARK: - Gestures and orientation
 
-    /// Turns the device a quarter turn. The guest redraws at the new size and the display follows on its own.
+    /// Turns the device a quarter turn, the way you would turn the phone in your hand.
+    ///
+    /// The orientation is set outright rather than stepped: the step the emulator offers goes through a keyboard
+    /// chord whose direction depends on the board, which is why the first version turned the wrong way. Setting
+    /// the accelerometer to a named orientation, and turning the picture to match, cannot disagree with itself.
     func rotate(clockwise: Bool) {
-        qemu?.rotate?(clockwise)
+        let next: [Int: Int] = clockwise ? [1: 4, 4: 2, 2: 3, 3: 1] : [1: 3, 3: 2, 2: 4, 4: 1]
+        setOrientation(next[orientation] ?? 1)
+    }
+
+    /// Back to portrait.
+    func upright() { setOrientation(1) }
+
+    private func setOrientation(_ value: Int) {
+        if let apply = qemu?.orientation, apply(Int32(value)) {
+            orientation = value
+        } else if let step = qemu?.rotate {
+            // An older library without the outright setter: step, and hope the board agrees on direction.
+            let clockwise = ([1: 4, 4: 2, 2: 3, 3: 1][orientation] ?? 4) == value
+            step(clockwise)
+            orientation = value
+        }
+    }
+
+    /// Sleep / Wake, for the overlay a sleeping screen shows.
+    func wakeScreen() {
+        guard let qemu else { return }
+        qemu.button(1, true)
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.12) { qemu.button(1, false) }
     }
 
     /// Shake, for the undo prompt.

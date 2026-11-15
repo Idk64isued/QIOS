@@ -182,6 +182,36 @@ final class Emulator: ObservableObject {
 
     func quit() { qemu?.powerdown() }
 
+    /// Ask iOS on the device to shut itself down, and wait until it says it has.
+    ///
+    /// This is the one that matters for keeping a device usable. The storage is only consistent once iOS has
+    /// finished its own shutdown; a device whose app was closed while it was running has to repair its filesystem
+    /// on the next boot, and on hardware this slow that repair takes longer than anyone will wait — which looks
+    /// exactly like a device that will not start any more.
+    func powerOffCleanly() {
+        guard let qemu, state == .running else { return }
+        state = .saving
+        saveMessage = "Shutting the device down\u{2026}"
+        qemu.powerdown()
+        Task { [weak self] in
+            let started = Date()
+            while Date().timeIntervalSince(started) < 120 {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                if qemu.shutdownConfirmed?() == true {
+                    self?.saveMessage = "The device is off. It will start cleanly next time."
+                    self?.state = .saved
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    exit(0)
+                }
+            }
+            // An older emulator library cannot say when the guest is done. Give iOS the time it needs and go.
+            self?.saveMessage = "Closing\u{2026}"
+            self?.state = .saved
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            exit(0)
+        }
+    }
+
     /// A restored snapshot is used once: as soon as the guest is drawing again (so the file has been read), delete it,
     /// because from here the guest writes to the disk and the old RAM image would no longer match.
     private func retireSnapshot(_ snaps: Snapshots, qemu: QemuRuntime) {

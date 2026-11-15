@@ -111,7 +111,7 @@ struct DeviceStage: View {
         case .plain:
             PlainStage(qemu: qemu, keyboardBridge: keyboardBridge)
         case .immersive:
-            DisplayView(qemu: qemu, keyboardBridge: keyboardBridge)
+            GuestScreen(qemu: qemu, keyboardBridge: keyboardBridge)
                 .ignoresSafeArea()
         }
     }
@@ -124,7 +124,7 @@ struct PlainStage: View {
     let keyboardBridge: UIView?
 
     var body: some View {
-        DisplayView(qemu: qemu, keyboardBridge: keyboardBridge)
+        GuestScreen(qemu: qemu, keyboardBridge: keyboardBridge)
             .padding(.horizontal, 12)
             .overlay(
                 RoundedRectangle(cornerRadius: 4, style: .continuous)
@@ -159,7 +159,7 @@ private struct BezelView: View {
                     .allowsHitTesting(false)   // the display on top takes the taps
                     .shadow(color: .black.opacity(0.55), radius: 24, y: 10)
                 // The live screen on top of it, clipped to the cutout so it can't bleed over the chrome.
-                DisplayView(qemu: qemu, keyboardBridge: keyboardBridge)
+                GuestScreen(qemu: qemu, keyboardBridge: keyboardBridge)
                     .frame(width: cut.width * scale, height: cut.height * scale)
                     .clipped()
                     .offset(x: cut.minX * scale, y: cut.minY * scale)

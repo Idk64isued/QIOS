@@ -109,7 +109,7 @@ struct AppsBrowserView: View {
                 .frame(width: 36, height: 36)
                 .background(Theme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             VStack(alignment: .leading, spacing: 2) {
-                Text(app.name).font(.system(size: 14, weight: .semibold, design: .rounded)).foregroundStyle(.white)
+                Text(app.name).font(.system(size: 14, weight: .semibold, design: .rounded)).foregroundStyle(Theme.primaryText)
                 Text(app.bundleID.isEmpty ? app.path : app.bundleID)
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(Theme.secondaryText)
@@ -131,7 +131,7 @@ struct AppsBrowserView: View {
             }
         }
         .padding(10)
-        .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(Theme.ink.opacity(0.04), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
@@ -223,12 +223,12 @@ struct FilesBrowserView: View {
             Button { model.parent() } label: {
                 Image(systemName: "chevron.left").font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(model.path == "/" ? Theme.tertiaryText : Theme.accent)
-                    .padding(8).background(Color.white.opacity(0.08), in: Circle())
+                    .padding(8).background(Theme.ink.opacity(0.08), in: Circle())
             }
             .disabled(model.path == "/")
             Text(model.path)
                 .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.75))
+                .foregroundStyle(Theme.primaryText.opacity(0.75))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .lineLimit(1).truncationMode(.head)
         }
@@ -261,7 +261,7 @@ struct FilesBrowserView: View {
                 Image(systemName: entry.isDirectory ? "folder.fill" : "doc")
                     .foregroundStyle(entry.isDirectory ? Theme.accent : Theme.secondaryText)
                     .frame(width: 22)
-                Text(entry.name).font(.system(size: 13, design: .rounded)).foregroundStyle(.white)
+                Text(entry.name).font(.system(size: 13, design: .rounded)).foregroundStyle(Theme.primaryText)
                     .lineLimit(1).truncationMode(.middle)
                 Spacer(minLength: 4)
                 if !entry.isDirectory && entry.size > 0 {
@@ -274,7 +274,7 @@ struct FilesBrowserView: View {
                 }
             }
             .padding(.vertical, 10).padding(.horizontal, 12)
-            .background(Color.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .background(Theme.ink.opacity(0.03), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -342,14 +342,14 @@ struct HelpView: View {
         VStack(alignment: .leading, spacing: 6) {
             Label(title, systemImage: symbol)
                 .font(.system(size: 15, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white)
+                .foregroundStyle(Theme.primaryText)
             Text(body)
                 .font(.system(size: 12, design: .rounded))
                 .foregroundStyle(Theme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(14)
-        .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(Theme.ink.opacity(0.04), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 
@@ -421,7 +421,7 @@ struct CarrierEditor: View {
                 Circle().fill(Theme.accentGlow).frame(width: 80, height: 80).blur(radius: 26)
                 Image(systemName: "antenna.radiowaves.left.and.right")
                     .font(.system(size: 32, weight: .thin))
-                    .foregroundStyle(.white.opacity(0.9))
+                    .foregroundStyle(Theme.primaryText.opacity(0.9))
             }
             Text(modem.status?.summary ?? "No modem on this device")
                 .font(.system(size: 13, weight: .medium, design: .rounded))
@@ -446,7 +446,7 @@ struct CarrierEditor: View {
                         if modem.isAvailable { _ = modem.setSignal(bars: step) }
                     } label: {
                         RoundedRectangle(cornerRadius: 2, style: .continuous)
-                            .fill(step <= bars ? Color.white.opacity(0.9) : Color.white.opacity(0.16))
+                            .fill(step <= bars ? Theme.ink.opacity(0.9) : Theme.ink.opacity(0.16))
                             .frame(width: 7, height: CGFloat(6 + step * 3))
                     }
                     .buttonStyle(.plain)
@@ -458,7 +458,7 @@ struct CarrierEditor: View {
             } label: {
                 Text(busy ? "Applying\u{2026}" : "Apply")
                     .font(.system(size: 15, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.onAccent)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 11)
                     .background(Theme.accent, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
@@ -477,11 +477,11 @@ struct CarrierEditor: View {
                     UserDefaults.standard.set(callNumber, forKey: "callNumber")
                     message = modem.call(from: callNumber)
                 }
-                action("Hang up", icon: "phone.down.fill", tint: Color.white.opacity(0.12)) {
+                action("Hang up", icon: "phone.down.fill", tint: Theme.ink.opacity(0.12)) {
                     message = modem.hangUpRemotely()
                 }
             }
-            action("Answer from the other end", icon: "phone.fill", tint: Color.white.opacity(0.12)) {
+            action("Answer from the other end", icon: "phone.fill", tint: Theme.ink.opacity(0.12)) {
                 message = modem.answerRemotely()
             }
             Text("The device has to be on the network before it can ring. Answer on the device itself, or use the button above to have the caller pick up.")
@@ -520,7 +520,7 @@ struct CarrierEditor: View {
             content()
         }
         .padding(14)
-        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(Theme.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .padding(.horizontal, 18)
     }
 
@@ -534,9 +534,9 @@ struct CarrierEditor: View {
                 .keyboardType(keyboard)
                 .autocorrectionDisabled()
                 .font(.system(size: 15, design: .rounded))
-                .foregroundStyle(.white)
+                .foregroundStyle(Theme.primaryText)
                 .padding(10)
-                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .background(Theme.ink.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
     }
 
@@ -544,7 +544,7 @@ struct CarrierEditor: View {
         Button(action: run) {
             Label(title, systemImage: icon)
                 .font(.system(size: 14, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white)
+                .foregroundStyle(tint == Theme.accent ? Theme.onAccent : Theme.primaryText)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 11)
                 .background(tint, in: RoundedRectangle(cornerRadius: 11, style: .continuous))

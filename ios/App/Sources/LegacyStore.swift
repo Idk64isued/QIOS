@@ -322,14 +322,14 @@ struct LegacyStoreView: View {
             TextField("Search apps for \(target.name)", text: $store.query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 15, design: .rounded))
-                .foregroundStyle(.white)
+                .foregroundStyle(Theme.primaryText)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
                 .onSubmit { store.search() }
                 .onChange(of: store.query) { _ in store.search() }
         }
         .padding(12)
-        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(Theme.ink.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .padding(.horizontal, 16)
         .padding(.top, 8)
     }
@@ -389,7 +389,7 @@ struct LegacyStoreView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(app.name)
                             .font(.system(size: 14, weight: .medium, design: .rounded))
-                            .foregroundStyle(app.isCompatible ? .white : .white.opacity(0.45))
+                            .foregroundStyle(app.isCompatible ? Theme.primaryText : Theme.primaryText.opacity(0.45))
                             .lineLimit(1)
                         Text(app.subtitle)
                             .font(.system(size: 11, design: .rounded))
@@ -427,7 +427,7 @@ struct LegacyStoreView: View {
         }
         .padding(.vertical, 10)
         .padding(.horizontal, 12)
-        .background(Color.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(Theme.ink.opacity(0.03), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private func install(_ app: CatalogApp) {
@@ -466,7 +466,7 @@ struct StoreIcon: View {
                 image.resizable().aspectRatio(contentMode: .fill)
             } else {
                 RoundedRectangle(cornerRadius: size * 0.22, style: .continuous)
-                    .fill(Color.white.opacity(0.06))
+                    .fill(Theme.ink.opacity(0.06))
                     .overlay(Image(systemName: "app").foregroundStyle(Theme.secondaryText))
             }
         }
@@ -536,7 +536,7 @@ struct AppVersionsView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(app.name)
                     .font(.system(size: 18, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.primaryText)
                 if let developer = app.developer {
                     Text(developer).font(.system(size: 12, design: .rounded)).foregroundStyle(Theme.secondaryText)
                 }
@@ -553,7 +553,7 @@ struct AppVersionsView: View {
             HStack(spacing: 8) {
                 Text("Version \(version.version ?? "unknown")")
                     .font(.system(size: 14, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.primaryText)
                 if let minimum = version.minimumOSVersion, !minimum.isEmpty {
                     Text("iOS \(minimum)+")
                         .font(.system(size: 10, weight: .medium, design: .rounded))
@@ -567,7 +567,7 @@ struct AppVersionsView: View {
             ForEach(version.copies) { copy in copyRow(copy, of: version) }
         }
         .padding(12)
-        .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(Theme.ink.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     private func copyRow(_ copy: CatalogVersion.Copy, of version: CatalogVersion) -> some View {
@@ -579,7 +579,7 @@ struct AppVersionsView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(facts.isEmpty ? "Archived copy" : facts.joined(separator: " \u{00B7} "))
                     .font(.system(size: 12, design: .rounded))
-                    .foregroundStyle(problem == nil ? .white.opacity(0.8) : .white.opacity(0.4))
+                    .foregroundStyle(problem == nil ? Theme.primaryText.opacity(0.8) : Theme.primaryText.opacity(0.4))
                 if let problem {
                     Text(problem).font(.system(size: 11, design: .rounded)).foregroundStyle(Theme.danger.opacity(0.75))
                 }

@@ -41,18 +41,43 @@ except prepare firmware. The `build-logs` artifact has the compiler's errors.
 On a PC you can also unpack a packed device with `ios/tools/unpack_itbase.py` (a copied NAND image loses its holes
 and gets big, so unpacking on the phone is better).
 
+## Which original-iPhone firmware to use
+
+On the original iPhone, **iPhone OS 1.0 runs well** — calls, texts, the carrier and the clipboard all work there.
+**1.1.x reaches the Home screen and then locks up** (the interrupt rate climbs into the hundreds of thousands a second
+and the frame rate falls to zero), with the modem on or off. The firmware catalog lists those builds as *untested*
+upstream; until the emulator itself is fixed for them, 1.0 is the one to make.
+
+## Shutting a device down
+
+**Save & quit** or **Shut down properly** from the controls. Both leave the device able to start again.
+
+Closing the app while a device is running does not. Its storage is only consistent once iOS on the device has
+finished its own shutdown, so a device that lost power mid-write spends its next boot repairing its filesystem —
+and on hardware emulated this slowly, that repair takes longer than anyone will wait. It looks exactly like a
+device that will no longer start.
+
+If one is in that state, hold its row on the home screen and choose **Erase content**. That returns it to how it
+was prepared, without building the whole device again. (The same thing lives in Storage.)
+
 ## What the device can be told, and what it reports
 
 The emulator exposes the same set of host calls the Mac app drives, and the app now uses them:
 
-* **Rotation** (quarter turns, so landscape works), **shake**, and a **second finger** — a pinch lands on the
-  device's own screen rather than zooming this app's view of it.
+* **Rotation.** The device's framebuffer is portrait, always — a real iPhone's panel doesn't turn, you do, and iOS
+  draws its interface sideways inside it. So the app sets the device's orientation outright (UIDeviceOrientation:
+  portrait, upside down, Home right, Home left) and turns the *picture* to match, shell and all. Setting it
+  outright rather than stepping it is what makes the direction reliable. Touches still land: the display maps them
+  in its own unturned coordinates, which are the framebuffer's.
+* **Shake**, and a **second finger** — a pinch lands on the device's own screen rather than zooming this app's view
+  of it.
 * **This phone stands in for the hardware**: its battery shows in the old status bar, a charger is reported (which
   is also what stops iOS idle-sleeping), tilting this phone tilts the device and its compass follows, and when the
   device buzzes this phone buzzes.
 * **The clipboard** goes both ways.
-* **The device's own answers**: whether it has turned its screen off (so a sleeping device doesn't look like a
-  wedged one), whether its storage has stopped answering, and whether it has shut itself down.
+* **The device's own answers**: whether it has turned its screen off (the screen goes dark with a slow drift of
+  z's, and a tap wakes it — so a sleeping device doesn't look like a wedged one), whether its storage has stopped
+  answering, and whether it has shut itself down.
 * **Pause and resume**: the emulated CPU stops while the app is in the background instead of quietly draining
   this phone in a pocket.
 * **Restart and power off** properly, rather than pulling the plug.
@@ -61,7 +86,18 @@ The emulator exposes the same set of host calls the Mac app drives, and the app 
 All of it is optional at run time: an older emulator library simply lacks a call, and the app does without it.
 
 Anything you set once lives in **Settings** (the gear on the controls). The menu beside it holds only things you do
-in the moment.
+in the moment. Settings also has **Appearance** — System, Light or Dark. The device's own stage stays dark either
+way.
+
+Not used: the keyboard calls. On the iPod touch 2G the guest agent types faster than tapping the on-screen keyboard
+would, and the 1.x boards have nothing on the other end of a keyboard at all.
+
+## Sound
+
+The device's sound arrives at the pace the emulator manages, which on a slow board (the iPod touch 1G with software
+graphics) is in bursts. The player keeps a small jitter buffer — it waits until it holds ~120 ms before playing,
+waits again when it runs dry rather than stuttering, fades at both edges, and trims itself back if it falls more
+than half a second behind — so a slow device sounds gappy rather than corrupted.
 
 ## Carrier, calls and messages
 

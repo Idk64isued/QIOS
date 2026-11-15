@@ -88,7 +88,7 @@ struct AddDeviceView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Ready-made iPod touch")
                             .font(.system(size: 15, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(Theme.primaryText)
                         Text("iPhone OS 3.1.3, already set up. The same device the Mac app starts with.")
                             .font(.system(size: 12, design: .rounded))
                             .foregroundStyle(Theme.secondaryText)
@@ -118,10 +118,10 @@ struct AddDeviceView: View {
                         Button { model = item } label: {
                             Text(item.shortName)
                                 .font(.system(size: 12, weight: model == item ? .bold : .medium, design: .rounded))
-                                .foregroundStyle(model == item ? .white : Theme.secondaryText)
+                                .foregroundStyle(model == item ? Theme.primaryText : Theme.secondaryText)
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 7)
-                                .background(model == item ? Theme.accent.opacity(0.28) : Color.white.opacity(0.06), in: Capsule())
+                                .background(model == item ? Theme.accent.opacity(0.28) : Theme.ink.opacity(0.06), in: Capsule())
                         }
                         .buttonStyle(.plain)
                     }
@@ -132,7 +132,7 @@ struct AddDeviceView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(model.name)
                         .font(.system(size: 14, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Theme.primaryText)
                     Text(modelNote)
                         .font(.system(size: 11, design: .rounded))
                         .foregroundStyle(Theme.secondaryText)
@@ -142,7 +142,7 @@ struct AddDeviceView: View {
             Toggle(isOn: $showExperimental) {
                 Text("Show experimental")
                     .font(.system(size: 13, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.85))
+                    .foregroundStyle(Theme.primaryText.opacity(0.85))
             }
             .tint(Theme.accent)
 
@@ -187,7 +187,7 @@ struct AddDeviceView: View {
                     HStack(spacing: 6) {
                         Text(entry.systemName)
                             .font(.system(size: 14, weight: .semibold, design: .rounded))
-                            .foregroundStyle(usable ? .white : .white.opacity(0.75))
+                            .foregroundStyle(usable ? Theme.primaryText : Theme.primaryText.opacity(0.75))
                         Text(entry.build)
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundStyle(Theme.tertiaryText)
@@ -234,7 +234,7 @@ struct AddDeviceView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(Theme.ink.opacity(0.04), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private func startIPSWDownload(_ entry: CatalogFirmware) {
@@ -331,7 +331,7 @@ struct AddDeviceView: View {
                     VStack(spacing: 4) {
                         Text(plan.model.name)
                             .font(.system(size: 20, weight: .bold, design: .rounded))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(Theme.primaryText)
                         Text(planSubtitle(plan))
                             .font(.system(size: 13, design: .rounded))
                             .foregroundStyle(Theme.secondaryText)
@@ -339,9 +339,9 @@ struct AddDeviceView: View {
                     GlassCard("Name", symbol: "pencil") {
                         TextField("Device name", text: $name)
                             .font(.system(size: 15, design: .rounded))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(Theme.primaryText)
                             .padding(10)
-                            .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .background(Theme.ink.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                             .autocorrectionDisabled()
                     }
                     if case .firmware(let entry) = plan.kind {
@@ -350,7 +350,7 @@ struct AddDeviceView: View {
                             if entry.major >= 3 {
                                 Toggle(isOn: $skipSetup) {
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text("Skip Setup Assistant").font(.system(size: 13, weight: .medium, design: .rounded)).foregroundStyle(.white)
+                                        Text("Skip Setup Assistant").font(.system(size: 13, weight: .medium, design: .rounded)).foregroundStyle(Theme.primaryText)
                                         Text("Boot straight to the Home screen the first time.")
                                             .font(.system(size: 11, design: .rounded)).foregroundStyle(Theme.secondaryText)
                                     }
@@ -360,7 +360,7 @@ struct AddDeviceView: View {
                             Toggle(isOn: $jailbreak) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     HStack(spacing: 6) {
-                                        Text("Jailbreak").font(.system(size: 13, weight: .medium, design: .rounded)).foregroundStyle(.white)
+                                        Text("Jailbreak").font(.system(size: 13, weight: .medium, design: .rounded)).foregroundStyle(Theme.primaryText)
                                         Text("Experimental").font(.system(size: 9, weight: .bold, design: .rounded))
                                             .foregroundStyle(Theme.warning).padding(.horizontal, 6).padding(.vertical, 2)
                                             .background(Theme.warning.opacity(0.15), in: Capsule())
@@ -373,7 +373,7 @@ struct AddDeviceView: View {
                             .tint(Theme.accent)
                             Toggle(isOn: $softwareGraphics) {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text("Software graphics").font(.system(size: 13, weight: .medium, design: .rounded)).foregroundStyle(.white)
+                                    Text("Software graphics").font(.system(size: 13, weight: .medium, design: .rounded)).foregroundStyle(Theme.primaryText)
                                     Text("Leaves the GL translation out and lets the device draw its own screen. Slower, but the right choice if icons and text come out as blank white boxes \u{2014} which is what iPhone OS 1 does on some builds.")
                                         .font(.system(size: 11, design: .rounded)).foregroundStyle(Theme.secondaryText)
                                         .fixedSize(horizontal: false, vertical: true)
@@ -388,7 +388,7 @@ struct AddDeviceView: View {
                                 noticeRow(step.symbol, Theme.accent, step.text)
                             }
                         }
-                        Divider().overlay(Color.white.opacity(0.08))
+                        Divider().overlay(Theme.ink.opacity(0.08))
                         spaceRow(plan)
                     }
                     Button {
@@ -402,7 +402,7 @@ struct AddDeviceView: View {
                     } label: {
                         Text("Create Device")
                             .font(.system(size: 16, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(Theme.onAccent)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 14)
                             .background(Theme.accent, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -542,7 +542,7 @@ struct AddDeviceView: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text(stage.title)
                     .font(.system(size: 14, weight: .semibold, design: .rounded))
-                    .foregroundStyle(stage.state == .waiting ? Theme.secondaryText : .white)
+                    .foregroundStyle(stage.state == .waiting ? Theme.secondaryText : Theme.primaryText)
                 if stage.state == .running, let fraction = stage.fraction {
                     ProgressView(value: fraction).tint(Theme.accent)
                 }
@@ -563,7 +563,7 @@ struct AddDeviceView: View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 15, weight: .semibold, design: .rounded))
-                .foregroundStyle(filled ? .white : Theme.accent)
+                .foregroundStyle(filled ? Theme.primaryText : Theme.accent)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 13)
                 .background(filled ? Theme.accent : Theme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -589,7 +589,7 @@ struct AddDeviceView: View {
                 .padding(.top, 1)
             Text(text)
                 .font(.system(size: 12, design: .rounded))
-                .foregroundStyle(.white.opacity(0.8))
+                .foregroundStyle(Theme.primaryText.opacity(0.8))
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }

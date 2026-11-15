@@ -5,9 +5,21 @@ import UniformTypeIdentifiers
 @main
 struct LTMiOSApp: App {
     @StateObject private var emulator = Emulator()
+    /// "system" (the default), "light" or "dark", from Settings.
+    @AppStorage("appearance") private var appearance = "system"
+
     var body: some Scene {
         WindowGroup {
-            RootView().environmentObject(emulator).preferredColorScheme(.dark)
+            RootView().environmentObject(emulator).preferredColorScheme(scheme)
+        }
+    }
+
+    /// nil follows the phone's own setting.
+    private var scheme: ColorScheme? {
+        switch appearance {
+        case "light": return .light
+        case "dark": return .dark
+        default: return nil
         }
     }
 }
@@ -36,30 +48,50 @@ enum Library {
 // MARK: - Theme
 
 /// The visual language matches the Mac app: deep gradients, subtle glass, rounded type.
+///
+/// Every colour follows the system's light or dark setting (or the one chosen in Settings). Dark is the Mac app's
+/// navy gradient; light is the same layout washed out to near-white, with the ink inverted. The emulator's own
+/// screen stays dark either way — a running device looks wrong on a white stage.
 enum Theme {
-    // Gradient background matching the Mac app's "gradient" asset — a deep blue-indigo
-    static let gradientTop = Color(red: 0.06, green: 0.07, blue: 0.18)
-    static let gradientMid = Color(red: 0.04, green: 0.05, blue: 0.14)
-    static let gradientBot = Color(red: 0.02, green: 0.02, blue: 0.08)
+    /// A colour with a light and a dark version, resolved against whichever appearance the view is in.
+    static func adaptive(light: UIColor, dark: UIColor) -> Color {
+        Color(UIColor { $0.userInterfaceStyle == .dark ? dark : light })
+    }
 
-    // Cards: frosted glass effect
-    static let cardFill = Color.white.opacity(0.06)
-    static let cardBorder = Color.white.opacity(0.08)
-    static let cardHighlight = Color.white.opacity(0.10)
+    private static func rgb(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat, _ a: CGFloat = 1) -> UIColor {
+        UIColor(red: r, green: g, blue: b, alpha: a)
+    }
 
-    // Accent: the Mac app's signature blue
-    static let accent = Color(red: 0.36, green: 0.62, blue: 1.0)
-    static let accentGlow = Color(red: 0.36, green: 0.62, blue: 1.0).opacity(0.25)
+    // Background gradient: the Mac app's deep blue-indigo in dark, a cool near-white in light
+    static let gradientTop = adaptive(light: rgb(0.96, 0.97, 1.0), dark: rgb(0.06, 0.07, 0.18))
+    static let gradientMid = adaptive(light: rgb(0.92, 0.94, 0.99), dark: rgb(0.04, 0.05, 0.14))
+    static let gradientBot = adaptive(light: rgb(0.86, 0.89, 0.97), dark: rgb(0.02, 0.02, 0.08))
+
+    /// The colour of thin things — fills, dividers, outlines. White on dark, black on light. Always used with a
+    /// low opacity, so one value does both appearances.
+    static let ink = adaptive(light: .black, dark: .white)
+
+    // Cards: frosted glass
+    static let cardFill = adaptive(light: rgb(1, 1, 1, 0.72), dark: rgb(1, 1, 1, 0.06))
+    static let cardBorder = adaptive(light: rgb(0, 0, 0, 0.07), dark: rgb(1, 1, 1, 0.08))
+    static let cardHighlight = adaptive(light: rgb(1, 1, 1, 0.85), dark: rgb(1, 1, 1, 0.10))
+    static let shadow = adaptive(light: rgb(0.10, 0.15, 0.35, 0.10), dark: rgb(0, 0, 0, 0.30))
+
+    // Accent: the Mac app's signature blue, a shade deeper on light so it holds its contrast
+    static let accent = adaptive(light: rgb(0.16, 0.44, 0.93), dark: rgb(0.36, 0.62, 1.0))
+    static let accentGlow = adaptive(light: rgb(0.16, 0.44, 0.93, 0.18), dark: rgb(0.36, 0.62, 1.0, 0.25))
+    /// Text sitting on the accent colour: white in both appearances.
+    static let onAccent = Color.white
 
     // Text
-    static let primaryText = Color.white
-    static let secondaryText = Color.white.opacity(0.55)
-    static let tertiaryText = Color.white.opacity(0.32)
+    static let primaryText = adaptive(light: rgb(0.07, 0.08, 0.12), dark: .white)
+    static let secondaryText = adaptive(light: rgb(0.33, 0.36, 0.44), dark: rgb(1, 1, 1, 0.55))
+    static let tertiaryText = adaptive(light: rgb(0.55, 0.58, 0.66), dark: rgb(1, 1, 1, 0.32))
 
     // Semantic
-    static let success = Color(red: 0.30, green: 0.78, blue: 0.47)
-    static let warning = Color(red: 1.0, green: 0.72, blue: 0.28)
-    static let danger = Color(red: 1.0, green: 0.38, blue: 0.38)
+    static let success = adaptive(light: rgb(0.13, 0.60, 0.32), dark: rgb(0.30, 0.78, 0.47))
+    static let warning = adaptive(light: rgb(0.80, 0.47, 0.0), dark: rgb(1.0, 0.72, 0.28))
+    static let danger = adaptive(light: rgb(0.85, 0.20, 0.20), dark: rgb(1.0, 0.38, 0.38))
 }
 
 // MARK: - Background Gradient (matches Mac Light Touch gradient asset)
@@ -102,7 +134,7 @@ struct GlassCard<Content: View>: View {
         VStack(alignment: .leading, spacing: 14) {
             Label(title, systemImage: symbol)
                 .font(.system(size: 14, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white.opacity(0.75))
+                .foregroundStyle(Theme.primaryText.opacity(0.75))
                 .textCase(.uppercase)
                 .tracking(0.5)
             content
@@ -112,13 +144,12 @@ struct GlassCard<Content: View>: View {
         .background {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .fill(.ultraThinMaterial)
-                .environment(\.colorScheme, .dark)
         }
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Theme.cardBorder, lineWidth: 0.5)
         )
-        .shadow(color: .black.opacity(0.3), radius: 12, y: 6)
+        .shadow(color: Theme.shadow, radius: 12, y: 6)
     }
 }
 
@@ -250,7 +281,7 @@ struct RootView: View {
 
             Text("Light Touch")
                 .font(.system(size: 32, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+                .foregroundStyle(Theme.primaryText)
 
             Text("Old iPhone OS, on your iPhone")
                 .font(.system(size: 14, weight: .medium, design: .rounded))
@@ -303,7 +334,7 @@ struct RootView: View {
             } label: {
                 Label(devices.isEmpty ? "Add your first device" : "Add Device", systemImage: "plus")
                     .font(.system(size: 14, weight: .semibold, design: .rounded))
-                    .foregroundStyle(devices.isEmpty ? .white : Theme.accent)
+                    .foregroundStyle(devices.isEmpty ? Theme.primaryText : Theme.accent)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
                     .background(
@@ -336,7 +367,7 @@ struct RootView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("No device yet")
                     .font(.system(size: 14, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.7))
+                    .foregroundStyle(Theme.primaryText.opacity(0.7))
                 Text("Add Device downloads what it needs and sets one up on this iPhone. Nothing to copy over.")
                     .font(.system(size: 12, design: .rounded))
                     .foregroundStyle(Theme.secondaryText)
@@ -345,7 +376,7 @@ struct RootView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(Theme.ink.opacity(0.03), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private func deviceRow(_ device: DeviceFolder) -> some View {
@@ -357,7 +388,7 @@ struct RootView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(device.name)
                         .font(.system(size: 15, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Theme.primaryText)
                         .lineLimit(1)
                     Text(device.subtitle)
                         .font(.system(size: 11, design: .rounded))
@@ -378,6 +409,17 @@ struct RootView: View {
             )
         }
         .buttonStyle(.plain)
+        // A device that was not shut down cleanly spends its next boot repairing its storage, which on hardware
+        // this slow can take longer than anyone will wait. This puts it back to how it was prepared, without
+        // building the whole thing again.
+        .contextMenu {
+            Button(role: .destructive) {
+                Library.removeTree(device.url.appendingPathComponent("overlay", isDirectory: true))
+                devices = Library.devices()
+            } label: {
+                Label("Erase content", systemImage: "arrow.counterclockwise")
+            }
+        }
     }
 
     // MARK: - Library (apps and storage)
@@ -407,7 +449,7 @@ struct RootView: View {
                     .foregroundStyle(color)
                 Text(title)
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.85))
+                    .foregroundStyle(Theme.primaryText.opacity(0.85))
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 14)
@@ -426,25 +468,25 @@ struct RootView: View {
         GlassCard("Settings", symbol: "gearshape") {
             VStack(spacing: 0) {
                 settingToggle("Show the device around the screen", icon: "iphone", isOn: $bezel)
-                Divider().overlay(Color.white.opacity(0.04))
+                Divider().overlay(Theme.ink.opacity(0.04))
                 settingToggle("Rectangle textures \u{2192} 2D", icon: "rectangle.on.rectangle", isOn: $rect2d)
-                Divider().overlay(Color.white.opacity(0.04))
+                Divider().overlay(Theme.ink.opacity(0.04))
                 settingToggle("Skip GL error checks", icon: "bolt.trianglebadge.exclamationmark", isOn: $fastGL)
-                Divider().overlay(Color.white.opacity(0.04))
+                Divider().overlay(Theme.ink.opacity(0.04))
                 settingToggle("Diagnostics in log", icon: "stethoscope", isOn: $diag)
-                Divider().overlay(Color.white.opacity(0.04))
+                Divider().overlay(Theme.ink.opacity(0.04))
                 settingToggle("USB bridge (experimental)", icon: "cable.connector", isOn: $enableUSB)
             }
-            .background(Color.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(Theme.ink.opacity(0.03), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color.white.opacity(0.04), lineWidth: 0.5)
+                    .stroke(Theme.ink.opacity(0.04), lineWidth: 0.5)
             )
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Code Cache")
                     .font(.system(size: 13, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.8))
+                    .foregroundStyle(Theme.primaryText.opacity(0.8))
 
                 Picker("", selection: $codeCacheMB) {
                     Text("256 MB").tag(256)
@@ -471,7 +513,7 @@ struct RootView: View {
                 .frame(width: 22)
             Text(label)
                 .font(.system(size: 13, design: .rounded))
-                .foregroundStyle(.white.opacity(0.85))
+                .foregroundStyle(Theme.primaryText.opacity(0.85))
             Spacer()
             Toggle("", isOn: isOn)
                 .labelsHidden()
@@ -491,7 +533,7 @@ struct RootView: View {
                 } label: {
                     Label("Export", systemImage: "square.and.arrow.up")
                         .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Theme.onAccent)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
                         .background(Theme.accent, in: Capsule())
@@ -550,7 +592,7 @@ struct RootView: View {
                 .foregroundStyle(Theme.tertiaryText)
             Text("GPL-2.0 \u{00B7} github.com/Idk64isued/QIOS")
                 .font(.system(size: 10, design: .rounded))
-                .foregroundStyle(Color.white.opacity(0.18))
+                .foregroundStyle(Theme.ink.opacity(0.18))
         }
         .padding(.top, 10)
     }
@@ -574,12 +616,12 @@ struct IPAPickerView: View {
                         .blur(radius: 25)
                     Image(systemName: "doc.zipper")
                         .font(.system(size: 44, weight: .thin))
-                        .foregroundStyle(.white.opacity(0.85))
+                        .foregroundStyle(Theme.primaryText.opacity(0.85))
                 }
 
                 Text("Install an IPA")
                     .font(.system(size: 22, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.primaryText)
 
                 Text("Choose a decrypted .ipa from your files. It will be installed into the running emulated device.")
                     .font(.system(size: 14, design: .rounded))
@@ -595,7 +637,7 @@ struct IPAPickerView: View {
                         Text("Browse Files")
                     }
                     .font(.system(size: 16, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.onAccent)
                     .padding(.horizontal, 28)
                     .padding(.vertical, 14)
                     .background(Theme.accent, in: Capsule())
@@ -717,7 +759,6 @@ struct EmulatorScreen: View {
     @State private var showFiles = false
     @State private var showCarrier = false
     @State private var showHelp = false
-    @State private var showAllControls = false   // immersive mode: the overlay that brings the rest back
     @State private var installNote = ""
     @State private var toast = ""
     @StateObject private var volume = VolumeWatcher()
@@ -727,6 +768,7 @@ struct EmulatorScreen: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var keyboardBridge: KeyboardBridge?
     @State private var firstFrameSeen = false
+    @State private var bootIsSlow = false
 
     private var mode: ViewMode { ViewMode(rawValue: viewModeRaw) ?? .bezel }
 
@@ -756,6 +798,16 @@ struct EmulatorScreen: View {
 
             savingOverlay
         }
+        // The stage is always dark, whatever the rest of the app is doing: a running device on a white stage
+        // looks wrong. Applied here, inside the sheets below, so Settings and the rest still follow the system.
+        .environment(\.colorScheme, .dark)
+        .environmentObject(controls)
+        .task {
+            // No lit screen after two minutes usually means the filesystem is being repaired, not that the app
+            // is broken. Say so, with the way out.
+            try? await Task.sleep(nanoseconds: 120_000_000_000)
+            if PerfStats.frames < 30 { bootIsSlow = true }
+        }
         .onAppear {
             details = device.details
             modem.qemu = emulator.qemu
@@ -770,10 +822,12 @@ struct EmulatorScreen: View {
         // Stop the emulated CPU while this app is in the background: an old iPhone running in a pocket is just
         // this phone's battery going down for nothing.
         .onChange(of: scenePhase) { phase in
+            // Only a real trip to the background pauses it. .inactive is Control Centre, Notification Centre, a
+            // screen recording starting — pausing on those made the device stutter for nothing.
             switch phase {
             case .active: controls.wake()
-            case .background, .inactive: controls.suspend()
-            @unknown default: break
+            case .background: controls.suspend()
+            default: break
             }
         }
         .onChange(of: controls.storageFailed) { failed in
@@ -827,16 +881,22 @@ struct EmulatorScreen: View {
         VStack(spacing: 0) {
             topBar
             Spacer(minLength: 2)
-            DeviceStage(board: details.board, qemu: emulator.qemu, mode: mode, keyboardBridge: keyboardBridge) {
-                emulator.press(0)
+            // Turned with the device: rotating it turns the whole thing, shell and all, the way the Mac app turns
+            // its window.
+            QuarterTurned(turns: controls.quarterTurns) {
+                DeviceStage(board: details.board, qemu: emulator.qemu, mode: mode, keyboardBridge: keyboardBridge) {
+                    emulator.press(0)
+                }
             }
             Spacer(minLength: 2)
             // The device turned its own screen off. Worth saying, because a black screen and a wedged device look
             // identical otherwise.
-            if controls.screenAsleep {
-                Label("Screen off \u{2014} Sleep / Wake brings it back", systemImage: "moon.zzz.fill")
-                    .font(.system(size: 11, weight: .medium, design: .rounded))
-                    .foregroundStyle(Theme.secondaryText)
+            if bootIsSlow, !controls.screenAsleep {
+                Text("Still starting. A device that was closed while running repairs its storage first, which takes a long while here \u{2014} hold its row on the home screen and Erase content to put it back to how it was prepared.")
+                    .font(.system(size: 11, design: .rounded))
+                    .foregroundStyle(Theme.warning)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
                     .padding(.bottom, 6)
             }
             bottomPill
@@ -853,76 +913,67 @@ struct EmulatorScreen: View {
     }
 
     /// Immersive: the device's screen and its Home button, and nothing else — the phone as it would sit in your
-    /// hand. The screen sits a little below the top, at its own shape, and the Home button is centred in the space
-    /// underneath, sized to whatever room this phone has. Nothing ever covers the Home button: the ⋯ in the corner
-    /// opens a menu, and a tap on the bezel brings up a small bar ABOVE the button rather than over it. Taps near
-    /// the button belong to the button, so aiming for Home never opens the menu by accident.
+    /// hand. Laid out by proportion rather than pinned to the top, so it sits the same way on every phone: the screen
+    /// in the band from roughly an eighth of the way down to four-fifths, the Home button centred in what is left
+    /// below it. Everything else is behind the dot in the corner, which opens a menu and covers nothing.
     private var immersive: some View {
         GeometryReader { proxy in
+            let width = proxy.size.width
+            let height = proxy.size.height
             // The guest's screen shape, from the device art (320x480 on these phones, 4:3 on an iPad).
             let art = details.board?.facts.art
             let aspect = art.map { $0.screenCutout.height / max($0.screenCutout.width, 1) } ?? 1.5
-            let topGap: CGFloat = 14
-            let width = proxy.size.width
-            // Leave room underneath for the Home button and its breathing space, scaled to the phone rather than
-            // fixed: a small screen gives up a little screen height, a big one gives the button more room.
-            let reserved = max(96, min(proxy.size.height * 0.17, 150))
-            let screenHeight = min(width * aspect, proxy.size.height - topGap - reserved)
-            let home = max(54, min(reserved * 0.52, 76))
+            // The band the screen lives in, and the Home button below it.
+            let bandTop = height * 0.13
+            let bandBottom = height * 0.79
+            let bandHeight = bandBottom - bandTop
+            let sideways = controls.quarterTurns % 2 != 0
+            // Upright: as tall as the band allows. Turned: as wide as the phone allows.
+            let screenHeight = sideways
+                ? min(width - 32, bandHeight * aspect) / aspect
+                : min(bandHeight, (width - 32) * aspect)
+            let screenWidth = sideways ? screenHeight * aspect : screenHeight / aspect
+            let home = min(max(height * 0.095, 56), 80)
+            let homeCentre = bandBottom + (height - bandBottom) * 0.55
 
-            ZStack(alignment: .top) {
+            ZStack {
                 Color.black.ignoresSafeArea()
 
-                VStack(spacing: 0) {
-                    Spacer().frame(height: topGap)
-                    DisplayView(qemu: emulator.qemu, keyboardBridge: keyboardBridge)
-                        .frame(width: width, height: max(screenHeight, 1))
-                        .clipped()
-                    // The bezel. A tap here brings the controls up; the Home button sits on top of it and takes
-                    // any tap near itself first.
-                    ZStack {
-                        Color.black
-                            .contentShape(Rectangle())
-                            .onTapGesture { withAnimation(.spring(duration: 0.3)) { showAllControls.toggle() } }
-                        VStack(spacing: 0) {
-                            if showAllControls {
-                                bottomPill
-                                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                                Spacer(minLength: 6)
-                            }
-                            homeButton(diameter: home)
-                                // A generous ring of padding around the button: this is the area the user said
-                                // should never open the menu, and giving it to the button is how.
-                                .padding(home * 0.26)
-                                .contentShape(Circle())
-                            Spacer(minLength: 0)
+                QuarterTurned(turns: controls.quarterTurns) {
+                    GuestScreen(qemu: emulator.qemu, keyboardBridge: keyboardBridge)
+                        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                }
+                .frame(width: screenWidth, height: screenHeight)
+                .position(x: width / 2, y: bandTop + bandHeight / 2)
+
+                homeButton(diameter: home)
+                    .position(x: width / 2, y: homeCentre)
+
+                // The dot. A menu, nothing more.
+                VStack {
+                    HStack {
+                        Spacer()
+                        Menu {
+                            emulatorMenuContents
+                        } label: {
+                            Image(systemName: "ellipsis")
+                                .font(.system(size: 14, weight: .semibold))
+                                .frame(width: 32, height: 32)
+                                .background(.ultraThinMaterial, in: Circle())
+                                .foregroundStyle(.white.opacity(0.55))
                         }
-                        .padding(.top, 6)
+                        .padding(.trailing, 14)
                     }
-                }
-
-                // The corner dot. A menu, not a takeover.
-                HStack {
                     Spacer()
-                    Menu {
-                        emulatorMenuContents
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 14, weight: .semibold))
-                            .frame(width: 32, height: 32)
-                            .background(.ultraThinMaterial, in: Circle())
-                            .environment(\.colorScheme, .dark)
-                            .foregroundStyle(.white.opacity(0.5))
-                    }
-                    .padding(.trailing, 12)
                 }
 
-                // The way back and the log, only while the controls are up, and only across the very top.
-                if showAllControls {
-                    topBar
-                        .background(.ultraThinMaterial)
-                        .environment(\.colorScheme, .dark)
-                        .transition(.move(edge: .top).combined(with: .opacity))
+                if bootIsSlow, !controls.screenAsleep {
+                    Text("Still starting \u{2014} if it was closed while running, it is repairing its storage. Hold its row on the home screen and Erase content to reset it.")
+                        .font(.system(size: 11, design: .rounded))
+                        .foregroundStyle(Theme.warning)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 28)
+                        .position(x: width / 2, y: bandTop / 2)
                 }
             }
         }
@@ -995,6 +1046,9 @@ struct EmulatorScreen: View {
         Section("Device") {
             Button { controls.rotate(clockwise: false) } label: { Label("Rotate left", systemImage: "rotate.left") }
             Button { controls.rotate(clockwise: true) } label: { Label("Rotate right", systemImage: "rotate.right") }
+            if controls.quarterTurns != 0 {
+                Button { controls.upright() } label: { Label("Upright", systemImage: "iphone") }
+            }
             Button { controls.shake() } label: { Label("Shake", systemImage: "waveform") }
             Button { emulator.press(1) } label: { Label("Sleep / Wake", systemImage: "power.circle") }
         }
@@ -1032,11 +1086,10 @@ struct EmulatorScreen: View {
         }
         Section("Power") {
             Button { controls.restartDevice() } label: { Label("Restart the device", systemImage: "arrow.clockwise") }
-            Button {
-                if !controls.powerOffDevice() { emulator.press(1) }
-            } label: { Label("Power off", systemImage: "power") }
+            // Both of these leave the device able to start again. Closing the app on a running device does not:
+            // its next boot is spent repairing the filesystem.
             Button { emulator.saveAndQuit() } label: { Label("Save & quit", systemImage: "tray.and.arrow.down") }
-            Button(role: .destructive) { emulator.quit() } label: { Label("Shut down the emulator", systemImage: "xmark.circle") }
+            Button { emulator.powerOffCleanly() } label: { Label("Shut down properly", systemImage: "power") }
         }
     }
 

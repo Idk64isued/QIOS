@@ -82,7 +82,7 @@ struct StorageView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Light Touch uses \(Transfer.format(used))")
                     .font(.system(size: 16, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.primaryText)
                 Text("\(Transfer.format(free)) free on this iPhone")
                     .font(.system(size: 12, design: .rounded))
                     .foregroundStyle(Theme.secondaryText)
@@ -90,7 +90,7 @@ struct StorageView: View {
             Spacer(minLength: 0)
         }
         .padding(16)
-        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(Theme.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     private var devicesCard: some View {
@@ -198,7 +198,7 @@ struct StorageView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Caches \(Transfer.format(caches)) \u{00B7} Logs \(Transfer.format(logs))")
                         .font(.system(size: 13, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.85))
+                        .foregroundStyle(Theme.primaryText.opacity(0.85))
                     Text("Unfinished downloads, decrypted firmware, unpacked guest tools. All of it is made again when needed.")
                         .font(.system(size: 11, design: .rounded))
                         .foregroundStyle(Theme.secondaryText)
@@ -228,7 +228,7 @@ struct StorageView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.system(size: 13, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.primaryText)
                     .lineLimit(1)
                 Text(detail)
                     .font(.system(size: 11, design: .rounded))
@@ -249,14 +249,14 @@ struct StorageView: View {
             }
         }
         .padding(8)
-        .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(Theme.ink.opacity(0.04), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private func statusRow(_ title: String, present: Bool, missing: String, size: Int64? = nil) -> some View {
         HStack(spacing: 8) {
             Image(systemName: present ? "checkmark.circle.fill" : "xmark.circle.fill")
                 .foregroundStyle(present ? Theme.success : Theme.danger)
-            Text(title).font(.system(size: 13, weight: .medium, design: .rounded)).foregroundStyle(.white.opacity(0.85))
+            Text(title).font(.system(size: 13, weight: .medium, design: .rounded)).foregroundStyle(Theme.primaryText.opacity(0.85))
             Spacer()
             Text(present ? (size.map { Transfer.format($0) } ?? "Installed") : missing)
                 .font(.system(size: 11, design: .rounded))
