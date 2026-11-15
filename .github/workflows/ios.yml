@@ -197,7 +197,7 @@ jobs:
           test -f "$RUNNER_TEMP/qemu-lib/libqemu-arm.dylib" && test -f "$RUNNER_TEMP/qemu-lib/libqemu-arm-tci.dylib"
           mkdir -p "$APP/Frameworks" && cp "$RUNNER_TEMP"/qemu-lib/*.dylib "$APP/Frameworks/"
           if [ "${{ steps.angle.outputs.have }}" = yes ]; then
-            cp "$RUNNER_TEMP"/angle-ios/libEGL.dylib "$RUNNER_TEMP"/angle-ios/libGLESv2.dylib "$APP/Frameworks/"
+            bash ios/scripts/package-angle.sh "$RUNNER_TEMP/angle-ios" "$APP/Frameworks"
             mkdir -p "$APP/Licenses/ANGLE" && cp "$RUNNER_TEMP"/angle-ios/licenses/* "$APP/Licenses/ANGLE/"
           fi
           ldid -Sios/App/LightTouchiOS.entitlements "$APP/LightTouch"

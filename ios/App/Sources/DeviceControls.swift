@@ -29,14 +29,19 @@ final class DeviceControls: ObservableObject {
     /// anticlockwise (Home on the right), 4 turned clockwise (Home on the left).
     @Published private(set) var orientation = 1
 
-    /// How far the picture of the screen turns, in clockwise quarter turns: how the device's interface stands.
+    /// How far the picture inside the screen turns, in clockwise quarter turns, so the device's interface reads
+    /// upright: the device's frame never turns, only its screen (DisplayUIView.turns).
     ///
-    /// Two angles, as on the Mac and on hardware: how the device is held (`orientation`, the accelerometer, which
-    /// only the user's turns move) and how its interface stands (this), which also follows the front app. Open a
-    /// landscape-only app and the screen swings round by itself; press Home and it swings back. It follows the
-    /// guest's *changes* only, never its steady state: the Home screen is portrait-only on 3.1.3, so following the
-    /// level would undo every manual turn the instant it was made.
-    @Published private(set) var quarterTurns = 0
+    /// Two angles: how the device is held (`orientation`, the accelerometer: the menu's turns, or this phone's own
+    /// tilt with Tilt and compass on) and how its interface stands (this). Where the guest agent can say how the
+    /// front app stands (3.1.3) the picture simply follows it: a landscape game turns its picture upright, the
+    /// portrait-only Home screen stays upright however the device is held, which is what the hardware does. Where
+    /// it can't, the picture follows how the device is held.
+    @Published private(set) var quarterTurns = 0 {
+        didSet { DisplayUIView.turns = quarterTurns }
+    }
+    /// The guest agent answers orientation questions on this device.
+    private var guestReports = false
 
     static func turns(forHeld orientation: Int) -> Int {
         switch orientation {
@@ -88,8 +93,8 @@ final class DeviceControls: ObservableObject {
 
     private func guestOrientation(_ degrees: Int) {
         guard let turns = Self.turns(forGuest: degrees) else { return }
-        defer { lastGuestDegrees = degrees }
-        guard let previous = lastGuestDegrees, previous != degrees else { return }   // the first reading only seeds
+        guestReports = true
+        lastGuestDegrees = degrees
         if turns != quarterTurns { quarterTurns = turns }
     }
 
@@ -125,6 +130,7 @@ final class DeviceControls: ObservableObject {
         running = true
         orientation = 1
         quarterTurns = 0
+        guestReports = false
         vibratorPulses = 0
 
         UIDevice.current.isBatteryMonitoringEnabled = true
@@ -289,7 +295,9 @@ final class DeviceControls: ObservableObject {
         } else {
             return
         }
-        quarterTurns = Self.turns(forHeld: value)
+        // With the agent reporting, the next poll (a quarter second) turns the picture to however the front app
+        // ends up standing; without it, the picture follows the hold.
+        if !guestReports { quarterTurns = Self.turns(forHeld: value) }
     }
 
     /// Sleep / Wake, for the overlay a sleeping screen shows.

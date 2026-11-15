@@ -1,0 +1,20 @@
+diff --git a/hw/arm/gles-host-angle.c.inc b/hw/arm/gles-host-angle.c.inc
+index 257916b585..33f0e848d3 100644
+--- a/hw/arm/gles-host-angle.c.inc
++++ b/hw/arm/gles-host-angle.c.inc
+@@ -137,10 +137,14 @@ static bool gles_angle_load(void)
+     for (unsigned i = 0; i < G_N_ELEMENTS(dirs) && !(egl && gles); i++) {
+         g_autofree char *e = g_strdup_printf("%s/libEGL.dylib", dirs[i]);
+         g_autofree char *g = g_strdup_printf("%s/libGLESv2.dylib", dirs[i]);
++        /* ANGLE's iOS libEGL opens libGLESv2 as libGLESv2.framework/libGLESv2 beside itself: the same file, so the
++         * same image, has to be the one opened here (an iOS app ships it that way). */
++        g_autofree char *gf = g_strdup_printf("%s/libGLESv2.framework/libGLESv2", dirs[i]);
+         if (egl) dlclose(egl);
+         if (gles) dlclose(gles);
+         egl = dlopen(e, RTLD_NOW | RTLD_LOCAL);
+-        gles = egl ? dlopen(g, RTLD_NOW | RTLD_LOCAL) : NULL;
++        gles = egl ? dlopen(gf, RTLD_NOW | RTLD_LOCAL) : NULL;
++        if (egl && !gles) gles = dlopen(g, RTLD_NOW | RTLD_LOCAL);
+     }
+     loaded = egl && gles;
+ #define GLES_ANGLE_LOAD(name) \

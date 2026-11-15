@@ -213,7 +213,8 @@ the cause is elsewhere.
 ## Graphics renderers (Settings › Graphics)
 
 - **ANGLE** (default): CI builds Google's ANGLE for iOS (`scripts/build-angle-ios.sh`, Metal only, cached per pinned
-  commit; the first build takes most of an hour) and ships `libEGL.dylib` and `libGLESv2.dylib` beside the emulator.
+  commit) and ships `libEGL.dylib` and `libGLESv2.framework` beside the emulator (`scripts/package-angle.sh`:
+  ANGLE's iOS libEGL opens libGLESv2 at that framework path, so the emulator opens the same file, patch 0011).
   qemu-ios's ANGLE renderer (the Mac's experimental one) is built beside the EAGL one (`patches/qemu-ios/0009`) and
   chosen per boot with `-M …,gl-renderer=angle`: ES 1.1 and ES 2.0 guests both draw on Metal.
 - **iPhone GL** (test): the same adapter over the phone's own OpenGL ES, an ES 1.1 context for ES 1.1 guests and an
@@ -223,6 +224,15 @@ the cause is elsewhere.
   S5L8920 and A4 devices (shaders) are prepared with `ca_ogl` off under it, and draw in software.
 
 If ANGLE fails to build, CI says so in a warning and the build ships with Classic only.
+
+## Orientation
+
+The device's frame never turns; the picture inside its screen does (`DisplayUIView.turns`, set from
+`DeviceControls.quarterTurns`), and touches are turned back before they reach the guest. Where the guest agent
+reports how the front app stands (3.1.3), the picture follows it continuously: a landscape app reads upright, the
+portrait-only Home screen stays upright however the device is held. Elsewhere it follows how the device is held (the
+menu's Rotate, or this phone's tilt with Tilt and compass on). In immersive mode the screen's frame also goes wide
+for a sideways picture.
 
 ## Microphone
 

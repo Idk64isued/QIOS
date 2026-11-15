@@ -4,13 +4,16 @@ import SwiftUI
 ///
 /// The rule for what lives here: anything you set once and forget. Actions — Home, rotate, paste, power — stay on
 /// the controls where you need them in the moment.
+///
+/// From the device list (no device running) it shows the same settings for every device: `device` and `controls` are
+/// nil, nothing is applied live, and each setting takes effect when a device next starts.
 struct DeviceSettingsView: View {
-    let device: DeviceFolder
-    let details: DeviceFolder.Details
-    @ObservedObject var controls: DeviceControls
-    let usb: USBSession?
-    let onProbeUSB: () -> Void
-    let onShowHelp: () -> Void
+    var device: DeviceFolder?
+    var details = DeviceFolder.Details()
+    var controls: DeviceControls?
+    var usb: USBSession?
+    var onProbeUSB: () -> Void = {}
+    var onShowHelp: () -> Void = {}
     let onDismiss: () -> Void
 
     @AppStorage("viewMode") private var viewModeRaw = ViewMode.bezel.rawValue
@@ -72,14 +75,14 @@ struct DeviceSettingsView: View {
                                 isOn: $passBattery)
                             toggle(
                                 "Charger", "Report a plugged-in charger, which also stops the device idle-sleeping.",
-                                isOn: $reportCharger, onChange: { _ in controls.applyPowerState() })
+                                isOn: $reportCharger, onChange: { _ in controls?.applyPowerState() })
                             toggle(
                                 "Vibration", "When the device buzzes, this phone buzzes.",
                                 isOn: $mirrorVibration)
                             toggle(
                                 "Tilt and compass",
                                 "Tilting this phone tilts the device, and its compass follows yours.",
-                                isOn: $passMotion, onChange: { controls.setMotion($0) })
+                                isOn: $passMotion, onChange: { controls?.setMotion($0) })
                         }
 
                         GlassCard("Network", symbol: "network") {
@@ -89,21 +92,21 @@ struct DeviceSettingsView: View {
                             toggle(
                                 "Restricted", "The device reaches nothing but this app's own services.",
                                 isOn: $netRestricted,
-                                onChange: { _ in controls.setNetwork(restricted: netRestricted, lanAllowed: netLAN) })
+                                onChange: { _ in controls?.setNetwork(restricted: netRestricted, lanAllowed: netLAN) })
                             toggle(
                                 "See this network", "Let the device reach other machines on your Wi-Fi.",
                                 isOn: $netLAN,
-                                onChange: { _ in controls.setNetwork(restricted: netRestricted, lanAllowed: netLAN) })
+                                onChange: { _ in controls?.setNetwork(restricted: netRestricted, lanAllowed: netLAN) })
                         }
 
                         GlassCard("Hardware", symbol: "cpu") {
-                            if details.isPhone {
+                            if device == nil || details.isPhone {
                                 toggle(
                                     "Cellular modem",
                                     "The fake modem that makes the carrier, calls and texts work. Takes effect on the next boot.",
                                     isOn: $cellularModem)
                             }
-                            if Microphone.supported(board: details.board?.rawValue) {
+                            if device == nil || Microphone.supported(board: details.board?.rawValue) {
                                 toggle(
                                     "Microphone",
                                     "The device hears through this phone\u{2019}s microphone, which turns on only while something on the device records (Voice Memos, a voice app) and off right after.",
@@ -171,6 +174,7 @@ struct DeviceSettingsView: View {
                             }
                         }
 
+                        if let device {
                         GlassCard("About this device", symbol: "info.circle") {
                             row("Name", device.name)
                             row("System", details.version.map { ($0.hasPrefix("4") ? "iOS " : "iPhone OS ") + $0 } ?? "—")
@@ -183,6 +187,7 @@ struct DeviceSettingsView: View {
                             }
                             .buttonStyle(.plain)
                         }
+                        }
 
                         Spacer(minLength: 20)
                     }
@@ -190,7 +195,7 @@ struct DeviceSettingsView: View {
                     .padding(.top, 12)
                 }
             }
-            .navigationTitle("Settings")
+            .navigationTitle(device == nil ? "Settings for every device" : "Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {

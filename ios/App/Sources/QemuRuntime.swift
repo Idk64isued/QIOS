@@ -25,7 +25,7 @@ final class QemuRuntime: @unchecked Sendable {
     static var angleBundled: Bool {
         let dir = Bundle.main.privateFrameworksPath ?? (Bundle.main.bundlePath + "/Frameworks")
         return FileManager.default.fileExists(atPath: dir + "/libEGL.dylib")
-            && FileManager.default.fileExists(atPath: dir + "/libGLESv2.dylib")
+            && FileManager.default.fileExists(atPath: dir + "/libGLESv2.framework/libGLESv2")
     }
 
     /// Settings › Graphics: how the device's OpenGL ES reaches this phone's GPU.

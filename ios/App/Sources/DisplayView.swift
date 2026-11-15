@@ -6,7 +6,18 @@ import UIKit
 /// Also exports the newest frame as an image (for screenshots) and puts focus back on the hardware-keyboard bridge
 /// whenever the user taps the screen, so a connected keyboard keeps going.
 final class DisplayUIView: UIView {
+    /// How far the picture turns inside the screen, in clockwise quarter turns (DeviceControls.quarterTurns sets it):
+    /// the device's frame stays where it is and only its screen turns, so a landscape app reads upright, fitted into
+    /// the screen's shape. Touches are turned back before they reach the guest.
+    static var turns = 0 {
+        didSet { if oldValue != turns { NotificationCenter.default.post(name: turnsChanged, object: nil) } }
+    }
+    static let turnsChanged = Notification.Name("LightTouchScreenTurns")
+
     var qemu: QemuRuntime?
+    /// The picture, turned inside this view; the view itself never turns, so UIKit's touch coordinates stay plain.
+    private let screen = CALayer()
+    private var shownTurns = 0
     weak var keyboardBridge: UIView?
     private var link: CADisplayLink?
     private var serial: UInt64 = 0
@@ -18,8 +29,11 @@ final class DisplayUIView: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .black
-        layer.contentsGravity = .resizeAspect
-        layer.magnificationFilter = .linear
+        screen.contentsGravity = .resizeAspect
+        screen.magnificationFilter = .linear
+        layer.addSublayer(screen)
+        shownTurns = Self.turns
+        NotificationCenter.default.addObserver(self, selector: #selector(screenTurnsChanged), name: Self.turnsChanged, object: nil)
         // Two fingers, so a pinch lands on the device's own screen (Photos, Safari, Maps) instead of zooming
         // this app's view of it.
         isMultipleTouchEnabled = true
@@ -27,6 +41,30 @@ final class DisplayUIView: UIView {
 
     required init?(coder: NSCoder) { fatalError() }
 
+    @objc private func screenTurnsChanged() {
+        shownTurns = Self.turns
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.35)
+        layoutScreen()
+        CATransaction.commit()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layoutScreen()
+        CATransaction.commit()
+    }
+
+    /// The picture's layer: its long side along the view's when turned sideways, then turned into place.
+    private func layoutScreen() {
+        let sideways = shownTurns % 2 != 0
+        screen.bounds = CGRect(x: 0, y: 0, width: sideways ? bounds.height : bounds.width,
+                               height: sideways ? bounds.width : bounds.height)
+        screen.position = CGPoint(x: bounds.midX, y: bounds.midY)
+        screen.setAffineTransform(CGAffineTransform(rotationAngle: CGFloat(shownTurns) * .pi / 2))
+    }
     override func didMoveToWindow() {
         super.didMoveToWindow()
         link?.invalidate()
@@ -52,22 +90,34 @@ final class DisplayUIView: UIView {
             space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: info, provider: provider, decode: nil,
             shouldInterpolate: true, intent: .defaultIntent) else { return }
         imageSize = CGSize(width: Int(w), height: Int(h))
-        layer.contents = image
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        screen.contents = image
+        CATransaction.commit()
         latestFrame = image
         PerfStats.frames += 1
         if PerfStats.frames == 1 { LTMLog.note("first guest frame \(w)x\(h)") }
     }
 
-    /// Where the aspect-fit image sits inside the view.
+    /// Where the aspect-fit image sits inside the picture's (unturned) layer.
     private var imageRect: CGRect {
-        let scale = min(bounds.width / imageSize.width, bounds.height / imageSize.height)
+        let b = screen.bounds
+        let scale = min(b.width / imageSize.width, b.height / imageSize.height)
         let size = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
-        return CGRect(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2, width: size.width, height: size.height)
+        return CGRect(x: (b.width - size.width) / 2, y: (b.height - size.height) / 2, width: size.width, height: size.height)
+    }
+
+    /// A point in this view, in the picture's own coordinates: turned back by the screen's turns about the centre.
+    private func unturned(_ p: CGPoint) -> CGPoint {
+        let a = CGFloat(shownTurns) * .pi / 2
+        let dx = p.x - bounds.midX, dy = p.y - bounds.midY
+        let x = dx * cos(a) + dy * sin(a), y = -dx * sin(a) + dy * cos(a)
+        return CGPoint(x: x + screen.bounds.width / 2, y: y + screen.bounds.height / 2)
     }
 
     private func send(_ touch: UITouch, phase: Int32, slot: Int = 0) {
         guard let qemu else { return }
-        let r = imageRect, p = touch.location(in: self)
+        let r = imageRect, p = unturned(touch.location(in: self))
         let nx = min(max((p.x - r.minX) / r.width, 0), 1), ny = min(max((p.y - r.minY) / r.height, 0), 1)
         qemu.touch(Int32(slot), phase, nx, ny)
     }

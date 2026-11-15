@@ -194,6 +194,7 @@ struct RootView: View {
     @State private var showReport = false
     @State private var showAddDevice = false
     @State private var showStorage = false
+    @State private var showAllSettings = false
     @State private var swept = false
 
     var body: some View {
@@ -270,6 +271,9 @@ struct RootView: View {
         }
         .sheet(isPresented: $showStorage, onDismiss: { reload() }) {
             StorageView { showStorage = false }
+        }
+        .sheet(isPresented: $showAllSettings) {
+            DeviceSettingsView { showAllSettings = false }
         }
     }
 
@@ -490,6 +494,23 @@ struct RootView: View {
 
     private var settingsSection: some View {
         GlassCard("Settings", symbol: "gearshape") {
+            // The whole settings sheet, the one a running device's gear opens: graphics, network, keyboard, mic...
+            Button { showAllSettings = true } label: {
+                HStack {
+                    Label("All settings\u{2026}", systemImage: "slider.horizontal.3")
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    Spacer()
+                    Text(QemuRuntime.angleBundled ? "Graphics: \(QemuRuntime.renderer.rawValue)" : "")
+                        .font(.system(size: 11, design: .rounded))
+                        .foregroundStyle(Theme.secondaryText)
+                    Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundStyle(Theme.accent)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(Theme.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            .buttonStyle(.plain)
             VStack(spacing: 0) {
                 settingToggle("Show the device around the screen", icon: "iphone", isOn: $bezel)
                 Divider().overlay(Theme.ink.opacity(0.04))
@@ -945,12 +966,9 @@ struct EmulatorScreen: View {
         VStack(spacing: 0) {
             topBar
             Spacer(minLength: 2)
-            // Turned with the device: rotating it turns the whole thing, shell and all, the way the Mac app turns
-            // its window.
-            QuarterTurned(turns: controls.quarterTurns) {
-                DeviceStage(board: details.board, qemu: emulator.qemu, mode: mode, keyboardBridge: keyboardBridge) {
-                    emulator.press(0)
-                }
+            // The device stays upright; only the picture inside its screen turns (DisplayUIView.turns).
+            DeviceStage(board: details.board, qemu: emulator.qemu, mode: mode, keyboardBridge: keyboardBridge) {
+                emulator.press(0)
             }
             Spacer(minLength: 2)
             // The device turned its own screen off. Worth saying, because a black screen and a wedged device look
@@ -1005,11 +1023,11 @@ struct EmulatorScreen: View {
             ZStack {
                 Color.black.ignoresSafeArea()
 
-                QuarterTurned(turns: controls.quarterTurns) {
-                    GuestScreen(qemu: emulator.qemu, keyboardBridge: keyboardBridge)
-                        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
-                }
-                .frame(width: screenWidth, height: screenHeight)
+                // Sideways the frame goes wide, and the picture turns inside it (DisplayUIView.turns).
+                GuestScreen(qemu: emulator.qemu, keyboardBridge: keyboardBridge)
+                    .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                    .frame(width: screenWidth, height: screenHeight)
+                    .animation(.spring(duration: 0.45), value: controls.quarterTurns)
                 .position(x: width / 2, y: bandTop + bandHeight / 2)
 
                 homeButton(diameter: home)
@@ -1021,6 +1039,8 @@ struct EmulatorScreen: View {
                         Spacer()
                         Menu {
                             emulatorMenuContents
+                            // Immersive has no gear: Settings live in its one menu.
+                            Button { showSettings = true } label: { Label("Settings\u{2026}", systemImage: "gearshape") }
                         } label: {
                             Image(systemName: "ellipsis")
                                 .font(.system(size: 14, weight: .semibold))
@@ -1108,60 +1128,65 @@ struct EmulatorScreen: View {
     }
 
     /// What the controls offer in the moment: actions, not settings. Anything you set once lives in Settings.
+    /// The actions menu: what you reach for most at the top level (the Legacy Store, the iPhone's carrier, power),
+    /// everything else one level down, by what it's for. Settings are the gear beside it.
     @ViewBuilder private var emulatorMenuContents: some View {
-        Section("Device") {
-            Button { controls.rotate(clockwise: false) } label: { Label("Rotate left", systemImage: "rotate.left") }
-            Button { controls.rotate(clockwise: true) } label: { Label("Rotate right", systemImage: "rotate.right") }
-            if controls.quarterTurns != 0 {
-                Button { controls.upright() } label: { Label("Upright", systemImage: "iphone") }
-            }
-            Button { controls.shake() } label: { Label("Shake", systemImage: "waveform") }
-            Button { emulator.press(1) } label: { Label("Sleep / Wake", systemImage: "power.circle") }
-            if micOn {
-                Button { toggleMicrophone() } label: { Label("Stop the microphone now", systemImage: "mic.slash") }
-            }
-            if emulator.agent != nil {
-                Button { showTweaks = true } label: { Label("Tweaks\u{2026}", systemImage: "wand.and.stars") }
-            }
-        }
-        Section("Apps") {
-            Button { showStore = true } label: { Label("Legacy Store", systemImage: "bag") }
-            if emulator.agent != nil {
-                Button { showApps = true } label: { Label("Apps on the device", systemImage: "square.grid.2x2") }
-                Button { showFiles = true } label: { Label("Files on the device", systemImage: "folder") }
-                Button { showMusic = true } label: { Label("Add music\u{2026}", systemImage: "music.note") }
-                Button { showMedia = true } label: { Label("Add photos & videos\u{2026}", systemImage: "photo.on.rectangle") }
-            }
-            Button { showIPAPicker = true } label: { Label("Install an IPA\u{2026}", systemImage: "doc.zipper") }
-        }
-        Section("Clipboard") {
-            Button {
-                toast = controls.pasteIntoDevice() ? "Pasted into the device." : "Nothing on the clipboard."
-            } label: { Label("Paste into the device", systemImage: "doc.on.clipboard") }
-            if controls.guestCopied != nil {
-                Button {
-                    toast = controls.copyFromDevice() ? "Copied from the device." : "Nothing copied there yet."
-                } label: { Label("Copy from the device", systemImage: "doc.on.doc") }
-            }
-        }
-        Section("Capture") {
-            Button { openReport() } label: { Label("Send report\u{2026}", systemImage: "paperplane") }
-            Button { takeScreenshot() } label: { Label("Save screenshot", systemImage: "camera") }
-            Button { toggleRecording() } label: {
-                Label(recorder == nil ? "Record the screen" : "Stop recording",
-                      systemImage: recorder == nil ? "record.circle" : "stop.circle")
-            }
-            Button {
-                if let url = LTMLog.exportCopy() { shareItem = ShareItem(url: url) }
-            } label: { Label("Export log", systemImage: "square.and.arrow.up") }
-        }
         Section {
+            Button { showStore = true } label: { Label("Legacy Store", systemImage: "bag") }
             if details.isPhone {
                 Button { showCarrier = true } label: {
                     Label("Carrier, calls and texts\u{2026}", systemImage: "antenna.radiowaves.left.and.right")
                 }
             }
-            Button { showSettings = true } label: { Label("Settings\u{2026}", systemImage: "gearshape") }
+        }
+        Section {
+            if emulator.agent != nil {
+                Menu {
+                    Button { showMusic = true } label: { Label("Add music\u{2026}", systemImage: "music.note") }
+                    Button { showMedia = true } label: { Label("Add photos & videos\u{2026}", systemImage: "photo.on.rectangle") }
+                } label: { Label("Media", systemImage: "photo.stack") }
+            }
+            Menu {
+                if emulator.agent != nil {
+                    Button { showApps = true } label: { Label("Apps on the device", systemImage: "square.grid.2x2") }
+                    Button { showFiles = true } label: { Label("Files on the device", systemImage: "folder") }
+                }
+                Button { showIPAPicker = true } label: { Label("Install an IPA\u{2026}", systemImage: "doc.zipper") }
+            } label: { Label("Apps & files", systemImage: "square.grid.2x2") }
+            Menu {
+                Button { controls.rotate(clockwise: false) } label: { Label("Rotate left", systemImage: "rotate.left") }
+                Button { controls.rotate(clockwise: true) } label: { Label("Rotate right", systemImage: "rotate.right") }
+                if controls.orientation != 1 {
+                    Button { controls.upright() } label: { Label("Upright", systemImage: "iphone") }
+                }
+                Button { controls.shake() } label: { Label("Shake", systemImage: "waveform") }
+                Button { emulator.press(1) } label: { Label("Sleep / Wake", systemImage: "power.circle") }
+                Button {
+                    toast = controls.pasteIntoDevice() ? "Pasted into the device." : "Nothing on the clipboard."
+                } label: { Label("Paste into the device", systemImage: "doc.on.clipboard") }
+                if controls.guestCopied != nil {
+                    Button {
+                        toast = controls.copyFromDevice() ? "Copied from the device." : "Nothing copied there yet."
+                    } label: { Label("Copy from the device", systemImage: "doc.on.doc") }
+                }
+                if micOn {
+                    Button { toggleMicrophone() } label: { Label("Stop the microphone now", systemImage: "mic.slash") }
+                }
+                if emulator.agent != nil {
+                    Button { showTweaks = true } label: { Label("Tweaks\u{2026}", systemImage: "wand.and.stars") }
+                }
+            } label: { Label("Device", systemImage: "iphone") }
+            Menu {
+                Button { takeScreenshot() } label: { Label("Save screenshot", systemImage: "camera") }
+                Button { toggleRecording() } label: {
+                    Label(recorder == nil ? "Record the screen" : "Stop recording",
+                          systemImage: recorder == nil ? "record.circle" : "stop.circle")
+                }
+                Button { openReport() } label: { Label("Send report\u{2026}", systemImage: "paperplane") }
+                Button {
+                    if let url = LTMLog.exportCopy() { shareItem = ShareItem(url: url) }
+                } label: { Label("Export log", systemImage: "square.and.arrow.up") }
+            } label: { Label(recorder == nil ? "Capture" : "Capture (recording)", systemImage: "camera.viewfinder") }
         }
         Section("Power") {
             Button { controls.restartDevice() } label: { Label("Restart the device", systemImage: "arrow.clockwise") }
