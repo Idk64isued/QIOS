@@ -73,10 +73,15 @@ final class DeviceControls: ObservableObject {
 
     private var lastGuestDegrees: Int?
     private var orientationWatch: Task<Void, Never>?
+    /// The guest's agent, so the sleep overlay waits until the OS is actually up (not a dark panel mid-boot).
+    private weak var agent: GuestAgent?
+    /// Latched true the first time the guest comes up; before that a dark panel means booting, not asleep.
+    private var hasBooted = false
 
     /// Follows the front app's orientation through the guest agent (3.1.3; other builds don't answer and the
     /// screen stays where the user put it). Four times a second, nothing while asleep or installing.
     func watchGuestOrientation(agent: GuestAgent) {
+        self.agent = agent
         orientationWatch?.cancel()
         lastGuestDegrees = nil
         orientationWatch = Task { [weak self] in
@@ -148,6 +153,7 @@ final class DeviceControls: ObservableObject {
         guestReports = false
         manualTurns = nil
         pendingDegrees = nil
+        hasBooted = false
         vibratorPulses = 0
 
         UIDevice.current.isBatteryMonitoringEnabled = true
@@ -179,7 +185,12 @@ final class DeviceControls: ObservableObject {
         guard let qemu else { return }
 
         if let sleeping = qemu.displaySleeping?() {
-            if sleeping != screenAsleep { screenAsleep = sleeping }
+            // A dark panel before the OS is up is a device still booting, not one asleep — the iPhone 4's boot is
+            // long enough that the "Asleep, tap to wake" overlay was covering it the whole time. Only trust the
+            // sleep signal once the guest has come up at least once (its agent answered).
+            if agent?.status == .alive { hasBooted = true }
+            let asleep = hasBooted && sleeping
+            if asleep != screenAsleep { screenAsleep = asleep }
         }
         if let raw = qemu.backlightLevel?() {
             let level = Int(raw)   // the emulator answers in Int32
@@ -354,8 +365,9 @@ final class DeviceControls: ObservableObject {
         let frame: CMAttitudeReferenceFrame =
             CMMotionManager.availableAttitudeReferenceFrames().contains(.xMagneticNorthZVertical)
             ? .xMagneticNorthZVertical : .xArbitraryZVertical
-        var lastHeading = -1
+        var lastSentHeading = -1
         var smoothed: CMAcceleration?
+        var smoothedHeading: Double?
         var lastSent: (pitch: Double, roll: Double)?
         motion.startDeviceMotionUpdates(using: frame, to: .main) { [weak self] data, _ in
             guard let self, let data else { return }
@@ -372,10 +384,24 @@ final class DeviceControls: ObservableObject {
                     self.qemu?.attitude?(pitch, roll, 1)
                 }
             }
-            let heading = Int(data.heading.rounded())
-            if heading >= 0, heading != lastHeading {
-                lastHeading = heading
-                _ = self.qemu?.compass?(Int32(heading))
+            // The magnetometer is noisy, so the compass jumped around. Smooth the heading the short way around the
+            // circle and send it only once it has turned a couple of degrees.
+            let raw = data.heading
+            if raw >= 0 {
+                let previous = smoothedHeading ?? raw
+                var delta = (raw - previous).truncatingRemainder(dividingBy: 360)
+                if delta > 180 { delta -= 360 } else if delta < -180 { delta += 360 }
+                var next = previous + delta * 0.3
+                next = next.truncatingRemainder(dividingBy: 360)
+                if next < 0 { next += 360 }
+                smoothedHeading = next
+                let heading = Int(next.rounded()) % 360
+                var step = abs(heading - lastSentHeading)
+                if step > 180 { step = 360 - step }
+                if lastSentHeading < 0 || step >= 2 {
+                    lastSentHeading = heading
+                    _ = self.qemu?.compass?(Int32(heading))
+                }
             }
         }
     }
@@ -407,8 +433,10 @@ final class DeviceControls: ObservableObject {
         let length = (g.x * g.x + g.y * g.y + g.z * g.z).squareRoot()
         guard length > 0.1, length.isFinite else { return nil }
         let x = g.x / length, y = g.y / length, z = g.z / length
+        // The emulator's flat-pose gravity is (-sin r·cos p, sin p, -cos r·cos p), so matching it to this phone's
+        // gravity gives roll = atan2(-x, -z). (It was atan2(x, -z), which mirrored left and right.)
         let pitch = asin(max(-1, min(1, y))) * 180 / .pi
-        let roll = abs(x) < 1e-6 && abs(z) < 1e-6 ? 0 : atan2(x, -z) * 180 / .pi
+        let roll = abs(x) < 1e-6 && abs(z) < 1e-6 ? 0 : atan2(-x, -z) * 180 / .pi
         return (pitch, roll)
     }
 
