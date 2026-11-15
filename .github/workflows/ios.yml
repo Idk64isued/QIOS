@@ -33,6 +33,8 @@ jobs:
           sed -nE 's/^([^:]+):([0-9]+): error: (.*)$/::error file=\1,line=\2::\3/p' precheck.txt
       - name: The checker still catches past mistakes
         run: python3 ios/scripts/precheck-selftest.py
+      - name: Every xcodebuild option exists
+        run: python3 ios/scripts/check-workflow-flags.py
 
   build:
     needs: precheck
@@ -61,15 +63,17 @@ jobs:
         working-directory: ios/App
         run: |
           set -o pipefail
+          # Xcode's "Continue building after errors" (a preference, not an xcodebuild flag): one run reports every
+          # broken file, not just the first.
+          defaults write com.apple.dt.Xcode IDEBuildingContinueBuildingAfterErrors -bool YES
           build() {  # SPEC LOG
             rm -rf LightTouchiOS.xcodeproj
             xcodegen generate --spec "$1" || return 1
             # -skipMacroValidation: FirmwareKit's swift-binary-parsing ships a Swift macro, which Xcode otherwise
             #   gates behind a trust prompt no CI can answer ("must be enabled before it can be used").
-            # -continueBuildingAfterErrors: one run reports every broken file, not just the first.
             xcodebuild -project LightTouchiOS.xcodeproj -scheme LightTouchiOS -configuration Release \
               -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
-              -skipMacroValidation -skipPackagePluginValidation -continueBuildingAfterErrors \
+              -skipMacroValidation -skipPackagePluginValidation \
               CODE_SIGNING_ALLOWED=NO > "$2" 2>&1
           }
           errors() { grep -E "error:|fatal error" "$1" | grep -v "failed with exit code" | sort -u | head -80 || true; }
@@ -87,7 +91,8 @@ jobs:
           fi
           if [ -f "$FULL" ]; then
             # Errors only in the app's own sources fail the lite build the same way: don't spend 4 minutes proving it.
-            if ! errors "$FULL" | grep "error:" | grep -qv "ios/App/Sources/"; then
+            # Same for xcodebuild refusing its own command line.
+            if ! errors "$FULL" | grep "error:" | grep -v "^xcodebuild: error:" | grep -qv "ios/App/Sources/"; then
               report "$FULL" "The app's own code does not compile"
               exit 1
             fi

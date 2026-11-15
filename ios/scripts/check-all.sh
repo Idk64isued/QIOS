@@ -15,6 +15,7 @@ step "workflow parses"               python3 -c "import yaml; yaml.safe_load(ope
 if command -v actionlint >/dev/null; then
     step "workflow lint (actionlint)" actionlint .github/workflows/ios.yml
 fi
+step "xcodebuild options exist"      python3 ios/scripts/check-workflow-flags.py
 step "shell scripts parse"           bash -c 'for f in ios/scripts/*.sh sync-upstream.sh; do bash -n "$f" || exit 1; done'
 step "FirmwareKit patch script"      python3 -m py_compile ios/scripts/patch-firmwarekit.py
 rm -rf ios/scripts/__pycache__
