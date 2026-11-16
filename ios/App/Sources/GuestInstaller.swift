@@ -144,37 +144,25 @@ extension GuestAgent {
             try await runHelper(uid: uid, gid: gid, paths: files.map { $0.guest }, what: "set the app\u{2019}s owner")
         }
 
-        // 6. Register it.
+        // 6. Register it. iPhone OS 2 to iOS 4 take our word for it: an entry written into the cache by hand is
+        // listed and drawn. iOS 5 and 6 don't — however the entry was shaped (placeholders skipped, sequence
+        // numbers bumped, icon caches cleared), iOS 5 drew the icon blank and iOS 6 never put the app on the Home
+        // screen, full restart included. So there iOS writes the entry itself: the cache is taken away, and
+        // MobileInstallation rebuilds it from the app folders on disk as the Home screen starts (the jailbreak-era
+        // "delete the plist" fix), this app included, every entry in exactly the shape that iOS wants. Step 9
+        // checks the rebuild happened; if it didn't, the cache read in step 2 goes back (with the hand-made
+        // entry), so the device is never left without its app list.
         var needsRestart = false
-        if major >= 2, let container {
+        var verifyRebuild = false
+        if major >= 5, container != nil {
             progress(0.94, "Registering \(display)\u{2026}")
-            if var cache {
-                var user = cache["User"] as? [String: Any] ?? [:]
-                info["Path"] = appPath
-                info["Container"] = container
-                info["ApplicationType"] = "User"
-                info["EnvironmentVariables"] = ["CFFIXED_USER_HOME": container, "HOME": container, "TMPDIR": container + "/tmp"]
-                // iOS 6's cache counts its changes: a SequenceNumber on the cache and on every app, and a CacheGUID.
-                // installd bumps both on every install, and an entry that arrives without them, the cache's
-                // number unchanged, is one the rest of the system never hears about: the app was in the cache (the
-                // Apps list showed it) and on the device, and the Home screen never listed it, restart or not.
-                // Do what installd does: the next number for the cache and for this app, and a new GUID.
-                if let sequence = (cache["SequenceNumber"] as? NSNumber)?.intValue {
-                    let next = sequence + 1
-                    cache["SequenceNumber"] = next
-                    info["SequenceNumber"] = next
-                    log("Installation cache sequence \(sequence) \u{2192} \(next) (iOS 6 style)")
-                }
-                if cache["CacheGUID"] != nil { cache["CacheGUID"] = UUID().uuidString }
-                user[bundleID] = info
-                cache["User"] = user
-                let data = try PropertyListSerialization.data(fromPropertyList: cache, format: cacheFormat == .xml ? .xml : .binary, options: 0)
-                let tmp = work.appendingPathComponent("installation.plist")
-                try data.write(to: tmp)
-                guard await putFile(localURL: tmp, guestPath: Self.installationCache, mode: "0644") else {
-                    throw InstallFailure(message: "The app is on the device but could not be registered. \(lastLog)")
-                }
-                _ = await chown(uid: 501, gid: 501, path: Self.installationCache)
+            _ = await unlink(path: Self.installationCache)
+            verifyRebuild = true
+        } else if major >= 2, let container {
+            progress(0.94, "Registering \(display)\u{2026}")
+            if let cache {
+                try await registerByHand(cache: cache, format: cacheFormat, info: info, bundleID: bundleID,
+                    appPath: appPath, container: container, work: work)
             } else {
                 // No cache to add to: installd builds a new one from the folders at its next start.
                 log("No installation cache on this device; the next start rebuilds it")
@@ -204,9 +192,74 @@ extension GuestAgent {
         if major >= 2 { _ = await run(["/bin/launchctl", "stop", "com.apple.mobile.installd"], timeout: 15) }
         let respring = await run(["/bin/launchctl", "stop", "com.apple.SpringBoard"], timeout: 15)
         if respring == nil || (respring?.status ?? -1) < 0 { needsRestart = true }
+
+        // 9. iOS 5 and 6: wait for the rebuilt cache and check this app is in it. MobileInstallation writes it as
+        // the Home screen starts, so half a minute is plenty when it is coming at all.
+        if verifyRebuild {
+            progress(0.98, "Waiting for iOS to list \(display)\u{2026}")
+            var state = "missing"
+            for _ in 0..<15 {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard let data = await getFile(Self.installationCache) else { continue }
+                state = "rebuilt"
+                if let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+                    (plist["User"] as? [String: Any])?[bundleID] != nil
+                {
+                    state = "listed"
+                    break
+                }
+            }
+            switch state {
+            case "listed":
+                log("iOS rebuilt its app list with \(display) in it")
+            case "rebuilt":
+                log("iOS rebuilt its app list WITHOUT \(display): it read \(appPath) and left the app out. Send this log.")
+                needsRestart = true
+            default:
+                log("No rebuilt app list after 30 seconds; putting the old one back, \(display) added by hand")
+                if let cache, let container {
+                    try? await registerByHand(cache: cache, format: cacheFormat, info: info, bundleID: bundleID,
+                        appPath: appPath, container: container, work: work)
+                }
+                needsRestart = true
+            }
+        }
         log("Installed \(display) (\(bundleID)) at \(appPath)")
         progress(1, "Installed")
         return InstalledApp(name: display, bundleID: bundleID, path: appPath, needsRestart: needsRestart)
+    }
+
+    /// The pre-iOS-5 registration: the app's entry, built from its Info.plist, written into the installation
+    /// cache by hand (and, where the cache counts its changes, the next SequenceNumber and a fresh CacheGUID,
+    /// as installd would). Also the safety net when iOS 5/6 doesn't rebuild a taken-away cache.
+    private func registerByHand(
+        cache: [String: Any], format: PropertyListSerialization.PropertyListFormat, info: [String: Any],
+        bundleID: String, appPath: String, container: String, work: URL
+    ) async throws {
+        var cache = cache
+        var info = info
+        var user = cache["User"] as? [String: Any] ?? [:]
+        info["Path"] = appPath
+        info["Container"] = container
+        info["ApplicationType"] = "User"
+        info["EnvironmentVariables"] = ["CFFIXED_USER_HOME": container, "HOME": container, "TMPDIR": container + "/tmp"]
+        if let sequence = (cache["SequenceNumber"] as? NSNumber)?.intValue {
+            let next = sequence + 1
+            cache["SequenceNumber"] = next
+            info["SequenceNumber"] = next
+            log("Installation cache sequence \(sequence) \u{2192} \(next)")
+        }
+        if cache["CacheGUID"] != nil { cache["CacheGUID"] = UUID().uuidString }
+        user[bundleID] = info
+        cache["User"] = user
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: cache, format: format == .xml ? .xml : .binary, options: 0)
+        let tmp = work.appendingPathComponent("installation.plist")
+        try data.write(to: tmp)
+        guard await putFile(localURL: tmp, guestPath: Self.installationCache, mode: "0644") else {
+            throw InstallFailure(message: "The app is on the device but could not be registered. \(lastLog)")
+        }
+        _ = await chown(uid: 501, gid: 501, path: Self.installationCache)
     }
 
     typealias BundleFile = (local: URL, guest: String, size: Int, executable: Bool)

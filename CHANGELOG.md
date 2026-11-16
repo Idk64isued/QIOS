@@ -3,17 +3,28 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
-## Update 53 — (not yet named)
+## Update 54 — (not yet named)
 
 **Fixed**
-- iOS 6: apps installed from the store or your own IPA never showed on the Home screen (they were on the device and
-  in the Apps list, and opening one failed). iOS 6 numbers every change to its app list, and an install that didn't
-  bump the number went unnoticed. The install now does what iOS's own installer does. Apps installed before this
-  update need installing again.
-- iOS 4 and 5: installed apps showed a blank white icon. The "Waiting…" placeholder the install put up was tied to
-  the app's ID, and with no word from iOS's own installer that the download had finished, the Home screen kept its
-  blank image. iOS 4 and later get no placeholder now, and the Home screen's icon caches are cleared before it
-  restarts, as uicache does. Install an app again to get its icon back.
+- iOS 5 and 6: an installed app came up with a blank white icon (iOS 5) or never reached the Home screen at all
+  (iOS 6), even though it was on the device and in the Apps list. These versions don't accept an app-list entry
+  this app writes, however exactly it is shaped — update 53's sequence numbers, placeholders and cache clearing
+  made no difference. Now, on 5 and 6, the install deletes the app list instead and lets iOS rebuild it from the
+  apps on disk as the Home screen restarts, so iOS writes every entry itself. The install then waits and checks
+  the rebuilt list names the app (the log says how it went); if no list reappears within half a minute, the old
+  one is put back with the entry added the old way, so the device is never left without its apps. Apps already
+  installed on an iOS 5 or 6 device are picked up by the same rebuild on the next install.
+- iPhone OS 2 to iOS 4 installs are unchanged.
+
+## Update 53
+
+**Tried** (kept, but didn't cure it — see update 54)
+- iOS 6: apps never showed on the Home screen. This update bumped the app list's change counter the way iOS's
+  installer does; iOS 6 still didn't show them.
+- iOS 5: installed apps showed a blank white icon. This update skipped the "Waiting…" placeholder on iOS 4 and
+  later and cleared the Home screen's icon caches before restarting it, as uicache does; the icons stayed blank.
+
+**Fixed**
 - Sound out of step with the screen: the player used to slow itself down (86–92% speed in the logs) whenever the
   emulator fell behind, so the sound drifted behind the picture. It now stays in sync, with a moment of silence when
   the emulator can't keep up. **Smooth sound** (Settings) brings the old behavior back.

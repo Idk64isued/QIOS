@@ -183,9 +183,14 @@ leave a device unbootable.
 Apps install through the guest agent, which runs as root inside the device. A stock image has no tool to make a
 folder, so the app puts one in: `lt-mkdirs` (ios/guest-helper), a 456-byte static armv6 program, built from
 `lt-mkdirs.S` by `build.py` and embedded in `GuestHelperBinary.swift`; `test.py` runs it under an ARM emulator. On
-iPhone OS 2 and 3 the app goes into a container in /var/mobile/Applications owned by mobile and is added to
-MobileInstallation's cache; on iPhone OS 1 it goes into /Applications. SpringBoard then restarts and shows it. The
-Apps list reads the same cache, so it works without a jailbreak too.
+iPhone OS 2 and later the app goes into a container in /var/mobile/Applications owned by mobile; on iPhone OS 1 it
+goes into /Applications. Registration splits by version: iPhone OS 2 to iOS 4 get the app's entry written into
+MobileInstallation's cache by hand; iOS 5 and 6 don't accept a hand-made entry (blank icon on 5, not on the Home
+screen at all on 6), so there the cache is deleted instead and MobileInstallation rebuilds it from the folders on
+disk as SpringBoard restarts — iOS writes the entry itself, in the shape it wants. The install waits up to 30 s and
+checks the rebuilt cache lists the app; if no cache reappears, the old one goes back with the hand-made entry as a
+safety net. SpringBoard then restarts and shows the app. The Apps list reads the same cache, so it works without a
+jailbreak too.
 
 ## Closing the app
 
