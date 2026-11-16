@@ -1,5 +1,7 @@
 # Light Touch on iOS: getting a device onto the phone
 
+What changed in each update: [CHANGELOG.md](../CHANGELOG.md).
+
 Everything can be done on the phone now. Enable JIT first (StikDebug, script `universal.js`; in LiveContainer use
 Launch with JIT), open Light Touch, then tap **Add Device**.
 
@@ -252,6 +254,10 @@ can't download alongside yet.
   which the CDMA uses both ways) answered every read with 0, so capture was silence and the app never saw the guest
   listening. A read there is now the RX FIFO, fed by the phone's microphone; the log names the offset the guest's
   capture channel reads (`s5l8930-i2s: capture reads the FIFO window at +0x…`).
+- `patches/qemu-ios/0018`: the panel's frame rate changes while the device runs (`qemu_ios_ui_set_refresh_hz`, the
+  displays' `live-refresh-hz`), which AutoCool uses to drop to 30 Hz while the phone is hot. A video layer whose
+  chroma plane is all zeros (a buffer nothing has written yet) is left out instead of shown as solid green, the
+  flash iOS 4 put up as an app opened. The A4 display allocates its video buffer only while video is on.
 - The screen is drawn through Metal (`MetalPresenter`): one copy of each frame into a shared texture and a blit,
   instead of a CGImage per frame that Core Animation copied and converted again.
 - The profiler samples 10 times a second (it was 50; every sample stops the virtual CPU for a moment).

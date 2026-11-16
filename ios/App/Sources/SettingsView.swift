@@ -20,6 +20,7 @@ struct DeviceSettingsView: View {
     @AppStorage("startupTone") private var startupTone = true
     @AppStorage("sharpPixels") private var sharpPixels = true
     @AppStorage("coolMode") private var coolMode = false
+    @AppStorage("autoCool") private var autoCool = true
     @AppStorage("keepState") private var keepState = true
     @AppStorage("appearance") private var appearance = "system"
     @AppStorage("homeInterface") private var homeInterface = HomeInterface.classic.rawValue
@@ -63,6 +64,10 @@ struct DeviceSettingsView: View {
                                 "Cool mode",
                                 "Runs the device\u{2019}s screen at 30 frames a second instead of 60: about half the drawing work, so the phone stays cooler and its battery lasts longer. Games that count frames instead of time run slower. Takes effect the next time the device starts.",
                                 isOn: $coolMode)
+                            toggle(
+                                "Cool down automatically",
+                                "When this phone gets hot, the device\u{2019}s screen drops to 30 frames a second until it has cooled, then goes back to 60. Takes effect at once.",
+                                isOn: $autoCool)
                             toggle(
                                 "Survive closing the app",
                                 "Saves the device each time Light Touch goes to the background, so swiping it away doesn\u{2019}t lose what was running. Devices drawing with hardware graphics can\u{2019}t be saved yet; they get their storage flushed instead, so they always start again cleanly.",
@@ -147,7 +152,7 @@ struct DeviceSettingsView: View {
                             }
                             toggle(
                                 "Hardware keyboard keys",
-                                "On the iPad, iPhone 4 and iPod touch 4G, a keyboard connected to this phone is the device\u{2019}s own USB keyboard (arrows, Escape and all). Elsewhere, keys are typed into the focused text field.",
+                                "On the iPad, iPhone 4 and iPod touch 4G, a keyboard connected to this phone becomes the device\u{2019}s own USB keyboard from its first key (arrows, Escape and all); while it is, iOS 4 hides the on-screen keyboard. Elsewhere, keys are typed into the focused text field.",
                                 isOn: $rawKeyboard)
                             toggle(
                                 "Debug port",

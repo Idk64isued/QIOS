@@ -1,4 +1,5 @@
 import AVFoundation
+import GameController
 import MediaPlayer
 import Photos
 import SwiftUI
@@ -18,7 +19,15 @@ import UIKit
 
 /// A hidden text field that catches hardware-keyboard keys. Add it to the view hierarchy, call becomeFirstResponder,
 /// and set `onKey`/`onDelete`/`onReturn`/`onTab` to react.
+/// Whether the emulated USB keyboard is plugged in (nil: not tried yet), and the disconnect observer that unplugs it.
+final class KeyboardAttachment {
+    var attached: Bool?
+    var observer: NSObjectProtocol?
+    deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
+}
+
 final class KeyboardBridge: UITextField, UITextFieldDelegate {
+    var attachment: KeyboardAttachment?
     var onText: ((String) -> Void)?
     var onBackspace: (() -> Void)?
 
@@ -139,20 +148,30 @@ struct KeyboardBridgeView: UIViewRepresentable {
             guard let agent else { return }
             Task { @MainActor in await agent.backspace() }
         }
-        // The emulated USB keyboard is attached on the first key press, only on machines that have one.
-        var attached: Bool?
+        // The emulated USB keyboard is plugged in on the first key press, only on machines that have one, and
+        // unplugged when the phone's keyboard disconnects: while one is plugged in, iOS 4 shows no on-screen keyboard.
+        let state = KeyboardAttachment()
         field.onRawKey = { [qemu] code, down in
             guard UserDefaults.standard.object(forKey: "rawKeyboard") as? Bool ?? true,
                 let qemu, let keyMac = qemu.keyMac, let attach = qemu.hardwareKeyboard
             else { return false }
-            if attached == nil {
-                attached = attach(true)
-                LTMLog.note("keyboard: " + (attached == true ? "USB keyboard attached, keys go straight to the device" : "no USB host on this machine; typing through the agent"))
+            if state.attached == nil {
+                state.attached = attach(true)
+                LTMLog.note("keyboard: " + (state.attached == true ? "USB keyboard attached, keys go straight to the device" : "no USB host on this machine; typing through the agent"))
             }
-            guard attached == true else { return false }
+            guard state.attached == true else { return false }
             keyMac(code, down)
             return true
         }
+        state.observer = NotificationCenter.default.addObserver(
+            forName: .GCKeyboardDidDisconnect, object: nil, queue: .main
+        ) { [qemu] _ in
+            guard state.attached == true else { return }
+            _ = qemu?.hardwareKeyboard?(false)
+            state.attached = nil
+            LTMLog.note("keyboard: unplugged; the device's on-screen keyboard is back")
+        }
+        field.attachment = state
         bridgeRef(field)
         return field
     }

@@ -476,6 +476,14 @@ final class Emulator: ObservableObject {
         if QemuRuntime.renderer == .es3, let m = config.argv.firstIndex(of: "-M"), m + 1 < config.argv.count {
             config.argv[m + 1] += ",gl-renderer=es3"
         }
+        // No USB keyboard plugged in at boot. The Mac app always has one (its keyboard is the device's), but iOS 4
+        // hides the on-screen keyboard while a hardware keyboard is connected, so on this phone, where you type on
+        // the screen, every text field came up with no keyboard. KeyboardBridgeView plugs one in when a real keyboard
+        // connected to this phone sends its first key (Settings › Hardware keyboard keys), and unplugs it when that
+        // keyboard goes away.
+        if let i = config.argv.firstIndex(where: { $0.hasPrefix("usb-kbd") }), i > 0, config.argv[i - 1] == "-device" {
+            config.argv.removeSubrange((i - 1)...i)
+        }
         // Cool mode (Settings): the panel's frame interrupt at 30 Hz (both LCD models' refresh-hz), so the guest's
         // Core Animation draws, and the emulator reads back, half as many frames.
         if defaults.bool(forKey: "coolMode") {

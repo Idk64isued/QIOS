@@ -1,0 +1,202 @@
+diff --git a/contrib/macos-app/qemu-macos-extras.c b/contrib/macos-app/qemu-macos-extras.c
+index 8974523a29..0edc9b8987 100644
+--- a/contrib/macos-app/qemu-macos-extras.c
++++ b/contrib/macos-app/qemu-macos-extras.c
+@@ -606,6 +606,34 @@ bool qemu_ios_ui_hardware_keyboard(bool attached)
+     return true;
+ }
+ 
++/* --- live refresh rate ----------------------------------------------------- */
++/*
++ * The panel's frame rate while running: the iOS app drops it to 30 Hz when the phone gets hot (half the frames for
++ * the guest's Core Animation to draw and for the app to present) and back to 60 when it has cooled. Every panel
++ * with a "live-refresh-hz" (the S5L8930 display, the iPod touch LCD) takes it at its next frame.
++ */
++static int set_refresh_one(Object *obj, void *opaque)
++{
++    if (object_property_find(obj, "live-refresh-hz")) {
++        object_property_set_uint(obj, "live-refresh-hz", (uintptr_t)opaque, NULL);
++    }
++    return 0;
++}
++
++static void refresh_bh(void *opaque)
++{
++    object_child_foreach_recursive(object_get_root(), set_refresh_one, opaque);
++}
++
++bool qemu_ios_ui_set_refresh_hz(unsigned hz)
++{
++    if (!qemu_ios_ui_ready() || hz < 1 || hz > 240) {
++        return false;
++    }
++    aio_bh_schedule_oneshot(qemu_get_aio_context(), refresh_bh, (void *)(uintptr_t)hz);
++    return true;
++}
++
+ /* --- network restrict flip ----------------------------------------------- */
+ #ifdef CONFIG_SLIRP
+ #include "net/slirp.h"
+diff --git a/contrib/macos-app/qemu-macos-extras.h b/contrib/macos-app/qemu-macos-extras.h
+index e2aaa0fa70..e21e9eef16 100644
+--- a/contrib/macos-app/qemu-macos-extras.h
++++ b/contrib/macos-app/qemu-macos-extras.h
+@@ -133,6 +133,8 @@ int qemu_ios_ui_shutdown(void);
+ /* Attach or detach the emulated USB keyboard (usb-kbd on usb-bus.0); detached, iOS shows its
+  * on-screen keyboard. false where the machine has no usb-bus.0 (n18, n88, the S5L8900/S5L8720 boards). */
+ bool qemu_ios_ui_hardware_keyboard(bool attached);
++/* The panel's frame rate while running (1-240 Hz), from its next frame. */
++bool qemu_ios_ui_set_refresh_hz(unsigned hz);
+ 
+ /* Flip a running user netdev's slirp restrict flag in place (id NULL/empty =
+  * the only user stack). restrict=false opens outbound networking without a
+diff --git a/hw/arm/ipod_touch_lcd.c b/hw/arm/ipod_touch_lcd.c
+index 8653cbb02b..ff82760d71 100644
+--- a/hw/arm/ipod_touch_lcd.c
++++ b/hw/arm/ipod_touch_lcd.c
+@@ -2,6 +2,7 @@
+ #include "hw/arm/panel-gamma.h"
+ #include "hw/core/qdev-properties.h"
+ #include "qapi/error.h"
++#include "qapi/visitor.h"
+ #include "migration/vmstate.h"
+ #include "ui/pixel_ops.h"
+ #include "ui/console.h"
+@@ -716,6 +717,12 @@ static bool lcd_compose_planes(const IPodTouchLCDState *s, const uint32_t *r, ui
+             lcd_bus_read(s, ybase + row * ys, y + row * sw, sw);
+         for (unsigned row = 0; row < ch; row++)
+             lcd_bus_read(s, uvbase + row * uvs, uv + row * cw, cw);
++        /* An all-zero chroma plane is an unwritten buffer, not a picture (real video sits around 128): shown, it is
++         * a flash of solid green as an app opens. Leave the plane out until it has content (as s5l8930_display). */
++        bool chroma = false;
++        for (size_t i = 0; i < (size_t)cw * ch && !chroma; i++)
++            chroma = uv[i] != 0;
++        if (!chroma) return false;
+         g_autofree uint8_t *filtered = scaled ? g_malloc((size_t)ow * oh * 3) : NULL;
+         if (scaled) {
+             lcd_filter_plane(y, sw, sh, sw, 1, filtered, ow, oh, xr, yr, 0, 0,
+@@ -1464,8 +1471,32 @@ static const Property lcd_properties[] = {
+     DEFINE_PROP_UINT32("refresh-hz", IPodTouchLCDState, refresh_hz, 60),
+ };
+ 
++/* "live-refresh-hz": the panel's frame rate, changed while running (the app's automatic cool-down). */
++static void lcd_set_live_refresh(Object *obj, Visitor *v, const char *name, void *opaque, Error **errp)
++{
++    uint32_t hz;
++
++    if (!visit_type_uint32(v, name, &hz, errp)) {
++        return;
++    }
++    if (hz < 1 || hz > 240) {
++        error_setg(errp, "refresh-hz must be 1 to 240, not %u", hz);
++        return;
++    }
++    IPOD_TOUCH_LCD(obj)->refresh_hz = hz;
++}
++
++static void lcd_get_live_refresh(Object *obj, Visitor *v, const char *name, void *opaque, Error **errp)
++{
++    uint32_t hz = IPOD_TOUCH_LCD(obj)->refresh_hz;
++
++    visit_type_uint32(v, name, &hz, errp);
++}
++
+ static void ipod_touch_lcd_class_init(ObjectClass *klass, const void *data)
+ {
++    object_class_property_add(klass, "live-refresh-hz", "uint32", lcd_get_live_refresh, lcd_set_live_refresh,
++                              NULL, NULL);
+     DeviceClass *dc = DEVICE_CLASS(klass);
+ 
+     dc->realize = ipod_touch_lcd_realize;
+diff --git a/hw/arm/s5l8930_display.c b/hw/arm/s5l8930_display.c
+index 61a5628e46..19f642f8d0 100644
+--- a/hw/arm/s5l8930_display.c
++++ b/hw/arm/s5l8930_display.c
+@@ -13,6 +13,8 @@
+  * installed a segment table for SID 0, physical addresses otherwise.
+  */
+ #include "qemu/osdep.h"
++#include "qemu/error-report.h"
++#include "qapi/visitor.h"
+ #include "qemu/log.h"
+ #include "qemu/timer.h"
+ #include "hw/core/irq.h"
+@@ -788,6 +790,24 @@ static bool video_compose(S5L8930DisplayState *s, unsigned w, unsigned h, uint32
+             fb_read(s, r[0x3080 / 4] + y / 2 * uvs, uvp + (size_t)y / 2 * sw, sw);
+         }
+     }
++    /*
++     * A chroma plane of nothing but zeros is a buffer nobody has written yet, not a picture: real video, black
++     * included, sits around 128. Shown, it is a screen of solid green (Y 0, Cb 0, Cr 0), which 4.x put up for a
++     * frame or two as an app opened, before the plane was filled. Leave the video layer out until it has content.
++     */
++    bool chroma = false;
++    for (size_t i = 0; i < (size_t)sw * sh / 2 && !chroma; i++) {
++        chroma = uvp[i] != 0;
++    }
++    if (!chroma) {
++        static bool logged;
++        if (!logged) {
++            logged = true;
++            info_report("s5l8930-display: video layer on with an empty chroma plane (%ux%u); not shown until written",
++                        sw, sh);
++        }
++        return false;
++    }
+     memset(out, 0, (size_t)w * h * 4);
+     for (unsigned y = y0; y < MIN(y0 + dh, h); y++) {
+         unsigned sy = (unsigned)((uint64_t)(y - y0) * sh / dh);
+@@ -901,8 +921,17 @@ static void front_latch(S5L8930DisplayState *s)
+     bool on[2];
+     bool valid = layers(s, w, h, u, on, key);
+     size_t len = valid ? layers_fetch(s, u, on) : 0;
+-    g_autofree uint32_t *base = g_new(uint32_t, (size_t)w * h);
+-    bool video = valid && video_compose(s, w, h, base);
++    /*
++     * The video plane's picture, only when the video layer is on. It used to be allocated every latch: a Retina panel's
++     * 2.4 MB, which the host allocator hands out as fresh pages, so every frame paid for 600 zero-filled page faults
++     * and their release (the latch is at 60 Hz while anything moves).
++     */
++    g_autofree uint32_t *base = NULL;
++    bool video = false;
++    if (valid && (s->pipe[0].regs[DP_LAYERS / 4] & 0x400)) {
++        base = g_new(uint32_t, (size_t)w * h);
++        video = video_compose(s, w, h, base);
++    }
+ 
+     /* The front was composed from these very layers and bytes. */
+     if (valid && !video && valid == s->front_valid && !memcmp(key, s->front_key, sizeof(key)) &&
+@@ -1247,8 +1276,33 @@ static const Property s5l8930_display_properties[] = {
+     DEFINE_PROP_UINT32("refresh-hz", S5L8930DisplayState, refresh_hz, 60),
+ };
+ 
++/* "live-refresh-hz": the VBL's rate, changed while running (the app's automatic cool-down); the next VBL uses it. */
++static void display_set_live_refresh(Object *obj, Visitor *v, const char *name, void *opaque, Error **errp)
++{
++    S5L8930DisplayState *s = S5L8930_DISPLAY(obj);
++    uint32_t hz;
++
++    if (!visit_type_uint32(v, name, &hz, errp)) {
++        return;
++    }
++    if (hz < 1 || hz > 240) {
++        error_setg(errp, "refresh-hz must be 1 to 240, not %u", hz);
++        return;
++    }
++    s->refresh_hz = hz;
++}
++
++static void display_get_live_refresh(Object *obj, Visitor *v, const char *name, void *opaque, Error **errp)
++{
++    uint32_t hz = S5L8930_DISPLAY(obj)->refresh_hz;
++
++    visit_type_uint32(v, name, &hz, errp);
++}
++
+ static void s5l8930_display_class_init(ObjectClass *klass, const void *data)
+ {
++    object_class_property_add(klass, "live-refresh-hz", "uint32", display_get_live_refresh,
++                              display_set_live_refresh, NULL, NULL);
+     DeviceClass *dc = DEVICE_CLASS(klass);
+ 
+     dc->realize = s5l8930_display_realize;

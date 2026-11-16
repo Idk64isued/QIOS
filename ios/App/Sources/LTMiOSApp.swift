@@ -985,6 +985,7 @@ struct EmulatorScreen: View {
             modem.qemu = emulator.qemu
             controls.hasGPS = details.board?.hasGPS ?? false
             controls.start(qemu: emulator.qemu)
+            AutoCool.shared.start(qemu: emulator.qemu)
             if let agent = emulator.agent { controls.watchGuestOrientation(agent: agent) }
             volume.onVolumeUp = { emulator.press(2) }
             volume.onVolumeDown = { emulator.press(3) }
@@ -995,6 +996,7 @@ struct EmulatorScreen: View {
         .onDisappear {
             volume.stop()
             controls.stop()
+            AutoCool.shared.stop()
             microphone?.stop()
             recorder?.stop { _ in }
         }

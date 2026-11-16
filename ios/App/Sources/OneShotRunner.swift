@@ -109,8 +109,18 @@ enum OneShotRunner {
 
         var marker = false
         var stopping = false
+        var mirrored = Date.distantPast
+        // The boot's serial console goes to the work folder; a copy in Documents/serial.log (every few seconds, and
+        // at the end) is what Console › Device and an exported report show, so a preparation boot that stalls can be
+        // read without digging into the preparation's folder.
+        func mirror() {
+            mirrored = Date()
+            try? FileManager.default.removeItem(at: LTMLog.serialURL)
+            try? FileManager.default.copyItem(at: request.serial, to: LTMLog.serialURL)
+        }
         while true {
             usleep(500_000)
+            if Date().timeIntervalSince(mirrored) > 5 { mirror() }
             if flags.exited.0 { break }
             if request.stopMarker != nil || request.stopPattern != nil,
                 let text = try? String(contentsOf: request.serial, encoding: .isoLatin1)
@@ -132,6 +142,13 @@ enum OneShotRunner {
             }
         }
         let (exited, code) = flags.exited
+        mirror()
+        // The end of the boot's console, in the log: how far it got, whatever became of it.
+        if let text = try? String(contentsOf: request.serial, encoding: .isoLatin1) {
+            let tail = text.split(separator: "\n", omittingEmptySubsequences: true).suffix(40).joined(separator: "\n")
+            LTMLog.note("one-shot \(request.serial.lastPathComponent) after \(Int(Date().timeIntervalSince(start))) s"
+                + " (\(marker ? "finished" : stopping ? "stopped" : "exited")), its console's last lines:\n" + tail)
+        }
         // This copy is abandoned now (stopped, or paused when it would not stop): its guest RAM goes back to the
         // system, so the keybag, seal and check boots of one preparation don't hold three guests' memory at once.
         if exited || stopping, let release = qemu.releaseGuestMemory {

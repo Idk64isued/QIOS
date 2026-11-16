@@ -101,12 +101,41 @@ final class ScreenRecorder: @unchecked Sendable {
 
     private var now: CMTime { CMTime(seconds: CACurrentMediaTime() - start, preferredTimescale: 600) }
 
-    /// One guest frame: BGRA, `width` × `height`, rows packed. Frames of another size are skipped.
-    func append(bgra: Data, width w: Int, height h: Int) {
-        guard w == width, h == height else { return }
+    /// Frames copied and waiting for the encoder. At most two: a Retina screen is 2.4 MB a frame and arrives up to 60
+    /// times a second, and when the encoder fell behind every one of them used to queue up here until the phone ran
+    /// out of memory and iOS killed the app (screen recording on the iPhone 4). A frame that would wait behind two
+    /// is skipped instead; the movie shows the one before it a moment longer.
+    private let pendingLock = NSLock()
+    private var pending = 0
+
+    /// Whether a frame may be queued now (and counts it if so). Callers that copy the frame first should ask before.
+    func reserveFrame() -> Bool {
+        pendingLock.lock()
+        defer { pendingLock.unlock() }
+        guard pending < 2 else { return false }
+        pending += 1
+        return true
+    }
+
+    private func frameDone() {
+        pendingLock.lock()
+        pending -= 1
+        pendingLock.unlock()
+    }
+
+    /// One guest frame: BGRA, `width` × `height`, rows packed. Frames of another size are skipped. Pass
+    /// `reserved: true` only after `reserveFrame()` said yes.
+    func append(bgra: Data, width w: Int, height h: Int, reserved: Bool = false) {
+        guard w == width, h == height, bgra.count >= w * h * 4 else {
+            if reserved { frameDone() }
+            return
+        }
+        guard reserved || reserveFrame() else { return }
         let time = now
         queue.async { [self] in
-            guard !finished, video.isReadyForMoreMediaData, let pool = adaptor.pixelBufferPool else { return }
+            defer { frameDone() }
+            guard !finished, writer.status == .writing, video.isReadyForMoreMediaData, let pool = adaptor.pixelBufferPool
+            else { return }
             var buffer: CVPixelBuffer?
             guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer) == kCVReturnSuccess, let buffer else { return }
             CVPixelBufferLockBaseAddress(buffer, [])
@@ -125,6 +154,7 @@ final class ScreenRecorder: @unchecked Sendable {
     }
 
     private func appendVideo(_ buffer: CVPixelBuffer, at time: CMTime) {
+        guard writer.status == .writing, video.isReadyForMoreMediaData else { return }
         if lastVideo.isValid, CMTimeCompare(time, lastVideo) <= 0 { return }
         if adaptor.append(buffer, withPresentationTime: time) {
             lastVideo = time
@@ -143,7 +173,9 @@ final class ScreenRecorder: @unchecked Sendable {
             if audioOffset == nil { audioOffset = Int64(arrival * 44100) }
             let pts = CMTime(value: (audioOffset ?? 0) + audioFrames, timescale: 44100)
             audioFrames += Int64(frames)
-            guard audio.isReadyForMoreMediaData else { return }
+            // Appending to a writer that has failed (the encoder gave up, e.g. short of memory) raises an
+            // Objective-C exception, which takes the whole app down: check it is still writing.
+            guard writer.status == .writing, audio.isReadyForMoreMediaData else { return }
             var block: CMBlockBuffer?
             guard CMBlockBufferCreateWithMemoryBlock(
                 allocator: kCFAllocatorDefault, memoryBlock: nil, blockLength: data.count, blockAllocator: kCFAllocatorDefault,
@@ -175,6 +207,11 @@ final class ScreenRecorder: @unchecked Sendable {
             guard !finished else { return }
             if let lastBuffer { appendVideo(lastBuffer, at: end) }
             finished = true
+            guard writer.status == .writing else {
+                LTMLog.note("recording: failed \(writer.error?.localizedDescription ?? "(the writer stopped)")")
+                DispatchQueue.main.async { done(nil) }
+                return
+            }
             video.markAsFinished()
             audio.markAsFinished()
             writer.endSession(atSourceTime: end)

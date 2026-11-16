@@ -113,6 +113,8 @@ final class QemuRuntime: @unchecked Sendable {
     /// An abandoned preparation copy's guest RAM, handed back (qemu-ios patch 0014); the bytes released.
     lazy var releaseGuestMemory = optionalSym("qemu_ios_release_guest_memory", (@convention(c) () -> UInt64).self)
     lazy var hardwareKeyboard = optionalSym("qemu_ios_ui_hardware_keyboard", (@convention(c) (Bool) -> Bool).self)
+    /// The panel's frame rate while running (qemu-ios patch 0018), for AutoCool.
+    lazy var setRefreshHz = optionalSym("qemu_ios_ui_set_refresh_hz", (@convention(c) (UInt32) -> Bool).self)
     lazy var cancelInput = optionalSym("qemu_ios_ui_cancel_input", (@convention(c) () -> Void).self)
     // Sensors the real phone can stand in for
     lazy var attitude = optionalSym("qemu_ios_ui_attitude", (@convention(c) (Double, Double, Int32) -> Void).self)

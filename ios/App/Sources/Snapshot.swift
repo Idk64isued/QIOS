@@ -26,10 +26,14 @@ struct Snapshots {
         return number.int64Value
     }
 
-    /// A snapshot exists, was written by this emulator build, and is the size it was when it was saved.
+    /// The machine's device set as this app builds it, recorded with each snapshot: a snapshot only restores into
+    /// the same devices. "nokbd": no USB keyboard plugged in at boot (update 51); older snapshots had one.
+    static let layout = "nokbd"
+
+    /// A snapshot exists, was written by this emulator build with this device set, and is the size it was saved at.
     func usable(build: String) -> Bool {
         guard let data = try? Data(contentsOf: meta), let m = try? JSONDecoder().decode(Meta.self, from: data) else { return false }
-        return m.build == build && size(of: file) == m.size && m.size > 0
+        return m.build == build + "/" + Self.layout && size(of: file) == m.size && m.size > 0
     }
 
     func discard() {
@@ -47,6 +51,6 @@ struct Snapshots {
         try? fm.removeItem(at: meta)
         try? fm.removeItem(at: file)
         try fm.moveItem(at: tmp, to: file)
-        try JSONEncoder().encode(Meta(build: build, size: written)).write(to: meta)
+        try JSONEncoder().encode(Meta(build: build + "/" + Self.layout, size: written)).write(to: meta)
     }
 }

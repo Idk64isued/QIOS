@@ -185,6 +185,7 @@ final class DisplayUIView: UIView {
         applyFilter()
         layer.addSublayer(screen)
         NotificationCenter.default.addObserver(self, selector: #selector(settingsChanged), name: UserDefaults.didChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(settingsChanged), name: AutoCool.changed, object: nil)
         shownTurns = Self.turns
         NotificationCenter.default.addObserver(self, selector: #selector(screenTurnsChanged), name: Self.turnsChanged, object: nil)
         // Two fingers, so a pinch lands on the device's own screen (Photos, Safari, Maps) instead of zooming
@@ -204,9 +205,10 @@ final class DisplayUIView: UIView {
         DispatchQueue.main.async { [weak self] in self?.applyFilter(); self?.applyFrameRate() }
     }
 
-    /// Settings › Cool mode asks for thirty frames a second (the guest's own screen runs at 30 Hz then too).
+    /// Settings › Cool mode, or AutoCool while the phone is hot, asks for thirty frames a second (the guest's own
+    /// screen runs at 30 Hz then too).
     private func applyFrameRate() {
-        let cool = UserDefaults.standard.bool(forKey: "coolMode")
+        let cool = UserDefaults.standard.bool(forKey: "coolMode") || AutoCool.shared.cooling
         let rate = CAFrameRateRange(minimum: cool ? 20 : 30, maximum: cool ? 30 : 60, preferred: cool ? 30 : 60)
         link?.preferredFrameRateRange = rate
     }
@@ -267,8 +269,9 @@ final class DisplayUIView: UIView {
         let shown = serial
         guard qemu.frame(&pixels, &w, &h, &serial), let pixels, w > 0, h > 0 else { return }
         let width = Int(w), height = Int(h)
-        if let recorder = ScreenRecorder.active {
-            recorder.append(bgra: Data(bytes: pixels, count: width * height * 4), width: width, height: height)
+        // Copied only when the recorder can take it (ScreenRecorder.reserveFrame): no 2.4 MB copy for a frame it skips.
+        if let recorder = ScreenRecorder.active, recorder.width == width, recorder.height == height, recorder.reserveFrame() {
+            recorder.append(bgra: Data(bytes: pixels, count: width * height * 4), width: width, height: height, reserved: true)
         }
         if let metal {
             // Not shown (the GPU still had three frames): ask for this one again next tick.
