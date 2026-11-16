@@ -432,7 +432,13 @@ final class Emulator: ObservableObject {
             let source = base.appendingPathComponent("nor.bin")
             let copy = overlay.appendingPathComponent("nor.bin")
             if FileManager.default.fileExists(atPath: source.path) {
-                if !FileManager.default.fileExists(atPath: copy.path) { try FileManager.default.copyItem(at: source, to: copy) }
+                if !FileManager.default.fileExists(atPath: copy.path) {
+                    try FileManager.default.copyItem(at: source, to: copy)
+                    // A saved state from before this device had its NOR holds a blank one in its RAM image, and
+                    // restoring it would put that back over the copy just made (and every reboot inside the guest
+                    // keeps it). It can't be used with the NOR the device now has: boot fresh instead.
+                    Snapshots(overlay: overlay).discard()
+                }
                 // A device prepared on the phone has a read-only base (so its files can't change), and a copy keeps
                 // that. The emulator opens this copy for writing, so it has to be writable.
                 chmod(copy.path, 0o644)
