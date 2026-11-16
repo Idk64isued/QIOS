@@ -74,7 +74,13 @@ extension GuestAgent {
         let safe = bundleID.filter { $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" || $0 == "_" }
         let placeholder = "qemu-install-" + safe
         var raised = false
-        if ops.contains("dlicon"), let reply = await request("dlicon add \(placeholder)" + (safe == bundleID ? " \(bundleID)" : "")) {
+        // iOS 4 and later keep a download placeholder tied to a bundle ID, and an app that arrives our way (no
+        // installd, so no "download finished" for SpringBoard) took the placeholder's blank white icon for good:
+        // Doodle Jump on iOS 4, Subway Surfers and Netflix on iOS 5. There the placeholder is skipped, and one left by
+        // an earlier install is taken down first.
+        if major >= 4 {
+            if ops.contains("dlicon") { _ = await request("dlicon cancel \(placeholder)") }
+        } else if ops.contains("dlicon"), let reply = await request("dlicon add \(placeholder)" + (safe == bundleID ? " \(bundleID)" : "")) {
             raised = reply.status == 0
         }
         defer {
@@ -148,6 +154,18 @@ extension GuestAgent {
                 info["Container"] = container
                 info["ApplicationType"] = "User"
                 info["EnvironmentVariables"] = ["CFFIXED_USER_HOME": container, "HOME": container, "TMPDIR": container + "/tmp"]
+                // iOS 6's cache counts its changes: a SequenceNumber on the cache and on every app, and a CacheGUID.
+                // installd bumps both on every install, and an entry that arrives without them, the cache's
+                // number unchanged, is one the rest of the system never hears about: the app was in the cache (the
+                // Apps list showed it) and on the device, and the Home screen never listed it, restart or not.
+                // Do what installd does: the next number for the cache and for this app, and a new GUID.
+                if let sequence = (cache["SequenceNumber"] as? NSNumber)?.intValue {
+                    let next = sequence + 1
+                    cache["SequenceNumber"] = next
+                    info["SequenceNumber"] = next
+                    log("Installation cache sequence \(sequence) \u{2192} \(next) (iOS 6 style)")
+                }
+                if cache["CacheGUID"] != nil { cache["CacheGUID"] = UUID().uuidString }
                 user[bundleID] = info
                 cache["User"] = user
                 let data = try PropertyListSerialization.data(fromPropertyList: cache, format: cacheFormat == .xml ? .xml : .binary, options: 0)
@@ -173,8 +191,15 @@ extension GuestAgent {
             raised = false
         }
 
-        // 8. SpringBoard (and installd, which keeps its own copy of the cache) start again and list it.
+        // 8. SpringBoard (and installd, which keeps its own copy of the cache) start again and list it. SpringBoard's
+        // icon caches go first, as uicache clears them: an icon it once drew blank (above) stays blank from its cache
+        // across a restart, and a reinstall would not bring the real one back.
         progress(0.97, "Restarting the Home screen\u{2026}")
+        if major >= 4 {
+            for name in ["icons", "icons.plist", "smallicons", "smallicons.plist", "spotlight", "spotlight.plist"] {
+                _ = await unlink(path: "/var/mobile/Library/Caches/com.apple.springboard-imagecache-" + name)
+            }
+        }
         _ = await sync()
         if major >= 2 { _ = await run(["/bin/launchctl", "stop", "com.apple.mobile.installd"], timeout: 15) }
         let respring = await run(["/bin/launchctl", "stop", "com.apple.SpringBoard"], timeout: 15)

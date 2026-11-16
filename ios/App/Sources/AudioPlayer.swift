@@ -28,14 +28,19 @@ final class AudioPlayer: @unchecked Sendable {
     private var readIndex = 0                      // samples
     private var count = 0                          // samples buffered
 
+    /// Settings › Smooth sound. Off (the default) keeps the sound in step with the screen: a short buffer, always
+    /// at full speed, and a moment of silence when the emulator falls behind. On, it plays a touch slower instead of
+    /// running dry, which is smoother but drifts behind the picture (the 86-92% speed in the iOS 5 and 6 logs).
+    private let smooth = UserDefaults.standard.bool(forKey: "smoothSound")
+
     // The jitter buffer, in stereo frames.
-    private let startFrames = 44100 * 20 / 100     // 200 ms before playing, or resuming after running dry
-    private let targetFrames = 44100 * 25 / 100    // where the pace control keeps the buffer
+    private let startFrames = 44100 * (UserDefaults.standard.bool(forKey: "smoothSound") ? 20 : 8) / 100   // before playing, or resuming after running dry
+    private let targetFrames = 44100 * 25 / 100   // where the pace control keeps the buffer (smooth only)
     private let timePitch = AVAudioUnitTimePitch()
     private var rate: Float = 1
     private var dryEvents = 0                      // times it ran dry since the last report (audio thread, under lock)
-    private let lateFrames = 44100 * 45 / 100      // more than 450 ms buffered means we are falling behind...
-    private let trimToFrames = 44100 * 15 / 100    // ...so drop back to 150 ms
+    private let lateFrames = 44100 * (UserDefaults.standard.bool(forKey: "smoothSound") ? 45 : 20) / 100     // this much buffered means the sound trails...
+    private let trimToFrames = 44100 * (UserDefaults.standard.bool(forKey: "smoothSound") ? 15 : 8) / 100    // ...so drop back to this
 
     // Audio-thread state.
     private var playing = false
@@ -178,7 +183,7 @@ final class AudioPlayer: @unchecked Sendable {
         let buffered = count / 2
         let isPlaying = playing
         os_unfair_lock_unlock(lock)
-        guard isPlaying else { return }
+        guard isPlaying, smooth else { return }
         let error = Float(buffered - targetFrames) / Float(targetFrames)    // -1 empty ... 0 on target ... >0 ahead
         let wanted = max(0.7, min(1.0, 1.0 + 0.5 * error))
         rate += (wanted - rate) * 0.2

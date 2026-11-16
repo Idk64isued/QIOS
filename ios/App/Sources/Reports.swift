@@ -64,7 +64,7 @@ enum Reports {
             $0.withMemoryRebound(to: CChar.self, capacity: 256) { String(cString: $0) }
         }
         let defaults = UserDefaults.standard
-        let settings = ["viewMode", "appearance", "homeInterface", "autoCool", "keepState", "passBattery", "reportCharger", "mirrorVibration", "passMotion",
+        let settings = ["viewMode", "appearance", "homeInterface", "autoCool", "smoothSound", "keepState", "passBattery", "reportCharger", "mirrorVibration", "passMotion",
                         "cellularModem", "enableUSB", "verboseBoot", "kernelConsole", "passLocation", "netRestricted", "netLAN", "codeCacheMB", "fastGL", "rect2d", "diag", "sharpPixels", "coolMode",
                         "wifiNetwork", "debugPort", "rawKeyboard", "microphone", "glRenderer"]
             .compactMap { key in defaults.object(forKey: key).map { "\(key)=\($0)" } }

@@ -3,7 +3,22 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
-## Update 52 — (not yet named)
+## Update 53 — (not yet named)
+
+**Fixed**
+- iOS 6: apps installed from the store or your own IPA never showed on the Home screen (they were on the device and
+  in the Apps list, and opening one failed). iOS 6 numbers every change to its app list, and an install that didn't
+  bump the number went unnoticed. The install now does what iOS's own installer does. Apps installed before this
+  update need installing again.
+- iOS 4 and 5: installed apps showed a blank white icon. The "Waiting…" placeholder the install put up was tied to
+  the app's ID, and with no word from iOS's own installer that the download had finished, the Home screen kept its
+  blank image. iOS 4 and later get no placeholder now, and the Home screen's icon caches are cleared before it
+  restarts, as uicache does. Install an app again to get its icon back.
+- Sound out of step with the screen: the player used to slow itself down (86–92% speed in the logs) whenever the
+  emulator fell behind, so the sound drifted behind the picture. It now stays in sync, with a moment of silence when
+  the emulator can't keep up. **Smooth sound** (Settings) brings the old behavior back.
+
+## Update 52
 
 **Faster**
 - Device setup runs on JIT all the way through. Only the first emulator a launch started could use JIT (the

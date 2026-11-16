@@ -21,6 +21,7 @@ struct DeviceSettingsView: View {
     @AppStorage("sharpPixels") private var sharpPixels = true
     @AppStorage("coolMode") private var coolMode = false
     @AppStorage("autoCool") private var autoCool = true
+    @AppStorage("smoothSound") private var smoothSound = false
     @AppStorage("keepState") private var keepState = true
     @AppStorage("appearance") private var appearance = "system"
     @AppStorage("homeInterface") private var homeInterface = HomeInterface.classic.rawValue
@@ -64,6 +65,10 @@ struct DeviceSettingsView: View {
                                 "Cool mode",
                                 "Runs the device\u{2019}s screen at 30 frames a second instead of 60: about half the drawing work, so the phone stays cooler and its battery lasts longer. Games that count frames instead of time run slower. Takes effect the next time the device starts.",
                                 isOn: $coolMode)
+                            toggle(
+                                "Smooth sound",
+                                "Off keeps the device\u{2019}s sound in step with its screen, with a moment of silence when the emulator falls behind. On plays it a touch slower instead, so it never cuts out but drifts behind the picture. Takes effect the next time the device starts.",
+                                isOn: $smoothSound)
                             toggle(
                                 "Cool down automatically",
                                 "When this phone gets critically hot, the device\u{2019}s screen drops to 30 frames a second until it has cooled, then goes back to 60. Takes effect at once. For 30 all the time, use Cool mode.",
