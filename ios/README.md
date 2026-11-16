@@ -269,6 +269,12 @@ can't download alongside yet.
   interpreter, and a seal boot took most of an hour. A bless asked for long after launch could also wait forever on
   a debugger iOS had suspended (an iOS 5 keybag boot sat 910 s silent). Now the app blesses one buffer as it starts
   (`qemu_ios_jit_pool_create`, named in `QEMU_IOS_JIT_POOL`) and every QEMU it starts after takes it.
+- `patches/qemu-ios/0020`: OES vertex array objects (`glGenVertexArraysOES` and friends) in the GL bridge.
+  SpringBoard's icon renderer and Google's ES 2.0 engines on iOS 5/6 drive their attributes through VAOs; with the
+  binds refused, those draws ran with stale attributes and came out black (the black icon on iOS 6). A VAO is a
+  saved copy of the generic-attribute state and the element-array binding, swapped in and out at bind, because the
+  attribute pointers are guest addresses the host resolves at draw time. The group-marker no-ops no longer trip
+  the UNHANDLED alarm either.
 - The screen is drawn through Metal (`MetalPresenter`): one copy of each frame into a shared texture and a blit,
   instead of a CGImage per frame that Core Animation copied and converted again.
 - The profiler samples 10 times a second (it was 50; every sample stops the virtual CPU for a moment).

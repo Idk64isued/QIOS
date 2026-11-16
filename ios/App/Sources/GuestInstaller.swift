@@ -79,7 +79,12 @@ extension GuestAgent {
         // Doodle Jump on iOS 4, Subway Surfers and Netflix on iOS 5. There the placeholder is skipped, and one left by
         // an earlier install is taken down first.
         if major >= 4 {
-            if ops.contains("dlicon") { _ = await request("dlicon cancel \(placeholder)") }
+            if ops.contains("dlicon") {
+                _ = await request("dlicon cancel \(placeholder)")
+                // Installs before update 52 tagged the placeholder with the bundle ID itself; one of those left
+                // standing shadows the app's real icon (a white box, sometimes with a stuck badge), so it goes too.
+                if safe == bundleID { _ = await request("dlicon cancel \(bundleID)") }
+            }
         } else if ops.contains("dlicon"), let reply = await request("dlicon add \(placeholder)" + (safe == bundleID ? " \(bundleID)" : "")) {
             raised = reply.status == 0
         }
@@ -184,8 +189,14 @@ extension GuestAgent {
         // across a restart, and a reinstall would not bring the real one back.
         progress(0.97, "Restarting the Home screen\u{2026}")
         if major >= 4 {
-            for name in ["icons", "icons.plist", "smallicons", "smallicons.plist", "spotlight", "spotlight.plist"] {
-                _ = await unlink(path: "/var/mobile/Library/Caches/com.apple.springboard-imagecache-" + name)
+            // Every name SpringBoard uses across iOS 4-6: on a Retina device (the iPhone 4) the caches are the
+            // @2x files, which is why deleting only the plain names left once-blank icons blank forever.
+            for base in ["icons", "smallicons", "spotlight"] {
+                for scale in ["", "@2x"] {
+                    for ext in ["", ".plist"] {
+                        _ = await unlink(path: "/var/mobile/Library/Caches/com.apple.springboard-imagecache-" + base + scale + ext)
+                    }
+                }
             }
         }
         _ = await sync()

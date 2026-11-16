@@ -1,0 +1,229 @@
+From 00d3f341a51e3d6b197f51b30f84977b27b19f73 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 16 Nov 2026 07:25:10 -0700
+Subject: [PATCH] ios: OES vertex array objects in the GL bridge
+
+glGenVertexArraysOES, glBindVertexArrayOES, glDeleteVertexArraysOES and
+glIsVertexArrayOES were unhandled: SpringBoard's icon renderer and Google's
+ES 2.0 engines on iOS 5/6 drive their attributes through VAOs, and with the
+binds dropped every such draw ran with stale attributes and came out black.
+The attribute pointers live host-side (guest VAs resolved at draw), so a VAO
+is a saved copy of the generic-attribute state and the element-array binding,
+swapped in and out of the live arrays at bind. Also stops the group-marker
+tooling no-ops from tripping the UNHANDLED alarm.
+---
+ hw/arm/gles-host.c | 170 +++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 170 insertions(+)
+
+diff --git a/hw/arm/gles-host.c b/hw/arm/gles-host.c
+index 787626c9c6..f44b27f80a 100644
+--- a/hw/arm/gles-host.c
++++ b/hw/arm/gles-host.c
+@@ -564,6 +564,25 @@ typedef struct {
+     GLenum client_state;
+ } GLESArray;
+ 
++/*
++ * An OES vertex array object (glGenVertexArraysOES and friends, iOS 4.2+).
++ *
++ * The attribute pointers live host-side in gh.attr (guest VAs resolved at draw
++ * time), so a VAO cannot be a real host object: it is a saved copy of the
++ * generic-attribute state and the element-array binding, swapped in and out of
++ * the live arrays at glBindVertexArrayOES. The ES1 client arrays are left out:
++ * every caller seen so far (SpringBoard's and Google's ES 2.0 engines on iOS
++ * 5/6) uses VAOs with generic attributes only.
++ */
++typedef struct {
++    struct {
++        uint32_t enabled, size, type, stride, ptr;
++        GLESBuffer *vbo;        /* reference held */
++        bool normalized;
++    } attr[GLES_MAX_ATTRIBS];
++    GLESBuffer *element;        /* reference held */
++} GLESVao;
++
+ typedef struct {
+     uint32_t base, stride, width, height, format, uv, uvstride;
+     GLenum target;
+@@ -828,6 +847,12 @@ typedef struct {
+      * A nonzero program is what sends a draw down the ES 2.0 path. */
+     GLESArray attr[GLES_MAX_ATTRIBS];
+     bool attr_normalized[GLES_MAX_ATTRIBS];
++    /* OES vertex array objects: name -> GLESVao (see the typedef). Name 0 is
++     * a record like any other, holding the default state while another VAO is
++     * bound. bound_vao is the live one; gh.attr IS its current state. */
++    GHashTable *vaos;
++    uint32_t bound_vao;
++    uint32_t next_vao_name;
+     GLuint program;             /* guest id; nonzero = ES 2.0 draws */
+     GLint fetch_sampler;        /* the program's framebuffer fetch (gles_es2_fetch_glsl); -1 for none */
+     GLint fetch_size;
+@@ -4329,6 +4354,91 @@ static void gles_buffer_forget(const GLESBuffer *b)
+     if (gh.element_buffer == b) {
+         gles_buffer_bind(&gh.element_buffer, NULL);
+     }
++    if (gh.vaos) {
++        GHashTableIter it;
++        gpointer k, val;
++
++        g_hash_table_iter_init(&it, gh.vaos);
++        while (g_hash_table_iter_next(&it, &k, &val)) {
++            GLESVao *v = val;
++            unsigned j;
++
++            for (j = 0; j < GLES_MAX_ATTRIBS; j++) {
++                if (v->attr[j].vbo == b) {
++                    gles_buffer_bind(&v->attr[j].vbo, NULL);
++                    v->attr[j].ptr = 0;
++                }
++            }
++            if (v->element == b) {
++                gles_buffer_bind(&v->element, NULL);
++            }
++        }
++    }
++}
++
++static void gles_vao_destroy(gpointer p)
++{
++    GLESVao *v = p;
++    unsigned i;
++
++    for (i = 0; i < GLES_MAX_ATTRIBS; i++) {
++        gles_buffer_destroy(v->attr[i].vbo);
++    }
++    gles_buffer_destroy(v->element);
++    g_free(v);
++}
++
++/* The VAO with this name, created empty if the guest has not seen it before
++ * (a name bound without glGenVertexArraysOES still has to work, as buffers do). */
++static GLESVao *gles_vao_intern(uint32_t name)
++{
++    GLESVao *v;
++
++    if (!gh.vaos) {
++        gh.vaos = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
++                                        gles_vao_destroy);
++    }
++    v = g_hash_table_lookup(gh.vaos, GUINT_TO_POINTER(name));
++    if (!v) {
++        v = g_new0(GLESVao, 1);
++        g_hash_table_insert(gh.vaos, GUINT_TO_POINTER(name), v);
++    }
++    return v;
++}
++
++/* The live attribute state into this VAO's record (leaving a bind). */
++static void gles_vao_save(GLESVao *v)
++{
++    unsigned i;
++
++    for (i = 0; i < GLES_MAX_ATTRIBS; i++) {
++        v->attr[i].enabled = gh.attr[i].enabled;
++        v->attr[i].size = gh.attr[i].size;
++        v->attr[i].type = gh.attr[i].type;
++        v->attr[i].stride = gh.attr[i].stride;
++        v->attr[i].ptr = gh.attr[i].ptr;
++        v->attr[i].normalized = gh.attr_normalized[i];
++        gles_buffer_bind(&v->attr[i].vbo, gh.attr[i].vbo);
++    }
++    gles_buffer_bind(&v->element, (GLESBuffer *)gh.element_buffer);
++}
++
++/* This VAO's record into the live attribute state (entering a bind). The
++ * arrays' scratch buffers (buf/fbuf) belong to the live slots and stay put. */
++static void gles_vao_load(const GLESVao *v)
++{
++    unsigned i;
++
++    for (i = 0; i < GLES_MAX_ATTRIBS; i++) {
++        gh.attr[i].enabled = v->attr[i].enabled;
++        gh.attr[i].size = v->attr[i].size;
++        gh.attr[i].type = v->attr[i].type;
++        gh.attr[i].stride = v->attr[i].stride;
++        gh.attr[i].ptr = v->attr[i].ptr;
++        gh.attr_normalized[i] = v->attr[i].normalized;
++        gles_buffer_bind(&gh.attr[i].vbo, v->attr[i].vbo);
++    }
++    gles_buffer_bind(&gh.element_buffer, v->element);
+ }
+ 
+ 
+@@ -6514,6 +6624,65 @@ static bool gles_es2_call(CPUState *cpu, uint32_t slot, uint32_t argc,
+         break;
+     }
+     case 821: break;                            /* glReleaseShaderCompiler */
++
++    /* OES vertex array objects: swap the saved attribute state in and out of
++     * the live arrays (GLESVao). SpringBoard's icon renderer and Google's apps
++     * on iOS 5/6 drive their attributes through these; refused, every draw ran
++     * with whatever attributes the last non-VAO caller left behind, and came
++     * out black. */
++    case 837:                                   /* glBindVertexArrayOES: vao */
++        if (ga[0] != gh.bound_vao) {
++            gles_vao_save(gles_vao_intern(gh.bound_vao));
++            gles_vao_load(gles_vao_intern(ga[0]));
++            gh.bound_vao = ga[0];
++        }
++        break;
++    case 838: {                                 /* glDeleteVertexArraysOES: n, guest uint* */
++        g_autofree uint32_t *ids = gles_es2_fetch(cpu, a[1], a[0]);
++
++        for (i = 0; ids && i < a[0]; i++) {
++            if (!ids[i]) {
++                continue;
++            }
++            if (ids[i] == gh.bound_vao) {       /* deleting the bound VAO binds 0 */
++                gles_vao_load(gles_vao_intern(0));
++                gh.bound_vao = 0;
++            }
++            if (gh.vaos) {
++                g_hash_table_remove(gh.vaos, GUINT_TO_POINTER(ids[i]));
++            }
++        }
++        break;
++    }
++    case 839: {                                 /* glGenVertexArraysOES: n, guest uint* */
++        uint32_t n = a[0];
++        g_autofree uint32_t *ids = NULL;
++
++        if (n > GLES_MAX_NAMES) {
++            gles_refuse("cap:glGenVertexArraysOES");
++            *r = -1;
++            break;
++        }
++        ids = g_new0(uint32_t, n ? n : 1);
++        for (i = 0; i < n; i++) {
++            ids[i] = ++gh.next_vao_name;
++            gles_vao_intern(ids[i]);
++        }
++        if (n) {
++            gles_es2_write(cpu, a[1], ids, n * sizeof(uint32_t));
++        }
++        break;
++    }
++    case 840:                                   /* glIsVertexArrayOES: vao */
++        *r = gh.vaos && g_hash_table_contains(gh.vaos, GUINT_TO_POINTER(ga[0]));
++        break;
++
++    /* Tooling markers (glPushGroupMarkerEXT/glPopGroupMarkerEXT): labels for a
++     * debugger that is not attached. Dropping them is correct, so don't let
++     * them trip the UNHANDLED alarm. */
++    case 880: case 881:
++        break;
++
+     default:
+         return false;
+     }
+@@ -8801,6 +8970,7 @@ static void gles_context_free(GLESHost *state)
+     }
+     gles_buffer_destroy(state->array_buffer);
+     gles_buffer_destroy(state->element_buffer);
++    if (state->vaos) g_hash_table_destroy(state->vaos);
+     g_free(state->ibuf); g_free(state->txbuf); g_free(state->zerobuf);
+     g_free(state->decbuf); g_free(state->readback);
+     if (state->fbo_drawable) g_hash_table_destroy(state->fbo_drawable);
+-- 
+2.43.0
+

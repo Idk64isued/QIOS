@@ -3,6 +3,20 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 55 — (not yet named)
+
+**Fixed**
+- iOS 4 and 5: installed apps still showed a blank white icon after update 54 (iOS 6, whose apps had never been
+  drawn, came through with real icons — the tell). SpringBoard keeps the icons it has drawn in cache files, and on
+  a Retina device (the iPhone 4) those are the @2x files; the install deleted only the non-Retina names, so an
+  icon once drawn blank stayed blank through every reinstall. All the names go now. Reinstall an app (any app —
+  the Home screen redraws every icon) to get the real icons back.
+- A white box with a stuck badge from installs made before update 52 (the old "Waiting…" placeholder, tagged by
+  bundle ID) is now taken down when that app is installed again.
+- An icon drawn as a solid black box, and apps whose graphics came out black or wrong on iOS 5 and 6: those draw
+  through four graphics calls (vertex array objects) the emulator refused — the log said "the guest will render
+  wrong", and it did. The emulator carries them now (patch 0020).
+
 ## Update 54 — (not yet named)
 
 **Fixed**
