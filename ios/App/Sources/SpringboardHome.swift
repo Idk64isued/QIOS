@@ -314,8 +314,8 @@ struct SpringboardBanner: View {
             ZStack(alignment: .top) {
                 LinearGradient(colors: [Six.ui(0x3A3A3A).swiftUI, Six.ui(0x0A0A0A).swiftUI], startPoint: .top, endPoint: .bottom)
                 Color.white.opacity(0.08).frame(height: 18)
-            },
-            in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous)))
         .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Color.black, lineWidth: 1))
         .shadow(color: .black.opacity(0.5), radius: 4, y: 2)
     }
