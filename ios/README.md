@@ -258,6 +258,12 @@ can't download alongside yet.
   displays' `live-refresh-hz`), which AutoCool uses to drop to 30 Hz while the phone is hot. A video layer whose
   chroma plane is all zeros (a buffer nothing has written yet) is left out instead of shown as solid green, the
   flash iOS 4 put up as an app opened. The A4 display allocates its video buffer only while video is on.
+- `patches/qemu-ios/0019`: one JIT code buffer per launch. Under TXM only the attached debugger can make pages
+  executable, and QEMU tells it to detach once it has, so only the first QEMU in a launch got JIT: a preparation's
+  keybag, seal and check boots (each a fresh copy of the library) and the device after them ran on the
+  interpreter, and a seal boot took most of an hour. A bless asked for long after launch could also wait forever on
+  a debugger iOS had suspended (an iOS 5 keybag boot sat 910 s silent). Now the app blesses one buffer as it starts
+  (`qemu_ios_jit_pool_create`, named in `QEMU_IOS_JIT_POOL`) and every QEMU it starts after takes it.
 - The screen is drawn through Metal (`MetalPresenter`): one copy of each frame into a shared texture and a blit,
   instead of a CGImage per frame that Core Animation copied and converted again.
 - The profiler samples 10 times a second (it was 50; every sample stops the virtual CPU for a moment).

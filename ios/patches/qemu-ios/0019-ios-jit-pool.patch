@@ -1,0 +1,140 @@
+diff --git a/tcg/region.c b/tcg/region.c
+index 116de9e088..3df900a973 100644
+--- a/tcg/region.c
++++ b/tcg/region.c
+@@ -753,6 +753,105 @@ static void break_prepare_jit_region(mach_vm_address_t addr, size_t len)
+ }
+ #endif
+ 
++#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
++/*
++ * The app's JIT pool: one code buffer, blessed once, shared by every QEMU this process starts.
++ *
++ * Under TXM only the attached debugger can make pages executable, and after blessing a region QEMU tells it to
++ * detach (above). So a process could bless exactly once: the first QEMU in it got JIT and every later one -- the
++ * preparation's keybag, seal and check boots, each a fresh copy of this library, and the device started after
++ * them -- found no debugger and fell back to the interpreter, which runs a seal boot (a whole first start-up)
++ * for most of an hour. And a bless asked for long after launch could wait on a debugger that iOS had already
++ * suspended in the background: an iPhone 4's iOS 5 keybag boot sat 910 s without one line of output.
++ *
++ * So the app blesses one buffer at launch, while StikDebug has just attached (qemu_ios_jit_pool_create), and
++ * names it in QEMU_IOS_JIT_POOL ("rx,rw,size" in hex). Each QEMU after takes the whole buffer instead of mapping
++ * its own. They never run at once: the app starts one device per launch, and a preparation boot's copy is
++ * stopped (or paused) before the next starts, so a buffer handed on is never still being executed.
++ */
++static int jit_pool_map(size_t size, mach_vm_address_t *rx_out, mach_vm_address_t *rw_out, Error **errp)
++{
++    int txm = ios_has_txm();
++    int prot = txm ? PROT_READ | PROT_EXEC : PROT_READ | PROT_WRITE;
++    void *rw = mmap(NULL, size, prot, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    mach_vm_address_t rx = 0;
++    vm_prot_t cur_prot, max_prot;
++
++    if (rw == MAP_FAILED) {
++        error_setg_errno(errp, errno, "allocate %zu bytes for the jit pool", size);
++        return -1;
++    }
++    if (mach_vm_remap(mach_task_self(), &rx, size, 0, VM_FLAGS_ANYWHERE, mach_task_self(),
++                      (mach_vm_address_t)rw, false, &cur_prot, &max_prot, VM_INHERIT_NONE) != KERN_SUCCESS) {
++        error_setg(errp, "vm_remap for the jit pool failed");
++        munmap(rw, size);
++        return -1;
++    }
++    if (mprotect((void *)rx, size, PROT_READ | PROT_EXEC) != 0) {
++        error_setg_errno(errp, errno, "mprotect for the jit pool");
++        munmap((void *)rx, size);
++        munmap(rw, size);
++        return -1;
++    }
++    if (txm) {
++        break_prepare_jit_region(rx, size);
++        if (mprotect(rw, size, PROT_READ | PROT_WRITE) != 0) {
++            error_setg_errno(errp, errno, "mprotect for the jit pool (rw)");
++            munmap((void *)rx, size);
++            munmap(rw, size);
++            return -1;
++        }
++    }
++    *rx_out = rx;
++    *rw_out = (mach_vm_address_t)rw;
++    return 0;
++}
++
++int qemu_ios_jit_pool_create(uint64_t size);
++int qemu_ios_jit_pool_create(uint64_t size)
++{
++    mach_vm_address_t rx, rw;
++    Error *err = NULL;
++    char value[64];
++
++    if (getenv("QEMU_IOS_JIT_POOL")) {
++        return 0;                       /* already made in this process */
++    }
++    if (ios_has_txm() ? !is_debugger_attached() : !ios_cs_debugged()) {
++        return -1;
++    }
++    if (jit_pool_map(size, &rx, &rw, &err) != 0) {
++        fprintf(stderr, "[jit] pool: %s\n", error_get_pretty(err));
++        error_free(err);
++        return -1;
++    }
++    snprintf(value, sizeof(value), "%llx,%llx,%llx", (unsigned long long)rx, (unsigned long long)rw,
++             (unsigned long long)size);
++    setenv("QEMU_IOS_JIT_POOL", value, 1);
++    fprintf(stderr, "[jit] pool: %llu MiB blessed for this launch\n", (unsigned long long)(size >> 20));
++    return 0;
++}
++
++/* The pool, if the app made one: the whole of it (or `size`, if less) is this QEMU's code buffer. */
++static bool jit_pool_take(size_t size)
++{
++    const char *v = getenv("QEMU_IOS_JIT_POOL");
++    unsigned long long rx, rw, pool;
++
++    if (!v || sscanf(v, "%llx,%llx,%llx", &rx, &rw, &pool) != 3 || !rx || !rw || !pool) {
++        return false;
++    }
++    /* An earlier QEMU's guard pages are still PROT_NONE in the writable alias: open it all again. */
++    if (mprotect((void *)(uintptr_t)rw, pool, PROT_READ | PROT_WRITE) != 0) {
++        return false;
++    }
++    region.start_aligned = (void *)(uintptr_t)rw;
++    region.total_size = MIN(size, (size_t)pool);
++    tcg_splitwx_diff = rx - rw;
++    return true;
++}
++#endif
++
+ static int alloc_code_gen_buffer_splitwx_vmremap(size_t size, Error **errp)
+ {
+     kern_return_t ret;
+@@ -761,6 +860,9 @@ static int alloc_code_gen_buffer_splitwx_vmremap(size_t size, Error **errp)
+     int orig_prot = PROT_READ | PROT_WRITE;
+ 
+ #if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
++    if (jit_pool_take(size)) {
++        return PROT_READ | PROT_WRITE;
++    }
+     if (!ios_has_txm() && !ios_cs_debugged()) {
+         error_setg(errp, "jit needs StikDebug (or another debugger) to have "
+                          "enabled JIT for this process first");
+@@ -846,6 +948,19 @@ static int alloc_code_gen_buffer_splitwx_vmremap(size_t size, Error **errp)
+ #endif /* CONFIG_DARWIN */
+ #endif /* CONFIG_TCG_INTERPRETER */
+ 
++#if defined(CONFIG_TCG_INTERPRETER) && defined(CONFIG_DARWIN)
++#include <TargetConditionals.h>
++#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
++/* The interpreter executes nothing it generates: no pool to bless (the app's exports name it in both builds). */
++int qemu_ios_jit_pool_create(uint64_t size);
++int qemu_ios_jit_pool_create(uint64_t size)
++{
++    (void)size;
++    return -1;
++}
++#endif
++#endif
++
+ static int alloc_code_gen_buffer_splitwx(size_t size, Error **errp)
+ {
+ #ifndef CONFIG_TCG_INTERPRETER

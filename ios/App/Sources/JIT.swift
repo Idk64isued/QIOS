@@ -47,6 +47,12 @@ enum JIT {
     /// JIT is usable now: non-TXM needs CS_DEBUGGED; TXM needs the debugger attached to bless the region.
     static var ready: Bool { hasTXM ? traced : csDebugged }
 
+    /// This launch's JIT buffer is blessed (QemuRuntime.ensureJITPool): JIT works with the debugger gone.
+    static var poolReady: Bool { getenv("QEMU_IOS_JIT_POOL") != nil }
+
+    /// What the status line shows: JIT can run now, by the debugger or by this launch's blessed buffer.
+    static var usable: Bool { ready || poolReady }
+
     static var summary: String {
         "device \(hardware), \(hasTXM ? "TXM" : "non-TXM"), CS_DEBUGGED \(csDebugged ? "yes" : "no"), debugger attached \(traced ? "yes" : "no")"
             + (inLiveContainer ? ", LiveContainer" : "")

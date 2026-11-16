@@ -48,9 +48,9 @@ struct ClassicHome: View {
                            title: "Couldn\u{2019}t start", subtitle: failure, chevron: false)
                 }
             }
-            SixSection(header: "Status", footer: JIT.ready ? nil : "Enable JIT first: StikDebug with universal.js, then open Light Touch. In LiveContainer, use Launch with JIT.") {
-                SixRow(title: "JIT", value: JIT.ready ? "Enabled" : "Off", chevron: false,
-                       titleColor: JIT.ready ? nil : Six.red)
+            SixSection(header: "Status", footer: JIT.usable ? nil : "Enable JIT first: StikDebug with universal.js, then open Light Touch. In LiveContainer, use Launch with JIT.") {
+                SixRow(title: "JIT", value: JIT.usable ? "Enabled" : "Off", chevron: false,
+                       titleColor: JIT.usable ? nil : Six.red)
                 SixSeparator()
                 SixRow(title: "Engine", value: engine, chevron: false)
                 if !OnDevicePrep.available {

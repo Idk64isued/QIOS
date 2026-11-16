@@ -403,9 +403,9 @@ struct RootView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 StatusPill(
-                    text: JIT.ready ? "JIT Enabled" : "JIT Off",
-                    symbol: JIT.ready ? "bolt.fill" : "bolt.slash.fill",
-                    color: JIT.ready ? Theme.success : Theme.warning
+                    text: JIT.usable ? "JIT Enabled" : "JIT Off",
+                    symbol: JIT.usable ? "bolt.fill" : "bolt.slash.fill",
+                    color: JIT.usable ? Theme.success : Theme.warning
                 )
                 StatusPill(text: emulator.engine, symbol: "cpu", color: Theme.accent)
                 if !OnDevicePrep.available {
@@ -450,7 +450,7 @@ struct RootView: View {
             }
             .buttonStyle(.plain)
 
-            if !JIT.ready {
+            if !JIT.usable {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "info.circle.fill")
                         .font(.system(size: 12))

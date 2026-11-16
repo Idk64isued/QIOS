@@ -1,7 +1,7 @@
 import Foundation
 
 /// Cools the device down by itself when this phone gets hot (Settings › Cool down automatically, on by default):
-/// while iOS reports the phone's thermal state as serious or critical, the device's screen runs at 30 frames a second
+/// once iOS reports the phone's thermal state as critical (and until it is back to fair), the device's screen runs at 30 frames a second
 /// instead of 60 (qemu-ios patch 0018 changes the panel's rate while it runs), and this app presents at 30 too. That
 /// halves the drawing work on both sides, which is most of what heats the phone while nothing else changes. When the
 /// phone is back to fair or nominal, it returns to 60. Settings › Cool mode keeps it at 30 all the time instead.
@@ -44,7 +44,12 @@ final class AutoCool {
 
     func evaluate() {
         guard qemu != nil else { return }
-        let hot = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
+        // Critical, not serious: a phone running an emulator sits at serious from its first minute (the first
+        // test cooled from 8 s in and the device felt laggy the whole session for it), so serious would mean 30 Hz
+        // always. Critical is the phone about to throttle hard on its own; it cools until the phone is back to fair.
+        let state = ProcessInfo.processInfo.thermalState
+        let hot = cooling ? state.rawValue >= ProcessInfo.ThermalState.serious.rawValue
+                          : state == .critical
         // Cool mode already booted the device at 30 Hz; nothing to change then.
         let coolMode = UserDefaults.standard.bool(forKey: "coolMode")
         set(enabled && hot && !coolMode, apply: true)

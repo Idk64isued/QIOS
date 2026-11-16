@@ -3,6 +3,22 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 52 — (not yet named)
+
+**Faster**
+- Device setup runs on JIT all the way through. Only the first emulator a launch started could use JIT (the
+  debugger blesses fast code once, then leaves), so the keybag and first-start boots of a setup, and the device
+  you started after it, ran on the interpreter: iOS 5 on the iPhone 4 spent most of an hour in "Starting iOS". Now
+  the app has the debugger bless one buffer when it opens, and every boot of that launch uses it (patch 0019).
+- No more 15-minute stall at "Booting the restore ramdisk": that boot was waiting on a debugger iOS had paused in
+  the background.
+
+**Fixed**
+- iOS 4: an installed app's icon came up blank. The "Waiting…" placeholder is now taken down before the Home
+  screen restarts, instead of after it.
+- Cool down automatically made iOS 4 laggy: a phone running an emulator reports "serious" heat within seconds, so
+  it ran at 30 frames a second the whole time. It now waits for "critical" and cools until the phone is back to fair.
+
 ## Revolutionary (update 51)
 
 **Added**

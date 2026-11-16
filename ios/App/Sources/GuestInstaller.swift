@@ -164,7 +164,16 @@ extension GuestAgent {
             }
         }
 
-        // 7. SpringBoard (and installd, which keeps its own copy of the cache) start again and list it.
+        // 7. The "Waiting…" placeholder goes now, while this SpringBoard is still the one that raised it. Dropped
+        // only after the restart (as it was), it reached a SpringBoard that was still starting: iOS 4 keeps a
+        // download placeholder for that bundle ID across the restart, and showed it in place of the app's own icon,
+        // blank, from then on.
+        if raised {
+            _ = await request("dlicon cancel \(placeholder)")
+            raised = false
+        }
+
+        // 8. SpringBoard (and installd, which keeps its own copy of the cache) start again and list it.
         progress(0.97, "Restarting the Home screen\u{2026}")
         _ = await sync()
         if major >= 2 { _ = await run(["/bin/launchctl", "stop", "com.apple.mobile.installd"], timeout: 15) }

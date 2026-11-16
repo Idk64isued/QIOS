@@ -54,7 +54,7 @@ enum OneShotRunner {
         let jit = dir + "/libqemu-arm.dylib", tci = dir + "/libqemu-arm-tci.dylib"
         let fm = FileManager.default
         var candidates: [(String, Bool)] = []
-        if JIT.ready, fm.fileExists(atPath: jit) { candidates.append((jit, true)) }
+        if JIT.ready || JIT.poolReady, fm.fileExists(atPath: jit) { candidates.append((jit, true)) }
         if fm.fileExists(atPath: tci) { candidates.append((tci, false)) }
         var errors: [String] = []
         for (source, isJIT) in candidates {

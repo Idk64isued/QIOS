@@ -66,7 +66,7 @@ struct DeviceSettingsView: View {
                                 isOn: $coolMode)
                             toggle(
                                 "Cool down automatically",
-                                "When this phone gets hot, the device\u{2019}s screen drops to 30 frames a second until it has cooled, then goes back to 60. Takes effect at once.",
+                                "When this phone gets critically hot, the device\u{2019}s screen drops to 30 frames a second until it has cooled, then goes back to 60. Takes effect at once. For 30 all the time, use Cool mode.",
                                 isOn: $autoCool)
                             toggle(
                                 "Survive closing the app",

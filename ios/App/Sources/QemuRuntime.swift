@@ -54,13 +54,28 @@ final class QemuRuntime: @unchecked Sendable {
         let dir = Bundle.main.privateFrameworksPath ?? (Bundle.main.bundlePath + "/Frameworks")
         let jit = dir + "/libqemu-arm.dylib", tci = dir + "/libqemu-arm-tci.dylib"
         var errors: [String] = []
-        if JIT.ready, FileManager.default.fileExists(atPath: jit) {
-            do { return try QemuRuntime(path: jit, isJIT: true) } catch { errors.append("\(error.localizedDescription)") }
+        if JIT.ready || JIT.poolReady, FileManager.default.fileExists(atPath: jit) {
+            do {
+                let runtime = try QemuRuntime(path: jit, isJIT: true)
+                runtime.ensureJITPool()
+                return runtime
+            } catch { errors.append("\(error.localizedDescription)") }
         }
         if FileManager.default.fileExists(atPath: tci) {
             do { return try QemuRuntime(path: tci, isJIT: false) } catch { errors.append("\(error.localizedDescription)") }
         }
         throw NSError(domain: "LTM", code: 3, userInfo: [NSLocalizedDescriptionKey: "no usable emulator library in \(dir): " + errors.joined(separator: "; ")])
+    }
+
+    /// Blesses the launch's one JIT buffer while the debugger is still attached (qemu-ios patch 0019), so every
+    /// QEMU this launch starts -- the preparation's boots and the device after them -- runs on JIT, not just the
+    /// first. The size: the code cache setting, at least the preparation boots' 256 MB.
+    func ensureJITPool() {
+        guard isJIT, !JIT.poolReady, JIT.ready, let create = jitPoolCreate else { return }
+        let mb = max(256, UserDefaults.standard.integer(forKey: "codeCacheMB") > 0 ? UserDefaults.standard.integer(forKey: "codeCacheMB") : 512)
+        let ok = create(UInt64(mb) << 20) == 0
+        LTMLog.note(ok ? "jit: \(mb) MB code buffer blessed for this launch; every boot uses it"
+                       : "jit: couldn't make the shared code buffer; only the first boot of this launch gets JIT")
     }
 
     private func sym<T>(_ name: String, _: T.Type) -> T {
@@ -115,6 +130,8 @@ final class QemuRuntime: @unchecked Sendable {
     lazy var hardwareKeyboard = optionalSym("qemu_ios_ui_hardware_keyboard", (@convention(c) (Bool) -> Bool).self)
     /// The panel's frame rate while running (qemu-ios patch 0018), for AutoCool.
     lazy var setRefreshHz = optionalSym("qemu_ios_ui_set_refresh_hz", (@convention(c) (UInt32) -> Bool).self)
+    /// The launch's shared JIT buffer (qemu-ios patch 0019): 0 made (or already there), -1 not possible.
+    lazy var jitPoolCreate = optionalSym("qemu_ios_jit_pool_create", (@convention(c) (UInt64) -> Int32).self)
     lazy var cancelInput = optionalSym("qemu_ios_ui_cancel_input", (@convention(c) () -> Void).self)
     // Sensors the real phone can stand in for
     lazy var attitude = optionalSym("qemu_ios_ui_attitude", (@convention(c) (Double, Double, Int32) -> Void).self)
