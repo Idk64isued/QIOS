@@ -15,25 +15,20 @@ Launch with JIT), open Light Touch, then tap **Add Device**.
 - **Your own IPSW**: pick the file; it is matched to the catalog by its SHA-1.
 
 Add Device is a Setup Assistant: slide to set up, choose a device, choose its software, name it and pick its options,
-watch it being set up, then "Welcome to your iPod touch" with Start Using. It is iOS 6's look with the Springboard and
-iOS 6 list home screens, and the glass look (gradient, frosted cards, system switches) with the glass one.
+watch it being set up, then "Welcome to your iPod touch" with Start Using. It is iOS 6's look with the iOS 6 list home
+screen, and the glass look (gradient, frosted cards, system switches) with the glass one.
 Each version in the lists carries a badge: its major version on a tile in that version's own colours (Light Touch's
 design, not Apple's artwork), with a red BETA n or a gold GM tag on a developer seed (the catalog's `prerelease`).
 
 ## Home screen (Settings › Home Screen)
 
-- **Springboard** (the default): iOS 4–6's Home screen. Each device is an icon on a wallpaper, in pages of 20 with
-  dots; the glass dock holds Add Device, the Legacy Store, Settings and Storage; Console and Feedback sit after the
-  devices. Tap a device to start it, hold it for Start and Erase content. A device that will resume carries a blue
-  badge. JIT being off, or a start that failed, shows as an iOS 5 notification banner.
-- **Original (iOS 6)**: the original home screen, section for section (status, devices, library, settings, log),
-  drawn as iOS 6's grouped tables on pinstripes with its ON/OFF switches.
+- **Original (iOS 6)** (the default): the original home screen, section for section (status, devices, library,
+  settings, log), drawn as iOS 6's grouped tables on pinstripes with its ON/OFF switches.
 - **Original (Glass)**: the original look, with a Console button in its Log card.
 
-The two iOS 6 interfaces come in light and dark (Settings › Appearance, or the phone's own setting). iOS 6 never had a
+The iOS 6 look comes in light and dark (Settings › Appearance, or the phone's own setting). iOS 6 never had a
 dark mode; this one is what it would have been: the black glossy bars of its media apps, slate pinstripes, charcoal
-cells, the same blue for what's chosen, and the wallpaper at night. Their Settings screen (the dock's Settings icon, or
-the list's Settings button) holds the home screen and appearance choices, the settings the original home screen
+cells, the same blue for what's chosen. Its Settings screen (the list's Settings button) holds the home screen and appearance choices, the settings the original home screen
 carries, All Settings, and the log.
 
 The Mac files come from the release named in `MacFiles.releaseTag` (FirmwareLibrary.swift). It has to be the release

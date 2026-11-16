@@ -203,8 +203,9 @@ struct RootView: View {
     @State private var sixConsole = false
     @State private var sixShare: ShareItem?
     @State private var swept = false
-    /// Settings › Home Screen: Springboard, the original list in iOS 6's look, or in the glass look.
-    @AppStorage("homeInterface") private var interfaceRaw = HomeInterface.springboard.rawValue
+    /// Settings › Home Screen: the original list in iOS 6's look, or in the glass look. (A stored "springboard", from
+    /// the update that had one, reads as the iOS 6 list.)
+    @AppStorage("homeInterface") private var interfaceRaw = HomeInterface.classic.rawValue
 
     var body: some View {
         if let running, emulator.showsScreen {
@@ -241,7 +242,7 @@ struct RootView: View {
 
     // MARK: - Home
 
-    private var interface: HomeInterface { HomeInterface(rawValue: interfaceRaw) ?? .springboard }
+    private var interface: HomeInterface { HomeInterface(rawValue: interfaceRaw) ?? .classic }
 
     private var failure: String? {
         if case .failed(let msg) = emulator.state { return msg }
@@ -286,8 +287,6 @@ struct RootView: View {
 
     @ViewBuilder private var homeInterface: some View {
         switch interface {
-        case .springboard:
-            SpringboardHome(devices: devices, failure: failure, actions: actions)
         case .classic:
             ClassicHome(devices: devices, failure: failure, engine: emulator.engine, actions: actions,
                         bezel: $bezel, rect2d: $rect2d, fastGL: $fastGL, diag: $diag, enableUSB: $enableUSB,
@@ -301,6 +300,7 @@ struct RootView: View {
     private var home: some View {
         homeInterface
         .onAppear {
+            if HomeInterface(rawValue: interfaceRaw) == nil { interfaceRaw = HomeInterface.classic.rawValue }
             if !swept {
                 swept = true
                 Library.sweepPreparing()  // a preparation the last launch did not finish

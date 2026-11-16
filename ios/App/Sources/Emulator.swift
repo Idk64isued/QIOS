@@ -422,9 +422,13 @@ final class Emulator: ObservableObject {
         guard let hardware = board.hardware else { throw BootError.noMachine(name) }
         try FileManager.default.createDirectory(at: overlay, withIntermediateDirectories: true)
 
-        // Boards that boot from NOR write to a private copy of it.
+        // Every board with a NOR gets a private, writable copy of it, as the Mac app gives one (PreparationJob: a
+        // writable NOR whenever the base has nor.bin). That includes the kboot boards, which don't boot from it: their
+        // nor.bin carries the effaceable storage the keybag boot wrote (iOS 4 data protection). Without it the iPhone
+        // 4's kernel finds no effaceable content, keybagd can't load the system keybag ("FATAL KEYBAG ERROR:
+        // kb_load"), and the device reboots "into restore mode" over and over.
         var writableNOR: URL?
-        if !board.isKBoot || lock.bootStrategy == "iboot" || lock.bootStrategy == "bootrom" {
+        do {
             let source = base.appendingPathComponent("nor.bin")
             let copy = overlay.appendingPathComponent("nor.bin")
             if FileManager.default.fileExists(atPath: source.path) {

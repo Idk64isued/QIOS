@@ -22,7 +22,7 @@ struct DeviceSettingsView: View {
     @AppStorage("coolMode") private var coolMode = false
     @AppStorage("keepState") private var keepState = true
     @AppStorage("appearance") private var appearance = "system"
-    @AppStorage("homeInterface") private var homeInterface = HomeInterface.springboard.rawValue
+    @AppStorage("homeInterface") private var homeInterface = HomeInterface.classic.rawValue
     @AppStorage("passBattery") private var passBattery = true
     @AppStorage("reportCharger") private var reportCharger = true
     @AppStorage("mirrorVibration") private var mirrorVibration = true
@@ -86,12 +86,11 @@ struct DeviceSettingsView: View {
                                     .font(.system(size: 13, weight: .medium, design: .rounded))
                                     .foregroundStyle(Theme.primaryText)
                                 Picker("", selection: $homeInterface) {
-                                    Text("Springboard").tag(HomeInterface.springboard.rawValue)
                                     Text("iOS 6 list").tag(HomeInterface.classic.rawValue)
                                     Text("Glass").tag(HomeInterface.modern.rawValue)
                                 }
                                 .pickerStyle(.segmented)
-                                Text((HomeInterface(rawValue: homeInterface) ?? .springboard).detail)
+                                Text((HomeInterface(rawValue: homeInterface) ?? .classic).detail)
                                     .font(.system(size: 11, design: .rounded))
                                     .foregroundStyle(Theme.secondaryText)
                             }

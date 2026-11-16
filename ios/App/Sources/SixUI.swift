@@ -3,27 +3,22 @@ import UIKit
 
 // MARK: - The iOS 6 look
 
-/// The home screen's interface (Settings › Interface): iOS 6's SpringBoard with the devices as icons, the original
-/// layout drawn as iOS 6's grouped tables, or the original glass look as it was.
+/// The home screen's interface (Settings › Home Screen): the original layout drawn as iOS 6's grouped tables, or the
+/// original glass look.
 enum HomeInterface: String, CaseIterable, Identifiable {
-    case springboard, classic, modern
+    case classic, modern
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .springboard: return "Springboard"
         case .classic: return "Original (iOS 6)"
         case .modern: return "Original (Glass)"
         }
     }
     var detail: String {
         switch self {
-        case .springboard: return "Your devices as icons on a Home screen, with a dock."
         case .classic: return "The original list, drawn like iOS 6\u{2019}s Settings."
         case .modern: return "The original list in Light Touch\u{2019}s glass look."
         }
-    }
-    static var current: HomeInterface {
-        HomeInterface(rawValue: UserDefaults.standard.string(forKey: "homeInterface") ?? "") ?? .springboard
     }
 }
 
