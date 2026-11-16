@@ -1,0 +1,45 @@
+diff --git a/hw/arm/s5l8930_i2s.c b/hw/arm/s5l8930_i2s.c
+index c543b1bbed..8466776e1c 100644
+--- a/hw/arm/s5l8930_i2s.c
++++ b/hw/arm/s5l8930_i2s.c
+@@ -497,14 +497,28 @@ static void i2s_write(void *opaque, hwaddr offset, uint64_t value,
+     }
+ }
+ 
++/*
++ * The S5L8920's FIFO window (0x84500000, below its registers at +0x400): the DT's i2s0 reg, which the CDMA uses for
++ * both directions. A read is capture: it used to return 0, so the 3GS's Voice Memos recorded silence and the
++ * microphone never saw the guest listening. Any offset reads the RX FIFO (the first one is logged, so a log names
++ * the address the guest's capture channel uses); writes at the base are playback, as before.
++ */
+ static uint64_t i2s_fifo_read(void *opaque, hwaddr offset, unsigned size)
+ {
+-    return 0;
++    static bool logged;
++
++    if (!logged) {
++        logged = true;
++        info_report("s5l8930-i2s: capture reads the FIFO window at +0x%" HWADDR_PRIx, offset);
++    }
++    return i2s_rx_read(opaque, size);
+ }
+ 
+ static void i2s_fifo_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
+ {
+-    i2s_write(opaque, I2S_TXFIFO, value, size);
++    if (offset == 0) {
++        i2s_write(opaque, I2S_TXFIFO, value, size);
++    }
+ }
+ 
+ static const MemoryRegionOps i2s_fifo_ops = {
+@@ -567,7 +581,8 @@ static void s5l8930_i2s_init(Object *obj)
+     memory_region_init_io(&s->iomem, obj, &i2s_ops, s, TYPE_S5L8930_I2S,
+                           I2S_REGS_SIZE);
+     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
+-    memory_region_init_io(&s->fifo, obj, &i2s_fifo_ops, s, "s5l8930.i2s-fifo", 4);
++    /* the window up to the registers (the S5L8920 maps them at +0x400) */
++    memory_region_init_io(&s->fifo, obj, &i2s_fifo_ops, s, "s5l8930.i2s-fifo", 0x400);
+     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->fifo);
+ }
+ 

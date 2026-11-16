@@ -248,6 +248,10 @@ can't download alongside yet.
   present copies out of a mapped page instead of a `glReadPixels`, which on the phone's tile-based GPU was a full
   pipeline drain plus a second copy every frame. If ANGLE lacks the extension or binds IOSurfaces to a rectangle
   target (macOS), it keeps the readback; the log says which (`[gles-angle] frame buffer on an IOSurface`).
+- `patches/qemu-ios/0017`: the iPhone 3GS's microphone. Its I2S port's FIFO window (0x84500000, the DT's i2s0 reg,
+  which the CDMA uses both ways) answered every read with 0, so capture was silence and the app never saw the guest
+  listening. A read there is now the RX FIFO, fed by the phone's microphone; the log names the offset the guest's
+  capture channel reads (`s5l8930-i2s: capture reads the FIFO window at +0x…`).
 - The screen is drawn through Metal (`MetalPresenter`): one copy of each frame into a shared texture and a blit,
   instead of a CGImage per frame that Core Animation copied and converted again.
 - The profiler samples 10 times a second (it was 50; every sample stops the virtual CPU for a moment).
