@@ -25,6 +25,8 @@ final class GuestAgent: ObservableObject {
     var guestVersion: String?
     /// lt-mkdirs is in the guest for this session.
     var helperReady = false
+    /// lt-unpack is in the guest (GuestInstaller.ensureUnpacker).
+    var unpackReady = false
     /// The end of the queue of installs and imports: each waits for the one before it (one at a time, so two never
     /// write into the guest at once).
     var jobTail: Task<Void, Never>?
@@ -124,7 +126,8 @@ final class GuestAgent: ObservableObject {
 
     /// Put a file into the guest filesystem.
     /// For files > ~250 KB, uses putpart (256 KiB chunks minus header overhead).
-    func putFile(localURL: URL, guestPath: String, mode: String = "0644") async -> Bool {
+    func putFile(localURL: URL, guestPath: String, mode: String = "0644",
+                 progress: ((Int, Int) -> Void)? = nil) async -> Bool {
         guard let data = try? Data(contentsOf: localURL) else {
             log("Cannot read \(localURL.lastPathComponent)"); return false
         }
@@ -163,6 +166,7 @@ final class GuestAgent: ObservableObject {
                     log("putpart failed at \(offset): \(Self.failureText(result))"); return false
                 }
                 offset = end
+                progress?(end, data.count)
                 log("Uploaded \(end)/\(data.count) bytes")
             }
             log("Put \(guestPath) ok (\(data.count) bytes, multi-part)")

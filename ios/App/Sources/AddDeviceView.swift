@@ -183,6 +183,7 @@ struct AddDeviceView: View {
         let downloading = downloadingIPSW?.id == entry.id
         return VStack(spacing: 6) {
             HStack(spacing: 10) {
+                VersionBadge(firmware: entry, size: 40).padding(.trailing, 4)
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
                         Text(entry.systemName)
@@ -193,7 +194,7 @@ struct AddDeviceView: View {
                             .foregroundStyle(Theme.tertiaryText)
                         if entry.isExperimental { badge(entry.status == "untested" ? "Untested" : "Experimental", Theme.warning) }
                     }
-                    Text(rowDetail(entry, support: support, stored: stored))
+                    Text(Self.rowDetail(entry, support: support, stored: stored))
                         .font(.system(size: 11, design: .rounded))
                         .foregroundStyle(usable ? Theme.secondaryText : Theme.warning.opacity(0.75))
                         .fixedSize(horizontal: false, vertical: true)
@@ -259,7 +260,7 @@ struct AddDeviceView: View {
         }
     }
 
-    private func rowDetail(_ entry: CatalogFirmware, support: CatalogFirmware.Support, stored: Bool) -> String {
+    static func rowDetail(_ entry: CatalogFirmware, support: CatalogFirmware.Support, stored: Bool) -> String {
         if case .needsMac(let why) = support { return why }
         if stored { return "IPSW downloaded" }
         return entry.source.bytes.map { "\(Transfer.format($0)) IPSW" } ?? "IPSW"
@@ -332,7 +333,7 @@ struct AddDeviceView: View {
                         Text(plan.model.name)
                             .font(.system(size: 20, weight: .bold, design: .rounded))
                             .foregroundStyle(Theme.primaryText)
-                        Text(planSubtitle(plan))
+                        Text(Self.planSubtitle(plan))
                             .font(.system(size: 13, design: .rounded))
                             .foregroundStyle(Theme.secondaryText)
                     }
@@ -384,7 +385,7 @@ struct AddDeviceView: View {
                     }
                     GlassCard("What happens", symbol: "list.bullet") {
                         VStack(alignment: .leading, spacing: 10) {
-                            ForEach(Array(planSteps(plan).enumerated()), id: \.offset) { _, step in
+                            ForEach(Array(Self.planSteps(plan).enumerated()), id: \.offset) { _, step in
                                 noticeRow(step.symbol, Theme.accent, step.text)
                             }
                         }
@@ -408,8 +409,8 @@ struct AddDeviceView: View {
                             .background(Theme.accent, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                     }
                     .buttonStyle(.plain)
-                    .disabled(!canCreate(plan))
-                    .opacity(canCreate(plan) ? 1 : 0.45)
+                    .disabled(!Self.canCreate(plan))
+                    .opacity(Self.canCreate(plan) ? 1 : 0.45)
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 20)
@@ -417,19 +418,19 @@ struct AddDeviceView: View {
         }
     }
 
-    private func canCreate(_ plan: DevicePlan) -> Bool {
+    static func canCreate(_ plan: DevicePlan) -> Bool {
         if case .firmware = plan.kind { return OnDevicePrep.available }
         return true
     }
 
-    private func planSubtitle(_ plan: DevicePlan) -> String {
+    static func planSubtitle(_ plan: DevicePlan) -> String {
         switch plan.kind {
         case .firmware(let entry): return "\(entry.systemName) (\(entry.build))"
         case .readyMade: return "iPhone OS 3.1.3 (7E18), ready-made"
         }
     }
 
-    private func planSteps(_ plan: DevicePlan) -> [(symbol: String, text: String)] {
+    static func planSteps(_ plan: DevicePlan) -> [(symbol: String, text: String)] {
         var steps: [(symbol: String, text: String)] = []
         if plan.needsMacFiles {
             steps.append(("arrow.down.circle", "Download the Mac release (\(Transfer.format(MacFiles.approximateBytes))) from GitHub and take the boot ROMs, the ready-made iPod and the guest tools out of it. Only needed once."))

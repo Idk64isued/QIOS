@@ -405,6 +405,15 @@ final class Emulator: ObservableObject {
 
     /// The same argv the Mac app builds (HostRuntime's PreparedDeviceBoot), minus what needs a helper process:
     /// no web proxy / Wi-Fi, no USB bridge (usbmuxd), no guest package. Sound is played from the emulator's mixer (AudioPlayer).
+    /// The kernel's boot arguments: the Mac app's (LightTouchCore DeviceOptions.bootArgs), Settings › Verbose boot
+    /// (-v: the kernel's text instead of the Apple logo) and Kernel console (the kernel logs to the serial port).
+    static func bootArgs(_ defaults: UserDefaults = .standard) -> String {
+        var args = "amfi_allow_any_signature=1 cs_enforcement_disable=1"
+        if defaults.bool(forKey: "verboseBoot") { args += " -v" }
+        if defaults.bool(forKey: "kernelConsole") { args += " serial=3 debug=0x8" }
+        return args
+    }
+
     static func bootConfig(directory: URL, usbAddress: String? = nil) throws -> BootConfig {
         let base = directory.appendingPathComponent("base", isDirectory: true)
         let overlay = directory.appendingPathComponent("overlay", isDirectory: true)
@@ -446,9 +455,12 @@ final class Emulator: ObservableObject {
             ? "user,id=wifi0" + (defaults.bool(forKey: "netRestricted") ? ",restrict=on" : "")
                 + (defaults.bool(forKey: "netLAN") ? "" : ",lan=off")
             : nil
+        // The device's serial console (iBoot, the kernel with Kernel console on, the guest helpers) goes to
+        // Documents/serial.log, rewritten every boot, for Console › Device and reports. It was "null": thrown away.
+        try? FileManager.default.removeItem(at: LTMLog.serialURL)
         var config = try prepared.configuration(
-            hardware: hardware, bootArgs: "amfi_allow_any_signature=1 cs_enforcement_disable=1", usbAddress: usbAddress, wifi: wifi,
-            guestPackage: nil, serial: "null", audio: ["-audio", "driver=none"], netdev: netdev,
+            hardware: hardware, bootArgs: Self.bootArgs(), usbAddress: usbAddress, wifi: wifi,
+            guestPackage: nil, serial: "file:" + LTMLog.serialURL.path, audio: ["-audio", "driver=none"], netdev: netdev,
             // Settings › Graphics: ANGLE draws ES 1.1 and ES 2.0 guests on Metal; off, the iPhone's own ES 1.1 GL.
             angle: QemuRuntime.renderer == .angle)
         if QemuRuntime.renderer == .es3, let m = config.argv.firstIndex(of: "-M"), m + 1 < config.argv.count {

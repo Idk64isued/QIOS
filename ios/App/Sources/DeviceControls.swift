@@ -138,6 +138,11 @@ final class DeviceControls: ObservableObject {
     private var unsupported: Set<String> = []
     private var pasteboardSerial: UInt64 = 0
     private let motion = CMMotionManager()
+    /// This phone's location as the device's GPS fix (Settings › Location), on boards with a receiver (the 3GS).
+    private let location = PhoneLocation()
+    /// Set by the device view before start(): whether this board's modem has a GPS receiver (Board.hasGPS).
+    var hasGPS = false
+    var passLocation: Bool { Self.setting("passLocation", default: true) }
     private var lastBattery: (level: Int, charging: Int)?
     private var running = false
 
@@ -159,6 +164,7 @@ final class DeviceControls: ObservableObject {
         UIDevice.current.isBatteryMonitoringEnabled = true
         applyPowerState()
         if passMotion { startMotion() }
+        if passLocation, hasGPS { location.start(qemu: qemu) }
 
         // One timer for everything: the device's own state, the vibrator, the guest's pasteboard, the battery.
         // Four times a second is enough to feel immediate without costing anything.
@@ -175,6 +181,7 @@ final class DeviceControls: ObservableObject {
         timer?.invalidate()
         timer = nil
         stopMotion()
+        location.stop()
         stopBuzz()
         running = false
     }
@@ -348,6 +355,12 @@ final class DeviceControls: ObservableObject {
     func shake() { qemu?.shake?() }
 
     // MARK: - Motion
+
+    func setLocation(_ on: Bool) {
+        UserDefaults.standard.set(on, forKey: "passLocation")
+        guard running, hasGPS else { return }
+        on ? location.start(qemu: qemu) : location.stop()
+    }
 
     func setMotion(_ on: Bool) {
         UserDefaults.standard.set(on, forKey: "passMotion")

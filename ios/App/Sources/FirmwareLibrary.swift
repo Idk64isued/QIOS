@@ -85,6 +85,19 @@ struct CatalogFirmware: Decodable, Identifiable, Hashable {
     let source: Source
     let recipe: Recipe?
     let estimates: Estimates?
+    /// A build Apple seeded before the release: "beta" (with its number) or "gm".
+    let prerelease: String?
+    let prereleaseNumber: Int?
+
+    /// The seed's short name, as the version badge shows it: "BETA 2", "GM"; nil for a release.
+    var prereleaseLabel: String? {
+        switch prerelease?.lowercased() {
+        case "beta": return prereleaseNumber.map { "BETA \($0)" } ?? "BETA"
+        case "gm": return "GM"
+        case let other?: return other.uppercased()
+        case nil: return nil
+        }
+    }
 
     var major: Int { Int(version.prefix { $0 != "." }) ?? 0 }
     /// "iPhone OS 3.1.3" for the versions that were called that, "iOS 4.2.1" after.

@@ -380,11 +380,13 @@ struct ClassicNavBar: View {
 struct ClassicPriceButton: View {
     let enabled: Bool
     let armed: Bool
+    /// In place of FREE / INSTALL (the Downloads tab's INSTALL AGAIN).
+    var title: String? = nil
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Text(armed ? "INSTALL" : "FREE")
+            Text(title ?? (armed ? "INSTALL" : "FREE"))
                 .font(Classic.font(11, bold: true))
                 .foregroundStyle(armed ? .white : Classic.priceText)
                 .shadow(color: armed ? .black.opacity(0.35) : .clear, radius: 0, y: -1)
@@ -415,12 +417,13 @@ struct ClassicPriceButton: View {
 /// and Search, each app with its own page (screenshots, ratings, reviews, every archived version). Full screen.
 struct LegacyStoreView: View {
     @StateObject private var store = LegacyStoreClient()
+    @ObservedObject private var downloads = StoreDownloads.shared
     /// The running device's agent; nil when no device is running (the store can still be browsed).
     let agent: GuestAgent?
     let target: StoreTarget
     let onDismiss: () -> Void
 
-    enum Tab: Hashable { case featured, charts, categories, search }
+    enum Tab: Hashable { case featured, charts, categories, search, downloads }
     enum FeaturedPart: Hashable { case forDevice, collections }
 
     /// A list opened from Featured or Categories.
@@ -434,10 +437,7 @@ struct LegacyStoreView: View {
 
     @State private var tab: Tab = .featured
     @State private var featuredPart: FeaturedPart = .forDevice
-    @State private var busy: Int?  // the ipa_id being downloaded or installed
-    @State private var progress: Double = 0
     @State private var message = ""
-    @State private var messageIsGood = false
     @State private var armed: Int?  // the row whose FREE has turned into INSTALL
     @State private var suggested: [CatalogApp] = []
     @State private var page: StoreApp?
@@ -461,7 +461,9 @@ struct LegacyStoreView: View {
         VStack(spacing: 0) {
             ClassicNavBar(title: title, left: backButton, right: ("Done", onDismiss))
             if tab == .search && drill == nil { searchBar }
-            if agent == nil { notice("Start a device to install apps. You can browse meanwhile.") }
+            if agent == nil && tab != .downloads {
+                notice("No device is running: apps you get are downloaded, ready to install from Downloads.")
+            }
             Group {
                 if let drill {
                     appList(drill)
@@ -471,11 +473,12 @@ struct LegacyStoreView: View {
                     case .charts: charts
                     case .categories: categories
                     case .search: searchResults
+                    case .downloads: StoreDownloadsList(downloads: downloads, agent: agent)
                     }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            if busy != nil || !message.isEmpty { statusStrip }
+            if !message.isEmpty || (downloads.activeCount > 0 && tab != .downloads) { statusStrip }
             tabBar
         }
         .background(Color.white.ignoresSafeArea())
@@ -488,7 +491,7 @@ struct LegacyStoreView: View {
             if store.query.isEmpty { suggested = store.results }
         }
         .fullScreenCover(item: $page) { app in
-            StoreAppPage(app: app, store: store, canInstall: agent != nil && busy == nil) { copy in
+            StoreAppPage(app: app, store: store, canInstall: true) { copy in
                 page = nil
                 install(copy)
             } onClose: { page = nil }
@@ -508,6 +511,7 @@ struct LegacyStoreView: View {
         case .charts: return chart?.type.name ?? "Top Charts"
         case .categories: return "Categories"
         case .search: return "Search"
+        case .downloads: return "Downloads"
         }
     }
 
@@ -972,13 +976,14 @@ struct LegacyStoreView: View {
             }
             .buttonStyle(.plain)
 
-            if busy == app.ipaID {
+            if let active = downloads.activeEntry(ipaID: app.ipaID) {
                 VStack(spacing: 4) {
-                    ProgressView(value: progress).frame(width: 60).tint(Classic.hex(0x3D6EBF))
-                    Text(progress < 0.999 ? "Loading" : "Installing").font(Classic.font(10)).foregroundStyle(Classic.rowDetail)
+                    ProgressView(value: min(1, max(0, active.progress))).frame(width: 60).tint(Classic.hex(0x3D6EBF))
+                    Text(active.state == .waiting ? "Waiting" : active.state == .installing ? "Installing" : "Loading")
+                        .font(Classic.font(10)).foregroundStyle(Classic.rowDetail)
                 }
             } else if app.isCompatible {
-                ClassicPriceButton(enabled: agent != nil && busy == nil, armed: armed == app.ipaID) {
+                ClassicPriceButton(enabled: true, armed: armed == app.ipaID) {
                     if armed == app.ipaID {
                         armed = nil
                         install(app)
@@ -994,18 +999,25 @@ struct LegacyStoreView: View {
         .overlay(alignment: .bottom) { Classic.separator.frame(height: 1) }
     }
 
-    /// What is downloading or installing, and the last result, above the tab bar like the store's download strip.
+    /// What is downloading or installing, and the last word, above the tab bar like the store's download strip; a tap
+    /// opens Downloads.
     private var statusStrip: some View {
-        HStack(spacing: 8) {
-            if busy != nil {
+        let active = downloads.entries.first { $0.state == .downloading || $0.state == .installing }
+            ?? downloads.entries.first(where: \.isActive)
+        return HStack(spacing: 8) {
+            if let active {
                 ProgressView().tint(.white).scaleEffect(0.8)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(downloads.activeCount > 1 ? "\(active.name) and \(downloads.activeCount - 1) more" : active.name)
+                        .font(Classic.font(12, bold: true)).foregroundStyle(.white).lineLimit(1)
+                    Text(active.status).font(Classic.font(11)).foregroundStyle(.white.opacity(0.75)).lineLimit(1)
+                }
             } else {
-                Image(systemName: messageIsGood ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                    .foregroundStyle(messageIsGood ? Classic.installTop : Classic.hex(0xF0A050))
+                Image(systemName: "exclamationmark.circle.fill").foregroundStyle(Classic.hex(0xF0A050))
+                Text(message).font(Classic.font(12, bold: true)).foregroundStyle(.white).lineLimit(3)
             }
-            Text(message).font(Classic.font(12, bold: true)).foregroundStyle(.white).lineLimit(3)
             Spacer(minLength: 0)
-            if busy == nil {
+            if active == nil {
                 Button { message = "" } label: { Image(systemName: "xmark").foregroundStyle(.white.opacity(0.7)) }
                     .buttonStyle(.plain)
             }
@@ -1013,6 +1025,13 @@ struct LegacyStoreView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(Classic.hex(0x26303D).opacity(0.95))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if active != nil {
+                tab = .downloads
+                drill = nil
+            }
+        }
     }
 
     private var tabBar: some View {
@@ -1021,6 +1040,7 @@ struct LegacyStoreView: View {
             tabItem(.charts, "Top 50", "list.number")
             tabItem(.categories, "Categories", "square.grid.2x2.fill")
             tabItem(.search, "Search", "magnifyingglass")
+            tabItem(.downloads, "Downloads", "arrow.down.circle.fill", badge: downloads.activeCount)
         }
         .frame(height: 49)
         .background(
@@ -1032,7 +1052,7 @@ struct LegacyStoreView: View {
         .overlay(alignment: .top) { Color.black.frame(height: 1) }
     }
 
-    private func tabItem(_ which: Tab, _ label: String, _ symbol: String) -> some View {
+    private func tabItem(_ which: Tab, _ label: String, _ symbol: String, badge: Int = 0) -> some View {
         let selected = tab == which
         return Button {
             tab = which
@@ -1047,6 +1067,22 @@ struct LegacyStoreView: View {
                         : AnyShapeStyle(Classic.tabIdle))
                 Text(label).font(Classic.font(10, bold: true)).foregroundStyle(selected ? Color.white : Classic.tabIdle)
             }
+            .overlay(alignment: .topTrailing) {
+                if badge > 0 {
+                    // The red badge of the time: a glossy oval with a white rim.
+                    Text("\(badge)")
+                        .font(Classic.font(12, bold: true))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .frame(minWidth: 20, minHeight: 20)
+                        .background(
+                            LinearGradient(colors: [Classic.hex(0xF26A5F), Classic.hex(0xC8160D)], startPoint: .top, endPoint: .bottom),
+                            in: Capsule())
+                        .overlay(Capsule().stroke(.white, lineWidth: 1.5))
+                        .shadow(color: .black.opacity(0.5), radius: 1, y: 1)
+                        .offset(x: -10, y: 0)
+                }
+            }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(selected ? Color.white.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 4))
             .padding(.horizontal, 3)
@@ -1055,33 +1091,12 @@ struct LegacyStoreView: View {
         .buttonStyle(.plain)
     }
 
+    /// Into the Downloads queue: downloaded, then installed on the running device if there is one.
     private func install(_ app: CatalogApp) {
-        guard let agent, busy == nil else { return }
-        busy = app.ipaID
-        progress = 0
-        messageIsGood = false
-        message = "Downloading \(app.name)\u{2026}"
-        Task {
-            defer { busy = nil }
-            do {
-                let file = try await store.downloadIPA(app) { fraction in
-                    Task { @MainActor in progress = max(0, fraction) }
-                }
-                defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
-                message = "Installing \(app.name)\u{2026}"
-                let installed = try await agent.installApp(ipa: file) { fraction, status in
-                    Task { @MainActor in
-                        progress = fraction
-                        message = status
-                    }
-                }
-                messageIsGood = true
-                message = installed.needsRestart
-                    ? "\(installed.name) is installed. Restart the device to see its icon."
-                    : "\(installed.name) is installed. Find it on the Home screen."
-            } catch {
-                message = error is CancellationError ? "Cancelled." : error.localizedDescription
-            }
+        if !downloads.enqueue(app, store: store, agent: agent) {
+            message = "\(app.name) is already downloading."
+        } else {
+            message = ""
         }
     }
 }

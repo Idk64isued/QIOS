@@ -195,7 +195,16 @@ struct RootView: View {
     @State private var showAddDevice = false
     @State private var showStorage = false
     @State private var showAllSettings = false
+    @State private var showSixSettings = false
+    @State private var showConsole = false
+    /// What the iOS 6 Settings sheet opens over itself.
+    @State private var sixAllSettings = false
+    @State private var sixReport = false
+    @State private var sixConsole = false
+    @State private var sixShare: ShareItem?
     @State private var swept = false
+    /// Settings › Home Screen: Springboard, the original list in iOS 6's look, or in the glass look.
+    @AppStorage("homeInterface") private var interfaceRaw = HomeInterface.springboard.rawValue
 
     var body: some View {
         if let running, emulator.showsScreen {
@@ -215,6 +224,12 @@ struct RootView: View {
         emulator.boot(directory: device.url)
     }
 
+    private func addDeviceClosed(_ device: DeviceFolder?, _ start: Bool) {
+        showAddDevice = false
+        reload()
+        if let device, start { boot(device) }
+    }
+
     private func exportLog() {
         if let url = LTMLog.exportCopy() {
             logNote = ""
@@ -226,25 +241,65 @@ struct RootView: View {
 
     // MARK: - Home
 
-    private var home: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: 16) {
-                heroSection
-                statusRow
-                if case .failed(let msg) = emulator.state {
-                    errorBanner(msg)
-                }
-                devicesSection
-                librarySection
-                settingsSection
-                logSection
-                footer
-            }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 24)
+    private var interface: HomeInterface { HomeInterface(rawValue: interfaceRaw) ?? .springboard }
+
+    private var failure: String? {
+        if case .failed(let msg) = emulator.state { return msg }
+        return nil
+    }
+
+    private var actions: HomeActions {
+        HomeActions(
+            boot: { boot($0) },
+            erase: { device in
+                Library.removeTree(device.url.appendingPathComponent("overlay", isDirectory: true))
+                devices = Library.scan()
+            },
+            addDevice: { showAddDevice = true },
+            store: { showLegacyStore = true },
+            storage: { showStorage = true },
+            settings: { showSixSettings = true },
+            allSettings: { showAllSettings = true },
+            console: { showConsole = true },
+            report: { showReport = true },
+            exportLog: { exportLog() },
+            clearLog: {
+                try? FileManager.default.removeItem(at: LTMLog.url)
+                logNote = "Log cleared."
+            })
+    }
+
+    /// The same, for the iOS 6 Settings sheet: what it opens goes over it.
+    private var sixActions: HomeActions {
+        let base = actions
+        return HomeActions(
+            boot: base.boot, erase: base.erase, addDevice: base.addDevice, store: base.store, storage: base.storage,
+            settings: {},
+            allSettings: { sixAllSettings = true },
+            console: { sixConsole = true },
+            report: { sixReport = true },
+            exportLog: {
+                if let url = LTMLog.exportCopy() { sixShare = ShareItem(url: url) }
+            },
+            clearLog: base.clearLog)
+    }
+
+    @ViewBuilder private var homeInterface: some View {
+        switch interface {
+        case .springboard:
+            SpringboardHome(devices: devices, failure: failure, actions: actions)
+        case .classic:
+            ClassicHome(devices: devices, failure: failure, engine: emulator.engine, actions: actions,
+                        bezel: $bezel, rect2d: $rect2d, fastGL: $fastGL, diag: $diag, enableUSB: $enableUSB,
+                        codeCacheMB: $codeCacheMB, logNote: logNote)
+                .refreshable { reload() }
+        case .modern:
+            modernHome
         }
-        .background { LTBackground() }
-        .refreshable { reload() }
+    }
+
+    private var home: some View {
+        homeInterface
         .onAppear {
             if !swept {
                 swept = true
@@ -263,11 +318,9 @@ struct RootView: View {
             LegacyStoreView(agent: nil, target: devices.first?.storeTarget ?? StoreTarget()) { showLegacyStore = false }
         }
         .sheet(isPresented: $showAddDevice) {
-            AddDeviceView { device, start in
-                showAddDevice = false
-                reload()
-                if let device, start { boot(device) }
-            }
+            // The Setup Assistant for every interface: iOS 6's look, or with the glass home screen the glass one.
+            SetupAssistantView { device, start in addDeviceClosed(device, start) }
+                .environment(\.glassStyle, interface == .modern)
         }
         .sheet(isPresented: $showStorage, onDismiss: { reload() }) {
             StorageView { showStorage = false }
@@ -275,6 +328,38 @@ struct RootView: View {
         .sheet(isPresented: $showAllSettings) {
             DeviceSettingsView { showAllSettings = false }
         }
+        .sheet(isPresented: $showSixSettings) {
+            SixHomeSettings(actions: sixActions) { showSixSettings = false }
+                // Sheets of their own, over this one.
+                .sheet(isPresented: $sixAllSettings) { DeviceSettingsView { sixAllSettings = false } }
+                .sheet(isPresented: $sixReport) {
+                    ReportSheet(deviceName: nil, deviceDetails: nil, screen: nil) { sixReport = false }
+                }
+                .sheet(isPresented: $sixConsole) { ConsoleView { sixConsole = false } }
+                .sheet(item: $sixShare) { item in ActivityView(items: [item.url]) }
+        }
+        .sheet(isPresented: $showConsole) { ConsoleView { showConsole = false } }
+    }
+
+    private var modernHome: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 16) {
+                heroSection
+                statusRow
+                if case .failed(let msg) = emulator.state {
+                    errorBanner(msg)
+                }
+                devicesSection
+                librarySection
+                settingsSection
+                logSection
+                footer
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 24)
+        }
+        .background { LTBackground() }
+        .refreshable { reload() }
     }
 
     // MARK: - Hero
@@ -572,6 +657,8 @@ struct RootView: View {
 
     private var logSection: some View {
         GlassCard("Log", symbol: "doc.text.magnifyingglass") {
+            // Four buttons are wider than a phone in portrait: they scroll sideways rather than squeeze.
+            ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
                 Button {
                     exportLog()
@@ -598,6 +685,18 @@ struct RootView: View {
                 }
                 .buttonStyle(.plain)
 
+                Button {
+                    showConsole = true
+                } label: {
+                    Label("Console", systemImage: "terminal")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Theme.accent)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Theme.accent.opacity(0.12), in: Capsule())
+                }
+                .buttonStyle(.plain)
+
                 Button(role: .destructive) {
                     try? FileManager.default.removeItem(at: LTMLog.url)
                     logNote = "Log cleared."
@@ -612,6 +711,7 @@ struct RootView: View {
                 .buttonStyle(.plain)
 
                 Spacer()
+            }
             }
             if !logNote.isEmpty {
                 Text(logNote).font(.system(size: 12, design: .rounded)).foregroundStyle(Theme.secondaryText)
@@ -828,6 +928,12 @@ struct EmulatorScreen: View {
     @State private var showTweaks = false
     @State private var microphone: Microphone?
     @State private var micOn = false
+    /// The mic was turned on by hand from the menu; followGuest then leaves it alone instead of switching it off
+    /// when the guest doesn't seem to be reading it. Lets the user test the mic even if the "is the guest
+    /// listening?" detection is wrong on a board.
+    @State private var micForced = false
+    /// The Console sheet: the device's serial console and Light Touch's log, live (ConsoleView).
+    @State private var showConsole = false
     @State private var recorder: ScreenRecorder?
     @State private var reportScreen: CGImage?
     @Environment(\.scenePhase) private var scenePhase
@@ -877,6 +983,7 @@ struct EmulatorScreen: View {
         .onAppear {
             details = device.details
             modem.qemu = emulator.qemu
+            controls.hasGPS = details.board?.hasGPS ?? false
             controls.start(qemu: emulator.qemu)
             if let agent = emulator.agent { controls.watchGuestOrientation(agent: agent) }
             volume.onVolumeUp = { emulator.press(2) }
@@ -912,6 +1019,7 @@ struct EmulatorScreen: View {
             if state == .running { playStartupTone() }
         }
         .sheet(item: $shareItem) { item in ActivityView(items: [item.url]) }
+        .sheet(isPresented: $showConsole) { ConsoleView { showConsole = false } }
         .sheet(isPresented: $showDeviceReport) {
             ReportSheet(deviceName: device.name, deviceDetails: device.subtitle, screen: reportScreen) {
                 showDeviceReport = false
@@ -1111,7 +1219,7 @@ struct EmulatorScreen: View {
             }
             Spacer()
             Button {
-                if let url = LTMLog.exportCopy() { shareItem = ShareItem(url: url) }
+                showConsole = true
             } label: {
                 Text("Console")
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
@@ -1181,6 +1289,8 @@ struct EmulatorScreen: View {
                 }
                 if micOn {
                     Button { toggleMicrophone() } label: { Label("Stop the microphone now", systemImage: "mic.slash") }
+                } else if Microphone.supported(board: details.board?.rawValue) {
+                    Button { toggleMicrophone() } label: { Label("Turn the microphone on", systemImage: "mic") }
                 }
                 if emulator.agent != nil {
                     Button { showTweaks = true } label: { Label("Tweaks\u{2026}", systemImage: "wand.and.stars") }
@@ -1369,11 +1479,20 @@ struct EmulatorScreen: View {
         else { return }
         var quietSince: Date?
         var refused = false
+        var wasListening = false
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 500_000_000)
             guard let qemu = emulator.qemu, let listening = qemu.micListening else { continue }
+            // Forced on from the menu: hold the mic open and let followGuest leave it alone.
+            if micForced { continue }
+            // Log when the guest starts or stops reading the microphone, so a mic that never engages is visible.
+            let hears = listening()
+            if hears != wasListening {
+                wasListening = hears
+                LTMLog.note("microphone: guest \(hears ? "started" : "stopped") reading the mic input")
+            }
             let wanted = UserDefaults.standard.object(forKey: "microphone") as? Bool ?? true
-            if wanted, !refused, listening() {
+            if wanted, !refused, hears {
                 quietSince = nil
                 if !micOn {
                     guard let mic = microphone ?? Microphone(qemu: qemu) else { return }
@@ -1406,6 +1525,7 @@ struct EmulatorScreen: View {
         if micOn {
             microphone?.stop()
             micOn = false
+            micForced = false
             toast = "Microphone off."
             return
         }
@@ -1416,7 +1536,8 @@ struct EmulatorScreen: View {
                 toast = why
             } else {
                 micOn = true
-                toast = "The device hears this phone\u{2019}s microphone."
+                micForced = true   // held open until turned off by hand, whatever the guest seems to be doing
+                toast = "Microphone forced on. Record something and check the log."
             }
             try? await Task.sleep(nanoseconds: 2_500_000_000)
             toast = ""

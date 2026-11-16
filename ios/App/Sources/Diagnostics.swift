@@ -31,6 +31,11 @@ enum LTMLog {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("lighttouch.log")
     }
 
+    /// The running device's serial console (Emulator.bootConfig), rewritten every boot.
+    static var serialURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("serial.log")
+    }
+
     static func start() {
         started = ProcessInfo.processInfo.systemUptime
         _ = freopen(url.path, "w", stderr)

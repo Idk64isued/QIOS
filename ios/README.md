@@ -14,6 +14,28 @@ Launch with JIT), open Light Touch, then tap **Add Device**.
   prepared in the Mac app and copied over.
 - **Your own IPSW**: pick the file; it is matched to the catalog by its SHA-1.
 
+Add Device is a Setup Assistant: slide to set up, choose a device, choose its software, name it and pick its options,
+watch it being set up, then "Welcome to your iPod touch" with Start Using. It is iOS 6's look with the Springboard and
+iOS 6 list home screens, and the glass look (gradient, frosted cards, system switches) with the glass one.
+Each version in the lists carries a badge: its major version on a tile in that version's own colours (Light Touch's
+design, not Apple's artwork), with a red BETA n or a gold GM tag on a developer seed (the catalog's `prerelease`).
+
+## Home screen (Settings › Home Screen)
+
+- **Springboard** (the default): iOS 4–6's Home screen. Each device is an icon on a wallpaper, in pages of 20 with
+  dots; the glass dock holds Add Device, the Legacy Store, Settings and Storage; Console and Feedback sit after the
+  devices. Tap a device to start it, hold it for Start and Erase content. A device that will resume carries a blue
+  badge. JIT being off, or a start that failed, shows as an iOS 5 notification banner.
+- **Original (iOS 6)**: the original home screen, section for section (status, devices, library, settings, log),
+  drawn as iOS 6's grouped tables on pinstripes with its ON/OFF switches.
+- **Original (Glass)**: the original look, with a Console button in its Log card.
+
+The two iOS 6 interfaces come in light and dark (Settings › Appearance, or the phone's own setting). iOS 6 never had a
+dark mode; this one is what it would have been: the black glossy bars of its media apps, slate pinstripes, charcoal
+cells, the same blue for what's chosen, and the wallpaper at night. Their Settings screen (the dock's Settings icon, or
+the list's Settings button) holds the home screen and appearance choices, the settings the original home screen
+carries, All Settings, and the log.
+
 The Mac files come from the release named in `MacFiles.releaseTag` (FirmwareLibrary.swift). It has to be the release
 built from the same sources as this repository's emulator (`build-support/sources.json`): the guest's graphics library
 and the emulator speak a versioned protocol. Change the tag together with an upstream sync.
@@ -220,6 +242,17 @@ can't download alongside yet.
   it, and code that doesn't modify itself runs the same.
 - `build-qemu.sh` configures with `--disable-qom-cast-debug`: QEMU otherwise checks every QOM cast (each device
   register access casts its device) by looking the type up.
+- `patches/qemu-ios/0015`: a read cache in the NAND image layer. Each emulated flash read is a blocking `blk_pread`
+  that parks the virtual CPU until it completes, and an iOS 4 boot does a huge number of them (data protection
+  decrypts the system a page at a time), so the guest spends most of a boot stalled on storage while the host sits
+  idle. A hit serves the page from RAM. It is read-only data — a write updates its own slot and an erase drops the
+  block's slots, so it can never hand back stale or lost data. `IT_NAND_CACHE` sets the slot count (default 8192,
+  about 17 MB for an A4's records; 0 turns it off). With diagnostics on, the log prints the hit rate now and then.
+- `patches/qemu-ios/0016`: the ANGLE renderer's frame buffer on an IOSurface (EGL_ANGLE_iosurface_client_buffer), as
+  the EAGL renderer's already was. On Metal the texture the guest draws into is the IOSurface's own memory, so each
+  present copies out of a mapped page instead of a `glReadPixels`, which on the phone's tile-based GPU was a full
+  pipeline drain plus a second copy every frame. If ANGLE lacks the extension or binds IOSurfaces to a rectangle
+  target (macOS), it keeps the readback; the log says which (`[gles-angle] frame buffer on an IOSurface`).
 - The screen is drawn through Metal (`MetalPresenter`): one copy of each frame into a shared texture and a blit,
   instead of a CGImage per frame that Core Animation copied and converted again.
 - The profiler samples 10 times a second (it was 50; every sample stops the virtual CPU for a moment).
@@ -319,6 +352,13 @@ the site's collections), Top 50 (any chart type, as it stood on any archived day
 Categories and Search. Each app's page has its archived screenshots (by version), star rating, description,
 information, reviews and every archived version. "Report" on an app's page records how it ran (kept on this phone,
 shown in the lists, put into reports, and postable as a GitHub issue; Legacy Store's API takes no submissions).
+
+**Downloads** (the fifth tab, with a red badge while anything is going): what is downloading or installing, what is
+waiting its turn, and what came down before. Getting several apps queues them, one download at a time, and closing
+the store doesn't stop them. With no device running, apps are just downloaded; INSTALL on a downloaded app puts it on
+whichever device is running later, and INSTALL AGAIN reinstalls one without fetching it again. The IPAs are kept in the
+Downloads cache (the system may clear it when the phone is short of space); Clear, or holding a row and Remove,
+deletes them. The list survives relaunches.
 
 ## How a build is checked
 

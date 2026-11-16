@@ -64,8 +64,8 @@ enum Reports {
             $0.withMemoryRebound(to: CChar.self, capacity: 256) { String(cString: $0) }
         }
         let defaults = UserDefaults.standard
-        let settings = ["viewMode", "appearance", "keepState", "passBattery", "reportCharger", "mirrorVibration", "passMotion",
-                        "cellularModem", "enableUSB", "netRestricted", "netLAN", "codeCacheMB", "fastGL", "rect2d", "diag", "sharpPixels", "coolMode",
+        let settings = ["viewMode", "appearance", "homeInterface", "keepState", "passBattery", "reportCharger", "mirrorVibration", "passMotion",
+                        "cellularModem", "enableUSB", "verboseBoot", "kernelConsole", "passLocation", "netRestricted", "netLAN", "codeCacheMB", "fastGL", "rect2d", "diag", "sharpPixels", "coolMode",
                         "wifiNetwork", "debugPort", "rawKeyboard", "microphone", "glRenderer"]
             .compactMap { key in defaults.object(forKey: key).map { "\(key)=\($0)" } }
             .joined(separator: " ")
@@ -118,6 +118,9 @@ enum Reports {
         try summary(context).write(to: work.appendingPathComponent("report.txt"), atomically: true, encoding: .utf8)
         if fm.fileExists(atPath: LTMLog.url.path) {
             try? fm.copyItem(at: LTMLog.url, to: work.appendingPathComponent("lighttouch.log"))
+        }
+        if fm.fileExists(atPath: LTMLog.serialURL.path) {
+            try? fm.copyItem(at: LTMLog.serialURL, to: work.appendingPathComponent("serial.log"))
         }
         if let previous = previousSession {
             try? fm.copyItem(at: previous, to: work.appendingPathComponent("previous-" + previous.lastPathComponent))

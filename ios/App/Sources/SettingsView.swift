@@ -22,16 +22,20 @@ struct DeviceSettingsView: View {
     @AppStorage("coolMode") private var coolMode = false
     @AppStorage("keepState") private var keepState = true
     @AppStorage("appearance") private var appearance = "system"
+    @AppStorage("homeInterface") private var homeInterface = HomeInterface.springboard.rawValue
     @AppStorage("passBattery") private var passBattery = true
     @AppStorage("reportCharger") private var reportCharger = true
     @AppStorage("mirrorVibration") private var mirrorVibration = true
     @AppStorage("passMotion") private var passMotion = false
+    @AppStorage("passLocation") private var passLocation = true
     @AppStorage("cellularModem") private var cellularModem = true
     @AppStorage("enableUSB") private var enableUSB = false
     @AppStorage("netRestricted") private var netRestricted = false
     @AppStorage("netLAN") private var netLAN = false
     @AppStorage("wifiNetwork") private var wifiNetwork = false
     @AppStorage("debugPort") private var debugPort = false
+    @AppStorage("verboseBoot") private var verboseBoot = false
+    @AppStorage("kernelConsole") private var kernelConsole = false
     @AppStorage("rawKeyboard") private var rawKeyboard = true
     @AppStorage("microphone") private var microphone = true
     @AppStorage("glRenderer") private var glRenderer = "angle"
@@ -77,6 +81,20 @@ struct DeviceSettingsView: View {
                                     .font(.system(size: 11, design: .rounded))
                                     .foregroundStyle(Theme.secondaryText)
                             }
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Home screen")
+                                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                                    .foregroundStyle(Theme.primaryText)
+                                Picker("", selection: $homeInterface) {
+                                    Text("Springboard").tag(HomeInterface.springboard.rawValue)
+                                    Text("iOS 6 list").tag(HomeInterface.classic.rawValue)
+                                    Text("Glass").tag(HomeInterface.modern.rawValue)
+                                }
+                                .pickerStyle(.segmented)
+                                Text((HomeInterface(rawValue: homeInterface) ?? .springboard).detail)
+                                    .font(.system(size: 11, design: .rounded))
+                                    .foregroundStyle(Theme.secondaryText)
+                            }
                         }
 
                         GlassCard("This phone stands in for", symbol: "iphone.radiowaves.left.and.right") {
@@ -93,6 +111,12 @@ struct DeviceSettingsView: View {
                                 "Tilt and compass",
                                 "Tilting this phone tilts the device, and its compass follows yours.",
                                 isOn: $passMotion, onChange: { controls?.setMotion($0) })
+                            if device == nil || details.board?.hasGPS == true {
+                                toggle(
+                                    "Location",
+                                    "The iPhone 3GS\u{2019}s GPS reports where this phone is, so Maps and location apps find you.",
+                                    isOn: $passLocation, onChange: { controls?.setLocation($0) })
+                            }
                         }
 
                         GlassCard("Network", symbol: "network") {
@@ -145,6 +169,17 @@ struct DeviceSettingsView: View {
                                         .foregroundStyle(Theme.accent)
                                 }
                             }
+                        }
+
+                        GlassCard("Boot", symbol: "terminal") {
+                            toggle(
+                                "Verbose boot",
+                                "The kernel\u{2019}s messages scroll on the device\u{2019}s screen instead of the Apple logo, so a slow or stuck boot shows where it is. Takes effect on the next boot.",
+                                isOn: $verboseBoot)
+                            toggle(
+                                "Kernel console",
+                                "The kernel writes its log to the device\u{2019}s serial port, which Console \u{203A} Device shows live and reports include. Takes effect on the next boot.",
+                                isOn: $kernelConsole)
                         }
 
                         GlassCard("Graphics", symbol: "cube.transparent") {

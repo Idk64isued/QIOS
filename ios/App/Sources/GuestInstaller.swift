@@ -113,24 +113,30 @@ extension GuestAgent {
         if skipped > 0 { log("Skipped \(skipped) link(s) in the bundle") }
         let totalBytes = max(1, files.reduce(0) { $0 + $1.size })
 
-        // 4. The helper, then the folders.
+        // 4. The helper.
         progress(0.06, "Preparing the device\u{2026}")
         try await ensureHelper()
-        try await runHelper(uid: uid, gid: gid, paths: folders, what: "make the app\u{2019}s folders")
 
-        // 5. The files.
-        var sent = 0
-        for file in files {
-            let label = "Copying \(display)\u{2026} " + String(format: "%.0f%%", Double(sent) / Double(totalBytes) * 100)
-            progress(0.08 + 0.80 * Double(sent) / Double(totalBytes), label)
-            guard await putFile(localURL: file.local, guestPath: file.guest, mode: file.executable ? "0755" : "0644") else {
-                throw InstallFailure(message: "Copying \((file.guest as NSString).lastPathComponent) into the device failed. \(lastLog)")
+        // 5. The bundle: one archive and lt-unpack where it can (a few large uploads and one call), else file by
+        // file. The agent serves one request and sleeps a quarter of a second, and each put fsyncs, so an app of a
+        // few hundred files took minutes the old way.
+        let packed = await installByArchive(
+            folders: folders, files: files, uid: uid, gid: gid, display: display, progress: progress)
+        if !packed {
+            try await runHelper(uid: uid, gid: gid, paths: folders, what: "make the app\u{2019}s folders")
+            var sent = 0
+            for file in files {
+                let label = "Copying \(display)\u{2026} " + String(format: "%.0f%%", Double(sent) / Double(totalBytes) * 100)
+                progress(0.08 + 0.80 * Double(sent) / Double(totalBytes), label)
+                guard await putFile(localURL: file.local, guestPath: file.guest, mode: file.executable ? "0755" : "0644") else {
+                    throw InstallFailure(message: "Copying \((file.guest as NSString).lastPathComponent) into the device failed. \(lastLog)")
+                }
+                sent += file.size
             }
-            sent += file.size
+            // The agent writes files as root: give them to the app's owner (a path that exists only gets its owner set).
+            progress(0.9, "Setting permissions\u{2026}")
+            try await runHelper(uid: uid, gid: gid, paths: files.map { $0.guest }, what: "set the app\u{2019}s owner")
         }
-        // The agent writes files as root: give them to the app's owner (a path that exists only gets its owner set).
-        progress(0.9, "Setting permissions\u{2026}")
-        try await runHelper(uid: uid, gid: gid, paths: files.map { $0.guest }, what: "set the app\u{2019}s owner")
 
         // 6. Register it.
         var needsRestart = false
@@ -203,6 +209,67 @@ extension GuestAgent {
         return (folders, files, skipped)
     }
 
+    /// Where the archive waits in the guest while lt-unpack reads it (it unlinks it when done).
+    static let archiveGuestPath = "/tmp/lt-install.ltpk"
+
+    /// The fast path: the bundle packed here (InstallPack), sent as one file, written by lt-unpack in the guest with
+    /// the owner set and one sync. false (after cleaning up) if any step fails, and the caller goes file by file.
+    func installByArchive(
+        folders: [String], files: [BundleFile], uid: Int, gid: Int, display: String,
+        progress: @escaping (Double, String) -> Void
+    ) async -> Bool {
+        guard ops.contains("putpart"), ops.contains("spawn"), await ensureUnpacker() else { return false }
+        let local = FileManager.default.temporaryDirectory.appendingPathComponent("lt-install-\(UUID().uuidString).ltpk")
+        defer { try? FileManager.default.removeItem(at: local) }
+        progress(0.08, "Packing \(display)\u{2026}")
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try InstallPack.write(folders: folders, files: files, to: local)
+            }.value
+        } catch {
+            log("Packing failed (\(error.localizedDescription)); copying file by file")
+            return false
+        }
+        let started = Date()
+        let sent = await putFile(localURL: local, guestPath: Self.archiveGuestPath, mode: "0600") { done, total in
+            let fraction = Double(done) / Double(max(total, 1))
+            progress(0.1 + 0.75 * fraction, "Copying \(display)\u{2026} " + String(format: "%.0f%%", fraction * 100))
+        }
+        guard sent else {
+            log("Sending the archive failed; copying file by file")
+            _ = await request("unlink \(Self.archiveGuestPath)")
+            return false
+        }
+        progress(0.86, "Unpacking \(display)\u{2026}")
+        guard let r = await run([GuestUnpackBinary.guestPath, String(uid), String(gid), Self.archiveGuestPath], timeout: 600)
+        else {
+            log("lt-unpack didn\u{2019}t answer; copying file by file")
+            _ = await request("unlink \(Self.archiveGuestPath)")
+            return false
+        }
+        guard r.status == 0 else {
+            log("lt-unpack failed (exit \(r.status): \(r.status == 2 ? "bad archive" : r.status == 3 ? "a file could not be written" : "error")); copying file by file")
+            _ = await request("unlink \(Self.archiveGuestPath)")
+            return false
+        }
+        log("Installed \(files.count) files and \(folders.count) folders from one archive in \(Int(Date().timeIntervalSince(started))) s")
+        return true
+    }
+
+    /// Puts lt-unpack into the guest once per session; false if it can't.
+    func ensureUnpacker() async -> Bool {
+        if unpackReady { return true }
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("lt-unpack")
+        guard (try? GuestUnpackBinary.data.write(to: tmp)) != nil else { return false }
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        guard await putFile(localURL: tmp, guestPath: GuestUnpackBinary.guestPath, mode: "0755") else {
+            log("Could not put lt-unpack into the device; copying file by file")
+            return false
+        }
+        unpackReady = true
+        return true
+    }
+
     /// Puts lt-mkdirs into the guest once per session.
     func ensureHelper() async throws {
         if helperReady { return }
@@ -254,5 +321,54 @@ extension GuestAgent {
                 ?? ((path as NSString).lastPathComponent as NSString).deletingPathExtension
             return GuestApp(bundleID: id, name: name, path: path)
         }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+}
+
+/// The archive lt-unpack reads (ios/guest-helper/lt-unpack.S), little-endian: "LTPK1\0\0\0", then records of type
+/// (1 folder, 2 file, 0 end), mode, path length, data length, the NUL-terminated path padded to 4 bytes and a file's
+/// bytes padded to 4 bytes. Folders come first, parents before children, as the walk lists them. Streamed to disk, so
+/// a large app is never in memory whole.
+enum InstallPack {
+    static let magic = Data("LTPK1\u{0}\u{0}\u{0}".utf8)
+
+    static func write(folders: [String], files: [GuestAgent.BundleFile], to url: URL) throws {
+        let fm = FileManager.default
+        guard fm.createFile(atPath: url.path, contents: nil) else {
+            throw GuestAgent.InstallFailure(message: "Couldn\u{2019}t make the install archive.")
+        }
+        let out = try FileHandle(forWritingTo: url)
+        defer { try? out.close() }
+        func u32(_ v: Int) -> Data {
+            var x = UInt32(truncatingIfNeeded: v).littleEndian
+            return Data(bytes: &x, count: 4)
+        }
+        func record(_ type: Int, _ mode: Int, _ path: String, _ length: Int) throws {
+            var p = Data(path.utf8)
+            p.append(0)
+            while p.count % 4 != 0 { p.append(0) }
+            guard p.count <= 1024 else {
+                throw GuestAgent.InstallFailure(message: "A path in the app is too long for the device: \(path)")
+            }
+            try out.write(contentsOf: u32(type) + u32(mode) + u32(p.count) + u32(length) + p)
+        }
+        try out.write(contentsOf: magic)
+        for folder in folders { try record(1, 0o755, folder, 0) }
+        for file in files {
+            let size = (try fm.attributesOfItem(atPath: file.local.path)[.size] as? NSNumber)?.intValue ?? 0
+            try record(2, file.executable ? 0o755 : 0o644, file.guest, size)
+            let input = try FileHandle(forReadingFrom: file.local)
+            defer { try? input.close() }
+            var copied = 0
+            while let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty {
+                try out.write(contentsOf: chunk)
+                copied += chunk.count
+            }
+            guard copied == size else {
+                throw GuestAgent.InstallFailure(message: "\(file.local.lastPathComponent) changed while it was packed.")
+            }
+            let pad = (4 - size % 4) % 4
+            if pad > 0 { try out.write(contentsOf: Data(count: pad)) }
+        }
+        try out.write(contentsOf: u32(0) + u32(0) + u32(0) + u32(0))
     }
 }

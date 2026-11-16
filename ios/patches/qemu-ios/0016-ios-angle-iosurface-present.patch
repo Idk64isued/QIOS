@@ -1,0 +1,200 @@
+diff --git a/hw/arm/gles-host-angle-gl.h b/hw/arm/gles-host-angle-gl.h
+index c0eaaf2e1c..de402a7893 100644
+--- a/hw/arm/gles-host-angle-gl.h
++++ b/hw/arm/gles-host-angle-gl.h
+@@ -3,14 +3,19 @@
+  * tests/ipad1/angle-names.sh checks that the ANGLE object references no other. */
+ #define GLES_ANGLE_FUNCTIONS(F) \
+     F(eglBindAPI) \
++    F(eglBindTexImage) \
+     F(eglChooseConfig) \
+     F(eglCreateContext) \
++    F(eglCreatePbufferFromClientBuffer) \
+     F(eglCreatePbufferSurface) \
+     F(eglDestroyContext) \
+     F(eglDestroySurface) \
++    F(eglGetConfigAttrib) \
+     F(eglGetProcAddress) \
+     F(eglInitialize) \
+     F(eglMakeCurrent) \
++    F(eglQueryString) \
++    F(eglReleaseTexImage) \
+     F(glActiveTexture) \
+     F(glAlphaFunc) \
+     F(glAttachShader) \
+@@ -203,14 +208,19 @@
+ GLES_ANGLE_FUNCTIONS(GLES_ANGLE_DECLARE)
+ 
+ #define eglBindAPI (*gles_angle_fn_eglBindAPI)
++#define eglBindTexImage (*gles_angle_fn_eglBindTexImage)
+ #define eglChooseConfig (*gles_angle_fn_eglChooseConfig)
+ #define eglCreateContext (*gles_angle_fn_eglCreateContext)
++#define eglCreatePbufferFromClientBuffer (*gles_angle_fn_eglCreatePbufferFromClientBuffer)
+ #define eglCreatePbufferSurface (*gles_angle_fn_eglCreatePbufferSurface)
+ #define eglDestroyContext (*gles_angle_fn_eglDestroyContext)
+ #define eglDestroySurface (*gles_angle_fn_eglDestroySurface)
++#define eglGetConfigAttrib (*gles_angle_fn_eglGetConfigAttrib)
+ #define eglGetProcAddress (*gles_angle_fn_eglGetProcAddress)
+ #define eglInitialize (*gles_angle_fn_eglInitialize)
+ #define eglMakeCurrent (*gles_angle_fn_eglMakeCurrent)
++#define eglQueryString (*gles_angle_fn_eglQueryString)
++#define eglReleaseTexImage (*gles_angle_fn_eglReleaseTexImage)
+ #define glActiveTexture (*gles_angle_fn_glActiveTexture)
+ #define glAlphaFunc (*gles_angle_fn_glAlphaFunc)
+ #define glAttachShader (*gles_angle_fn_glAttachShader)
+diff --git a/hw/arm/gles-host-angle.c.inc b/hw/arm/gles-host-angle.c.inc
+index 33f0e848d3..d684462c2d 100644
+--- a/hw/arm/gles-host-angle.c.inc
++++ b/hw/arm/gles-host-angle.c.inc
+@@ -123,6 +123,10 @@ static void CGLReleaseContext(CGLContextObj c)
+     g_hash_table_unref(c->rect_size);
+     g_free(c);
+ }
++/* The iPhone's own ES has no EGL to hand an IOSurface to (EAGL's texImageIOSurface: is gles-host-eagl.c's): readback. */
++static bool gles_angle_iosurface_bind(uint32_t w, uint32_t h) { (void)w; (void)h; return false; }
++static void *gles_angle_iosurface_lock(size_t *stride) { (void)stride; return NULL; }
++static void gles_angle_iosurface_unlock(void) {}
+ #else
+ static bool gles_angle_load(void)
+ {
+@@ -212,6 +216,122 @@ static void CGLReleaseContext(CGLContextObj c)
+     g_free(c);
+ }
+ 
++
++/* ---------------------------------------------------------------- IOSurface
++ * The frame buffer's color attachment as an IOSurface, as gles-host-eagl.c does for EAGL: ANGLE's
++ * EGL_ANGLE_iosurface_client_buffer makes a pbuffer of one, and eglBindTexImage puts that pbuffer behind the texture
++ * the caller has bound -- in place of its glTexImage2D. On Metal the texture IS the IOSurface's memory, so a present
++ * is a copy out of a mapped page instead of a glReadPixels: the readback that drains a tile-based GPU every frame. */
++#include <IOSurface/IOSurfaceRef.h>
++#ifndef EGL_IOSURFACE_ANGLE
++#define EGL_IOSURFACE_ANGLE 0x3454
++#define EGL_IOSURFACE_PLANE_ANGLE 0x345A
++#define EGL_TEXTURE_RECTANGLE_ANGLE 0x345B
++#define EGL_TEXTURE_TYPE_ANGLE 0x345C
++#define EGL_TEXTURE_INTERNAL_FORMAT_ANGLE 0x345D
++#endif
++#ifndef EGL_BIND_TO_TEXTURE_TARGET_ANGLE
++#define EGL_BIND_TO_TEXTURE_TARGET_ANGLE 0x348D
++#endif
++static IOSurfaceRef angle_surf;
++static EGLSurface angle_surf_pbuffer = EGL_NO_SURFACE;
++
++static void angle_dict_set_int(CFMutableDictionaryRef d, CFStringRef key, int v)
++{
++    CFNumberRef n = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &v);
++    if (n) {
++        CFDictionarySetValue(d, key, n);
++        CFRelease(n);
++    }
++}
++
++static bool gles_angle_iosurface_bind(uint32_t w, uint32_t h)
++{
++    if (angle_display == EGL_NO_DISPLAY) return false;
++    if (angle_surf_pbuffer != EGL_NO_SURFACE) {
++        /* Already made (one frame buffer per process, like EAGL's): behind whichever texture is bound now. */
++        eglReleaseTexImage(angle_display, angle_surf_pbuffer, EGL_BACK_BUFFER);
++        return eglBindTexImage(angle_display, angle_surf_pbuffer, EGL_BACK_BUFFER);
++    }
++    const char *ext = eglQueryString(angle_display, EGL_EXTENSIONS);
++    if (!ext || !strstr(ext, "EGL_ANGLE_iosurface_client_buffer")) {
++        fprintf(stderr, "[gles-angle] no EGL_ANGLE_iosurface_client_buffer; presenting by readback\n");
++        return false;
++    }
++    /* The texture target this config binds an IOSurface to: GL_TEXTURE_2D on Metal (the macOS GL backend's is a
++     * rectangle, which the frame buffer's GL_TEXTURE_2D attachment can't be). */
++    EGLint target = 0;
++    if (!eglGetConfigAttrib(angle_display, angle_config, EGL_BIND_TO_TEXTURE_TARGET_ANGLE, &target) ||
++        target != EGL_TEXTURE_2D) {
++        fprintf(stderr, "[gles-angle] IOSurfaces bind to target 0x%x here, not GL_TEXTURE_2D; presenting by readback\n",
++                target);
++        return false;
++    }
++    CFMutableDictionaryRef props = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
++                                                             &kCFTypeDictionaryValueCallBacks);
++    if (!props) return false;
++    angle_dict_set_int(props, kIOSurfaceWidth, (int)w);
++    angle_dict_set_int(props, kIOSurfaceHeight, (int)h);
++    angle_dict_set_int(props, kIOSurfaceBytesPerElement, 4);
++    angle_dict_set_int(props, kIOSurfacePixelFormat, 0x42475241); /* 'BGRA', the guest's CoreAnimation order */
++    angle_surf = IOSurfaceCreate(props);
++    CFRelease(props);
++    if (!angle_surf) {
++        fprintf(stderr, "[gles-angle] IOSurfaceCreate failed; presenting by readback\n");
++        return false;
++    }
++    EGLint attrs[] = {
++        EGL_WIDTH, (EGLint)w,
++        EGL_HEIGHT, (EGLint)h,
++        EGL_IOSURFACE_PLANE_ANGLE, 0,
++        EGL_TEXTURE_TARGET, EGL_TEXTURE_2D,
++        EGL_TEXTURE_INTERNAL_FORMAT_ANGLE, GL_BGRA_EXT,
++        EGL_TEXTURE_FORMAT, EGL_TEXTURE_RGBA,
++        EGL_TEXTURE_TYPE_ANGLE, GL_UNSIGNED_BYTE,
++        EGL_NONE,
++    };
++    angle_surf_pbuffer = eglCreatePbufferFromClientBuffer(angle_display, EGL_IOSURFACE_ANGLE,
++                                                          (EGLClientBuffer)angle_surf, angle_config, attrs);
++    if (angle_surf_pbuffer == EGL_NO_SURFACE) {
++        fprintf(stderr, "[gles-angle] ANGLE refused the IOSurface pbuffer; presenting by readback\n");
++        CFRelease(angle_surf);
++        angle_surf = NULL;
++        return false;
++    }
++    if (!eglBindTexImage(angle_display, angle_surf_pbuffer, EGL_BACK_BUFFER)) {
++        fprintf(stderr, "[gles-angle] eglBindTexImage failed; presenting by readback\n");
++        eglDestroySurface(angle_display, angle_surf_pbuffer);
++        angle_surf_pbuffer = EGL_NO_SURFACE;
++        CFRelease(angle_surf);
++        angle_surf = NULL;
++        return false;
++    }
++    fprintf(stderr, "[gles-angle] frame buffer on an IOSurface (%ux%u, %zu bytes a row)\n",
++            w, h, IOSurfaceGetBytesPerRow(angle_surf));
++    return true;
++}
++
++/* The frame's first byte, rows bottom-up, or NULL (the caller reads back for this frame). The caller has flushed;
++ * ANGLE's Metal command buffers are its own, so wait for them here before the CPU looks at the surface. */
++static void *gles_angle_iosurface_lock(size_t *stride)
++{
++    if (!angle_surf) return NULL;
++    glFinish();
++    if (IOSurfaceLock(angle_surf, kIOSurfaceLockReadOnly, NULL) != 0) return NULL;
++    void *base = IOSurfaceGetBaseAddress(angle_surf);
++    if (!base) {
++        IOSurfaceUnlock(angle_surf, kIOSurfaceLockReadOnly, NULL);
++        return NULL;
++    }
++    *stride = IOSurfaceGetBytesPerRow(angle_surf);
++    return base;
++}
++
++static void gles_angle_iosurface_unlock(void)
++{
++    if (angle_surf) IOSurfaceUnlock(angle_surf, kIOSurfaceLockReadOnly, NULL);
++}
++
+ #endif /* GLES_HOST_NATIVE_ES3 */
+ 
+ /* Desktop clip-plane setters receive doubles reconstructed from guest floats. */
+diff --git a/hw/arm/gles-host.c b/hw/arm/gles-host.c
+index cc15955c24..787626c9c6 100644
+--- a/hw/arm/gles-host.c
++++ b/hw/arm/gles-host.c
+@@ -1144,9 +1144,10 @@ static bool gles_platform_context_create(void)
+     return true;
+ }
+ static void gles_platform_make_current(void) { CGLSetCurrentContext(gh.cgl); }
+-static bool gles_platform_attach_iosurface(void) { return false; }
+-static void *gles_platform_frame_lock(size_t *stride) { return NULL; }
+-static void gles_platform_frame_unlock(void) {}
++/* gles-host-angle.c.inc: the attachment on an IOSurface through EGL_ANGLE_iosurface_client_buffer. */
++static bool gles_platform_attach_iosurface(void) { return gles_angle_iosurface_bind(GLES_FB_WIDTH, GLES_FB_HEIGHT); }
++static void *gles_platform_frame_lock(size_t *stride) { return gles_angle_iosurface_lock(stride); }
++static void gles_platform_frame_unlock(void) { gles_angle_iosurface_unlock(); }
+ 
+ #elif defined(GLES_HOST_EAGL)
+ 

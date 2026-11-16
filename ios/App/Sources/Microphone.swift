@@ -35,6 +35,10 @@ final class Microphone: @unchecked Sendable {
     private let listening: (@convention(c) () -> Bool)?
     private var converter: AVAudioConverter?
     private(set) var running = false
+    /// Frames handed to the emulator since the last log line; so a log shows whether the phone's mic is actually
+    /// reaching the guest (the first buffer, then about once a second).
+    private var framesSinceLog = 0
+    private var everFed = false
 
     /// The boards whose machines take microphone input.
     static func supported(board: String?) -> Bool {
@@ -129,5 +133,15 @@ final class Microphone: @unchecked Sendable {
             stereo[2 * i + 1] = mono[i]
         }
         _ = stereo.withUnsafeBufferPointer { write($0.baseAddress, Int32(n)) }
+        if !everFed {
+            everFed = true
+            LTMLog.note("microphone: first audio fed to the device (\(n) frames)")
+        }
+        framesSinceLog += n
+        if framesSinceLog >= 44100 {
+            let hearing = listening?() ?? false
+            LTMLog.note("microphone: feeding the device; guest \(hearing ? "is" : "is NOT") reading it")
+            framesSinceLog = 0
+        }
     }
 }
