@@ -104,7 +104,20 @@ extension GuestAgent {
         if major >= 2 {
             // An update keeps the app's container, and with it the app's documents and settings.
             let user = cache?["User"] as? [String: Any]
-            let existing = (user?[bundleID] as? [String: Any])?["Container"] as? String
+            let entry = user?[bundleID] as? [String: Any]
+            var existing = entry?["Container"] as? String
+            // Since iOS 5 and 6 write the list themselves (step 6), the entry is in MobileInstallation's shape, and
+            // that shape carries Path without always carrying Container. Reading only Container therefore missed an
+            // app that was already installed, and a reinstall landed in a brand-new container: two bundles with one
+            // bundle ID on disk, which is what put the white box back on iOS 5 after the first install had worked.
+            // The container is the bundle's own parent folder, so take it from Path when Container isn't there.
+            if existing == nil, let path = entry?["Path"] as? String {
+                let root = "/var/mobile/Applications/"
+                if path.hasPrefix(root), let slash = path.lastIndex(of: "/") {
+                    let parent = String(path[path.startIndex..<slash])
+                    if parent.count > root.count { existing = parent }
+                }
+            }
             let c = existing ?? "/var/mobile/Applications/" + UUID().uuidString
             container = c
             appPath = c + "/" + appName
@@ -185,10 +198,20 @@ extension GuestAgent {
         }
 
         // 8. SpringBoard (and installd, which keeps its own copy of the cache) start again and list it. SpringBoard's
-        // icon caches go first, as uicache clears them: an icon it once drew blank (above) stays blank from its cache
-        // across a restart, and a reinstall would not bring the real one back.
+        // icon caches have to go while SpringBoard is not running: it holds the same cache in memory and writes it
+        // back out, so deleting the files under a live SpringBoard (as this did) bought nothing — an icon it had once
+        // drawn blank came back blank. Unload keeps launchd from restarting it, the files stay gone, and the Home
+        // screen that comes back up has nothing cached and draws every icon from the app bundles.
         progress(0.97, "Restarting the Home screen\u{2026}")
+        _ = await sync()
+        if major >= 2 { _ = await run(["/bin/launchctl", "stop", "com.apple.mobile.installd"], timeout: 15) }
+        var cleared = false
         if major >= 4 {
+            let plist = "/System/Library/LaunchDaemons/com.apple.SpringBoard.plist"
+            let unloaded = await run(["/bin/launchctl", "unload", plist], timeout: 20)
+            cleared = (unloaded?.status ?? -1) == 0
+            if !cleared { log("Could not hold the Home screen down to clear its icon caches; clearing them anyway") }
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
             // Every name SpringBoard uses across iOS 4-6: on a Retina device (the iPhone 4) the caches are the
             // @2x files, which is why deleting only the plain names left once-blank icons blank forever.
             for base in ["icons", "smallicons", "spotlight"] {
@@ -198,11 +221,19 @@ extension GuestAgent {
                     }
                 }
             }
+            _ = await sync()
+            if cleared {
+                let loaded = await run(["/bin/launchctl", "load", plist], timeout: 20)
+                if (loaded?.status ?? -1) != 0 {
+                    log("The Home screen did not start again by itself; restart the device to bring it back")
+                    needsRestart = true
+                }
+            }
         }
-        _ = await sync()
-        if major >= 2 { _ = await run(["/bin/launchctl", "stop", "com.apple.mobile.installd"], timeout: 15) }
-        let respring = await run(["/bin/launchctl", "stop", "com.apple.SpringBoard"], timeout: 15)
-        if respring == nil || (respring?.status ?? -1) < 0 { needsRestart = true }
+        if !cleared {
+            let respring = await run(["/bin/launchctl", "stop", "com.apple.SpringBoard"], timeout: 15)
+            if respring == nil || (respring?.status ?? -1) < 0 { needsRestart = true }
+        }
 
         // 9. iOS 5 and 6: wait for the rebuilt cache and check this app is in it. MobileInstallation writes it as
         // the Home screen starts, so half a minute is plenty when it is coming at all.

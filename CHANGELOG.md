@@ -3,6 +3,27 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 56 — (not yet named)
+
+**Added**
+- The log's first lines now name the build that wrote it (`build 1.0-<commit> (<run number>)`), stamped in by CI.
+  Update 55's graphics fix was investigated as if it had never shipped, on the strength of a log that turned out to
+  predate the install; a log can no longer be mistaken for one from a different build.
+
+**Fixed**
+- iOS 5: the white icon came back on the next install, after update 55's icon-cache fix had worked once. Two causes,
+  both fixed here. SpringBoard keeps the same icon cache in memory that it keeps in those files, so deleting the
+  files while it was running bought nothing — it wrote its copy straight back. The caches are now deleted with
+  SpringBoard held down (`launchctl unload`, delete, `load`), so the Home screen that comes back has nothing cached
+  and draws every icon from the app bundles. If it can't hold SpringBoard down it says so and clears them anyway,
+  the way it used to.
+- Reinstalling an app made a second copy of it instead of replacing it: the install looked for the app's existing
+  container under a key (`Container`) that the lists iOS 5 and 6 write themselves don't always carry, so it minted
+  a new container and left two bundles with the same bundle ID on disk. It now takes the container from the entry's
+  `Path` as well, and a reinstall lands where the app already lives, documents and settings included.
+  - A device that already has a duplicate from before this fix keeps it: the app list points at one of the two
+    bundles and the other is invisible junk. Recreating that device is the clean way out.
+
 ## Update 55 — (not yet named)
 
 **Fixed**

@@ -126,6 +126,13 @@ final class Emulator: ObservableObject {
                 setenv("IT_VCPU_ACCT", "5", 1)
                 setenv("IT_GLES_PROF", "1", 1)  // where the graphics frame time goes, reported next to the frame rate
             }
+            // The build this log came from. Without it, a log read hours later cannot be told from one taken before
+            // the update that was meant to fix what it shows, and a fix that did ship gets investigated as if it
+            // hadn't. CFBundleVersion is the CI run number, so it names the exact build and its emulator libraries.
+            let info = Bundle.main.infoDictionary
+            let short = info?["CFBundleShortVersionString"] as? String ?? "?"
+            let build = info?["CFBundleVersion"] as? String ?? "?"
+            LTMLog.note("build \(short) (\(build))")
             LTMLog.note("engine \(qemu.isJIT ? "JIT" : "TCI"), GL \(QemuRuntime.renderer.rawValue), \(JIT.summary)")
             LTMLog.note("args \(argv.joined(separator: " "))")
             // Optional: skip the renderer's per-call GL error checks (each one makes the GPU driver catch up).

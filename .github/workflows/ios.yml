@@ -46,6 +46,13 @@ jobs:
     timeout-minutes: 330
     steps:
       - uses: actions/checkout@v4
+      - name: Stamp the build into the app
+        # So every log says which build wrote it. A log without this is from before this change; a log whose commit
+        # is not the one under investigation is answering a question about a different build.
+        run: |
+          plutil -replace CFBundleVersion -string "${{ github.run_number }}" ios/App/Info.plist
+          plutil -replace CFBundleShortVersionString -string "1.0-${GITHUB_SHA:0:7}" ios/App/Info.plist
+          plutil -p ios/App/Info.plist | grep -i bundleversion || true
       - name: Tools
         run: brew install meson ninja pkg-config jq xcodegen ldid
       - name: Apply the HostRuntime iOS patch
