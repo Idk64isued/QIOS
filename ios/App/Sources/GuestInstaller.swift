@@ -58,6 +58,12 @@ extension GuestAgent {
             }
             return app.resolvingSymlinksInPath()
         }.value
+        // The App Store's own copy of the app's icon, beside Payload in most .ipa files, as a PNG with no
+        // extension. The last resort for a bundle whose icons live in an asset catalog no iOS here can read.
+        let artwork: URL? = ["iTunesArtwork@2x", "iTunesArtwork"]
+            .map { work.appendingPathComponent($0) }
+            .first { FileManager.default.fileExists(atPath: $0.path) }
+
         let infoData = try Data(contentsOf: bundle.appendingPathComponent("Info.plist"))
         guard var info = try PropertyListSerialization.propertyList(from: infoData, format: nil) as? [String: Any],
             let bundleID = info["CFBundleIdentifier"] as? String, !bundleID.isEmpty
@@ -69,6 +75,16 @@ extension GuestAgent {
         if let minimum = info["MinimumOSVersion"] as? String, let need = Int(minimum.prefix { $0 != "." }), need > major {
             log("\(display) asks for iPhone OS \(minimum); this device runs \(guestVersion ?? "?"). Installing anyway.")
         }
+        // Every icon the bundle names, newest form first: CFBundleIcons is iOS 5 and up, CFBundleIconFiles is
+        // iPhone OS 3.2 and up, CFBundleIconFile is the original. Used to give the icon a classic name (step 5b)
+        // and to say in the log what was declared against what landed (step 8).
+        var declaredIcons: [String] = []
+        if let icons = info["CFBundleIcons"] as? [String: Any],
+            let primary = icons["CFBundlePrimaryIcon"] as? [String: Any],
+            let files = primary["CFBundleIconFiles"] as? [String] { declaredIcons += files }
+        if let files = info["CFBundleIconFiles"] as? [String] { declaredIcons += files }
+        if let one = info["CFBundleIconFile"] as? String { declaredIcons.append(one) }
+        declaredIcons = declaredIcons.filter { !$0.isEmpty }
         // The Home screen's "Waiting…" icon while the app is copied in (the agent's dlicon, SpringBoard's own download
         // placeholder), as the Mac app raises it; dropped when the install ends, and the real icon takes its place.
         let safe = bundleID.filter { $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" || $0 == "_" }
@@ -162,6 +178,61 @@ extension GuestAgent {
             try await runHelper(uid: uid, gid: gid, paths: files.map { $0.guest }, what: "set the app\u{2019}s owner")
         }
 
+        // 5b. An icon under a name this iOS knows how to look for.
+        //
+        // The blank white tile has outlived three fixes aimed at SpringBoard's icon cache, and the asymmetry says
+        // why: the apps that came through with real icons (on iOS 6) are old ones that ship Icon.png, and the ones
+        // that stayed blank are modern builds. iOS 4 has never heard of CFBundleIcons (iOS 5 and up) or of
+        // asset-catalog names like AppIcon60x60@2x, so for those bundles SpringBoard falls back to looking for
+        // Icon.png, doesn't find it, and draws the blank tile — with nothing wrong with the cache at all.
+        //
+        // So the app's own icon is also copied to the classic names when they are missing. Two small uploads, and
+        // the icon becomes resolvable on every version this installs to. Nothing is overwritten: a bundle that
+        // already has Icon.png keeps it.
+        if container != nil {
+            let top = appPath + "/"
+            var onDisk: [String: URL] = [:]
+            for file in files where file.guest.hasPrefix(top) {
+                let name = String(file.guest.dropFirst(top.count))
+                // Top level of the .app only: a Resources/Icon.png is not the one SpringBoard reads.
+                if name.isEmpty || name.firstIndex(of: "/") != nil { continue }
+                onDisk[name] = file.local
+            }
+            // Prefer what the bundle actually declares, in the order it declares it, and keep the Retina copy
+            // for the Retina name. An app that declares one icon gets it under both names; iOS picks the size.
+            func pick(retina: Bool) -> URL? {
+                for name in declaredIcons {
+                    let stem = name.hasSuffix(".png") ? String(name.dropLast(4)) : name
+                    let wanted = retina ? [stem + "@2x.png", stem + ".png", name]
+                                        : [stem + ".png", name, stem + "@2x.png"]
+                    for candidate in wanted { if let url = onDisk[candidate] { return url } }
+                }
+                // Nothing the bundle names is there as a file. A build new enough to keep its icons in an asset
+                // catalog (Assets.car) has no loose icon at all, and no iOS this old can read one, so the names in
+                // Info.plist point at nothing on any of these devices. Two places still hold a real picture of the
+                // app: an icon-looking PNG left at the top of the bundle, and the artwork the App Store wrapped the
+                // IPA in. Largest first, since these names are all sizes of the same icon.
+                let looksLikeIcon = onDisk.keys.filter {
+                    let lower = $0.lowercased()
+                    return lower.hasSuffix(".png") && lower.contains("icon")
+                }
+                func bytes(_ name: String) -> Int {
+                    guard let url = onDisk[name] else { return 0 }
+                    return (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                }
+                if let best = looksLikeIcon.max(by: { bytes($0) < bytes($1) }), let url = onDisk[best] { return url }
+                if let art = artwork { return art }
+                return nil
+            }
+            for (classic, retina) in [("Icon.png", false), ("Icon@2x.png", true)] where onDisk[classic] == nil {
+                guard let source = pick(retina: retina) else { continue }
+                if await putFile(localURL: source, guestPath: top + classic, mode: "0644") {
+                    try? await runHelper(uid: uid, gid: gid, paths: [top + classic], what: "set the icon\u{2019}s owner")
+                    log("Copied \(source.lastPathComponent) to \(classic) so this iOS can find the icon")
+                }
+            }
+        }
+
         // 6. Register it. iPhone OS 2 to iOS 4 take our word for it: an entry written into the cache by hand is
         // listed and drawn. iOS 5 and 6 don't — however the entry was shaped (placeholders skipped, sequence
         // numbers bumped, icon caches cleared), iOS 5 drew the icon blank and iOS 6 never put the app on the Home
@@ -206,15 +277,9 @@ extension GuestAgent {
         // a stale cache (cleared below), an icon iOS can't find, or one that never got copied, and nothing in
         // the log has ever said which.
         if major >= 4 {
-            var declared: [String] = []
-            if let one = info["CFBundleIconFile"] as? String { declared.append(one) }
-            if let files = info["CFBundleIconFiles"] as? [String] { declared += files }
-            if let icons = info["CFBundleIcons"] as? [String: Any],
-                let primary = icons["CFBundlePrimaryIcon"] as? [String: Any],
-                let files = primary["CFBundleIconFiles"] as? [String] { declared += files }
             // What SpringBoard looks for when the bundle names nothing.
-            if declared.isEmpty { declared = ["Icon"] }
-            log("Icon names in Info.plist: " + declared.joined(separator: ", "))
+            let declared = declaredIcons.isEmpty ? ["Icon"] : declaredIcons + ["Icon"]
+            log("Icon names in Info.plist: " + (declaredIcons.isEmpty ? "none declared" : declaredIcons.joined(separator: ", ")))
             var found: [String] = []
             for name in Set(declared).sorted() {
                 let stem = name.hasSuffix(".png") ? String(name.dropLast(4)) : name

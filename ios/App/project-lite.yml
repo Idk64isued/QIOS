@@ -26,6 +26,9 @@ targets:
         buildPhase: resources
       - path: ../../LightTouchMac/special_trick.mp3
         buildPhase: resources
+      # The changelog, so the app can show what each update changed (Main menu > What's new).
+      - path: ../../CHANGELOG.md
+        buildPhase: resources
     dependencies:
       - package: HostRuntime
       - package: ZIPFoundation

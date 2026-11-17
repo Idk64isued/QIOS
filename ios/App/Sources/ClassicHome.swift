@@ -101,6 +101,8 @@ struct ClassicHome: View {
                 .padding(10)
             }
             SixSection(header: "Log", footer: logNote.isEmpty ? nil : logNote) {
+                SixRow(title: "What\u{2019}s New", action: actions.whatsNew)
+                SixSeparator()
                 SixRow(title: "Export Log", action: actions.exportLog)
                 SixSeparator()
                 SixRow(title: "Send Report", action: actions.report)
@@ -211,6 +213,8 @@ struct SixHomeSettings: View {
                 SixToggleRow(title: "USB Bridge", isOn: $enableUSB)
             }
             SixSection(header: "Log", footer: note.isEmpty ? nil : note) {
+                SixRow(title: "What\u{2019}s New", action: actions.whatsNew)
+                SixSeparator()
                 SixRow(title: "Export Log", action: actions.exportLog)
                 SixSeparator()
                 SixRow(title: "Send Report", action: actions.report)

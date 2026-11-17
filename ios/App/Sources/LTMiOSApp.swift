@@ -194,6 +194,7 @@ struct RootView: View {
     @State private var showReport = false
     @State private var showAddDevice = false
     @State private var showStorage = false
+    @State private var showWhatsNew = false
     @State private var showAllSettings = false
     @State private var showSixSettings = false
     @State private var showConsole = false
@@ -267,7 +268,8 @@ struct RootView: View {
             clearLog: {
                 try? FileManager.default.removeItem(at: LTMLog.url)
                 logNote = "Log cleared."
-            })
+            },
+            whatsNew: { showWhatsNew = true })
     }
 
     /// The same, for the iOS 6 Settings sheet: what it opens goes over it.
@@ -282,7 +284,8 @@ struct RootView: View {
             exportLog: {
                 if let url = LTMLog.exportCopy() { sixShare = ShareItem(url: url) }
             },
-            clearLog: base.clearLog)
+            clearLog: base.clearLog,
+            whatsNew: base.whatsNew)
     }
 
     @ViewBuilder private var homeInterface: some View {
@@ -306,6 +309,8 @@ struct RootView: View {
                 Library.sweepPreparing()  // a preparation the last launch did not finish
             }
             reload()
+            // After an update, say what changed once, without being asked.
+            if ChangeLog.shouldShowForNewBuild() { showWhatsNew = true }
             emulator.load()
         }
         .sheet(isPresented: $showReport) {
@@ -321,6 +326,9 @@ struct RootView: View {
             // The Setup Assistant for every interface: iOS 6's look, or with the glass home screen the glass one.
             SetupAssistantView { device, start in addDeviceClosed(device, start) }
                 .environment(\.glassStyle, interface == .modern)
+        }
+        .sheet(isPresented: $showWhatsNew) {
+            WhatsNewView()
         }
         .sheet(isPresented: $showStorage, onDismiss: { reload() }) {
             StorageView { showStorage = false }
@@ -689,6 +697,18 @@ struct RootView: View {
                     showConsole = true
                 } label: {
                     Label("Console", systemImage: "terminal")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Theme.accent)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Theme.accent.opacity(0.12), in: Capsule())
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    showWhatsNew = true
+                } label: {
+                    Label("What\u{2019}s New", systemImage: "sparkles")
                         .font(.system(size: 13, weight: .semibold, design: .rounded))
                         .foregroundStyle(Theme.accent)
                         .padding(.horizontal, 14)

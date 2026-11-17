@@ -66,7 +66,22 @@ final class PhoneLocation: NSObject, CLLocationManagerDelegate {
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         let status = manager.authorizationStatus
         Task { @MainActor in
-            if status == .denied || status == .restricted { LTMLog.note("location: not allowed (Settings › Privacy › Location)") }
+            switch status {
+            case .denied:
+                LTMLog.note("location: refused. Settings \u{203A} Privacy & Security \u{203A} Location Services, and allow "
+                    + (JIT.inLiveContainer ? "LiveContainer" : "Light Touch") + ".")
+            case .restricted:
+                // Under LiveContainer the asking app is LiveContainer, not this one: iOS reads the usage string and
+                // the grant from ITS bundle. Without one there, the prompt never appears and the answer is a flat
+                // "restricted", which looks like the user said no. Say where the permission actually lives.
+                LTMLog.note(JIT.inLiveContainer
+                    ? "location: not available. Inside LiveContainer, iOS grants location to LiveContainer itself, "
+                      + "so allow Location for LiveContainer in Settings; if it never asks, LiveContainer was built "
+                      + "without location and the device's GPS stays off."
+                    : "location: not available on this phone (Screen Time restrictions?)")
+            default:
+                break
+            }
         }
     }
 }

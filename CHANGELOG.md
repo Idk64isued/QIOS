@@ -3,6 +3,36 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 58 — Family Fun
+
+**Added**
+- What's New: the changelog is in the app now, on the main menu, and it opens by itself once after an update, so
+  a new build says what it changed instead of landing silently.
+
+**Fixed**
+- The blank white icon on iOS 4 and 5, and for a reason the last four updates all missed: it was never the icon
+  cache. The apps that came through with real icons are old ones that ship `Icon.png`; the ones that stayed blank
+  are modern builds whose icon is declared under `CFBundleIcons` (iOS 5 and up), named for an asset catalog, or
+  kept only inside `Assets.car` — which no iOS this old can read at all. SpringBoard went looking for `Icon.png`,
+  found nothing, and drew the blank tile. Every app now gets an icon under that classic name: the one the bundle
+  declares if it is there as a file, else the largest icon-looking image left loose in the bundle, else the
+  artwork the App Store wrapped the .ipa in. A bundle that already has `Icon.png` keeps its own.
+- Importing a batch of photos or songs no longer sits on one item looking stuck. Each item was copying the
+  importer tool into the device all over again and deleting it afterwards — an upload and two round trips per
+  item, on top of the item itself. The tool goes over once per boot now, and the copy shows its percentage, so a
+  slow item reads as busy rather than frozen.
+- Location says something useful when it can't start. Inside LiveContainer, iOS grants location to LiveContainer
+  itself, so a missing permission there came back as a flat "not allowed" that read like a refusal in this app's
+  own settings. The log now names the app the permission actually belongs to, and tells a refusal apart from a
+  LiveContainer build that has no location at all.
+
+**Known, not fixed here**
+- Minecraft draws nothing on iOS 6, and the log is now specific about why: it draws into a framebuffer with no
+  attachment (`0x8CD7`), so every draw is thrown away and the screen stays black. The likely cause is the gap
+  already on the list — on iOS 6 the GL bridge can name only 309 of 914 entry points, against all 905 on iOS 5,
+  so the call that attaches the render target is probably one of the 605 it cannot name and drops. Naming
+  iOS 6's table is its own piece of work, and it is next.
+
 ## Update 57 — (not yet named)
 
 **Fixed**

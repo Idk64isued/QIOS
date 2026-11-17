@@ -227,24 +227,25 @@ extension GuestAgent {
             throw GuestAgent.InstallFailure(message: "The device\u{2019}s agent isn\u{2019}t ready. Give it a minute after the Home screen appears.")
         }
         let toolName = media.kind == .photo ? "itphoto" : "itmedia"
-        guard let tool = MacFiles.guestTool(toolName) else {
-            throw GuestAgent.InstallFailure(message: "The guest tools have no \(toolName). Get the Mac files again (Add device \u{203A} Mac files).")
-        }
         isInstalling = true
         defer { isInstalling = false }
         let folder = "/var/mobile/Media/LightTouch/" + media.id
         progress("Preparing \(media.title)\u{2026}")
         try await ensureHelper()
         try await runHelper(uid: 501, gid: 501, paths: ["/var/mobile/Media/LightTouch", folder], what: "make the staging folder")
-        progress("Copying \(media.title)\u{2026}")
         let staged = folder + "/" + media.file.lastPathComponent
-        guard await putFile(localURL: media.file, guestPath: staged, mode: "0644") else {
+        // Percent as it goes: a photo or video is megabytes over a link that manages about one a second, and with
+        // one unchanging line on screen a batch looked stuck on its first item rather than busy with it.
+        guard await putFile(localURL: media.file, guestPath: staged, mode: "0644", progress: { sent, total in
+            let percent = total > 0 ? Int(Double(sent) / Double(total) * 100) : 0
+            progress("Copying \(media.title)\u{2026} \(percent)%")
+        }) else {
             throw GuestAgent.InstallFailure(message: "Copying \(media.title) into the device failed. \(lastLog)")
         }
         try await runHelper(uid: 501, gid: 501, paths: [staged], what: "hand it to the device")
-        let exe = "/tmp/ltm-\(toolName)-\(media.id)"
+        let exe = try await ensureGuestTool(toolName)
         var argv = [exe]
-        var temporary = [exe]
+        var temporary: [String] = []
         if let metadata = media.metadata {
             let plist = "/tmp/ltm-media-\(media.id).plist"
             guard await putFile(localURL: metadata, guestPath: plist, mode: "0644") else {
@@ -254,15 +255,15 @@ extension GuestAgent {
             temporary.append(plist)
         }
         argv.append(media.id)
-        guard await putFile(localURL: tool, guestPath: exe, mode: "0755") else {
-            throw GuestAgent.InstallFailure(message: "Couldn\u{2019}t put \(toolName) into the device. \(lastLog)")
-        }
         progress("Adding \(media.title) to \(media.kind == .photo ? "Photos" : "Videos")\u{2026}")
         let result = await run(argv, timeout: 180)
         for path in temporary { _ = await unlink(path: path) }
         let output = result.map { String(decoding: $0.output, as: UTF8.self) } ?? ""
         log("\(toolName): status \(result?.status ?? -1): \(output.trimmingCharacters(in: .whitespacesAndNewlines))")
         guard let result, result.status == 0, output.contains("imported") else {
+            // The copied tool is the likeliest thing to have gone missing, so put it back for the next item
+            // rather than failing the whole rest of the batch the same way.
+            forgetGuestTool(toolName)
             let reason = output.split(separator: "\n").last.map(String.init) ?? "no answer"
             throw GuestAgent.InstallFailure(message: "\(media.kind == .photo ? "Photos" : "Videos") didn\u{2019}t take \(media.title): \(reason)")
         }

@@ -168,18 +168,18 @@ extension GuestAgent {
         guard status == .alive, ops.contains("spawn"), ops.contains("put") || ops.contains("putpart") else {
             throw InstallFailure(message: "The device\u{2019}s agent isn\u{2019}t ready. Give it a minute after the Home screen appears.")
         }
-        guard let tool = MacFiles.guestTool("itmedia") else {
-            throw InstallFailure(message: "The guest tools have no itmedia. Get the Mac files again (Add device \u{203A} Mac files).")
-        }
         isInstalling = true
         defer { isInstalling = false }
         let folder = "/var/mobile/Media/LightTouch/" + song.id
         progress("Preparing \(song.title)\u{2026}")
         try await ensureHelper()
         try await runHelper(uid: 501, gid: 501, paths: ["/var/mobile/Media/LightTouch", folder], what: "make the music folder")
-        progress("Copying \(song.title)\u{2026}")
         let audioPath = folder + "/" + song.audio.lastPathComponent
-        guard await putFile(localURL: song.audio, guestPath: audioPath, mode: "0644") else {
+        // Percent as it goes, so a batch reads as busy with this song rather than stuck on it.
+        guard await putFile(localURL: song.audio, guestPath: audioPath, mode: "0644", progress: { sent, total in
+            let percent = total > 0 ? Int(Double(sent) / Double(total) * 100) : 0
+            progress("Copying \(song.title)\u{2026} \(percent)%")
+        }) else {
             throw InstallFailure(message: "Copying \(song.title) into the device failed. \(lastLog)")
         }
         var staged = [audioPath]
@@ -189,19 +189,17 @@ extension GuestAgent {
         }
         try await runHelper(uid: 501, gid: 501, paths: staged, what: "give the song to the Music app")
         let plist = "/tmp/ltm-media-\(song.id).plist"
-        let exe = "/tmp/ltm-itmedia-\(song.id)"
-        guard await putFile(localURL: song.metadata, guestPath: plist, mode: "0644"),
-            await putFile(localURL: tool, guestPath: exe, mode: "0755")
-        else {
+        let exe = try await ensureGuestTool("itmedia")
+        guard await putFile(localURL: song.metadata, guestPath: plist, mode: "0644") else {
             throw InstallFailure(message: "Couldn\u{2019}t put the music importer into the device. \(lastLog)")
         }
         progress("Adding \(song.title) to Music\u{2026}")
         let result = await run([exe, plist, song.id], timeout: 120)
         _ = await unlink(path: plist)
-        _ = await unlink(path: exe)
         let output = result.map { String(decoding: $0.output, as: UTF8.self) } ?? ""
         log("itmedia: status \(result?.status ?? -1): \(output.trimmingCharacters(in: .whitespacesAndNewlines))")
         guard let result, result.status == 0, output.contains("imported") else {
+            forgetGuestTool("itmedia")
             let reason = output.split(separator: "\n").last.map(String.init) ?? "no answer"
             throw InstallFailure(message: "Music didn\u{2019}t take \(song.title): \(reason)")
         }

@@ -575,4 +575,6 @@ struct HomeActions {
     let report: () -> Void
     let exportLog: () -> Void
     let clearLog: () -> Void
+    /// Shows the changelog (Main menu > What's New), and opens by itself after an update.
+    let whatsNew: () -> Void
 }

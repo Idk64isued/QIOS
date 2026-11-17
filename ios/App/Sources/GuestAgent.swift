@@ -115,6 +115,8 @@ final class GuestAgent: ObservableObject {
         if let first = lines.first, first.hasPrefix("it_agent") {
             version = first
             log("Agent: \(first)")
+            // A fresh agent means a fresh boot, and /tmp went with it: whatever was copied there is gone.
+            toolsInPlace.removeAll()
         }
         if let opsLine = lines.first(where: { $0.hasPrefix("ops ") }) {
             ops = opsLine.dropFirst(4).components(separatedBy: " ").filter { !$0.isEmpty }
@@ -123,6 +125,31 @@ final class GuestAgent: ObservableObject {
             log("This guest has the first agent, which can only paste. Rebuild the device for app installs.")
         }
     }
+
+    /// Guest tools already copied into the running device, by name. Cleared when a fresh agent says hello.
+    private var toolsInPlace: Set<String> = []
+
+    /// Copies a guest tool to a fixed path, once per boot, and gives back that path.
+    ///
+    /// Importing a batch used to copy itmedia (or itphoto) in again for every single song or photo and delete it
+    /// afterwards — an upload and two round trips per item, on top of the item itself. That is most of why a long
+    /// import sat on one item looking stuck.
+    func ensureGuestTool(_ name: String) async throws -> String {
+        let path = "/tmp/ltm-" + name
+        if toolsInPlace.contains(name) { return path }
+        guard let tool = MacFiles.guestTool(name) else {
+            throw InstallFailure(message: "The guest tools have no \(name). Get the Mac files again (Add device \u{203A} Mac files).")
+        }
+        guard await putFile(localURL: tool, guestPath: path, mode: "0755") else {
+            throw InstallFailure(message: "Couldn\u{2019}t put \(name) into the device. \(lastLog)")
+        }
+        toolsInPlace.insert(name)
+        return path
+    }
+
+    /// Forgets a copied tool, so the next import puts it back. For when running it fails: the likeliest reason is
+    /// that it is no longer there.
+    func forgetGuestTool(_ name: String) { toolsInPlace.remove(name) }
 
     /// Put a file into the guest filesystem.
     /// For files > ~250 KB, uses putpart (256 KiB chunks minus header overhead).
