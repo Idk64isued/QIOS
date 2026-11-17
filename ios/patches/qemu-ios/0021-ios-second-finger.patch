@@ -1,0 +1,204 @@
+From edc921a3455d56a9b4fd68c5c672e77455b5cd3b Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 16 Nov 2026 18:31:15 -0700
+Subject: [PATCH] ios: deliver the second finger to the guest
+
+The app has tracked two fingers since the touch code was written: it claims
+a slot per UITouch, sends slot 1 for the second, and toggles manual_touch2
+around it. qemu_ios_ui_touch() dropped everything but slot 0, so the second
+finger never reached the panel and every pinch, rotate and two-finger scroll
+arrived in the guest as a one-finger drag.
+
+The panel already takes a slot: ipod_touch_lcd's MTT handler hands it to
+ipod_touch_multitouch_set_finger(), and every machine here builds that panel.
+The equivalent emitter existed too, but only in the macOS app's extras. So
+slot 0 keeps the legacy absolute-pointer path (which has to stay: the
+digitizer ignores a commit for a slot whose position it has not seen, and
+that path queues the position first), and the other slots now go through a
+multi-touch bottom half that queues DATA before the commit.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01UGCtLRD1vYicb9wVRzGR7X
+---
+ contrib/ios-app/qemu-ios-ui.c               | 86 +++++++++++++++++++--
+ contrib/ios-app/qemu-ios-ui.h               |  6 ++
+ tests/slice/ipod-virtual-input-abi-guards.c | 11 +--
+ 3 files changed, 91 insertions(+), 12 deletions(-)
+
+diff --git a/contrib/ios-app/qemu-ios-ui.c b/contrib/ios-app/qemu-ios-ui.c
+index 5a3af9436f..7c3c2bcbaf 100644
+--- a/contrib/ios-app/qemu-ios-ui.c
++++ b/contrib/ios-app/qemu-ios-ui.c
+@@ -541,11 +541,80 @@ void qemu_ios_ui_input_later(void (*fn)(void *), void *opaque)
+ struct ios_touch {
+     double nx, ny;             /* normalized 0..1 over the panel */
+     bool down;
++    int slot;
++    int phase;
+ };
+ 
+ /*
+- * Deliberately the LEGACY absolute-pointer path, not QEMU's multi-touch
+- * events, even though the panel model understands both.
++ * The second finger, as QEMU multi-touch events.
++ *
++ * The panel model has taken a slot number for as long as it has existed
++ * (ipod_touch_lcd's MTT handler hands it straight to
++ * ipod_touch_multitouch_set_finger), and every machine here builds that panel.
++ * The missing piece was only ever this file: qemu_ios_ui_touch() dropped every
++ * slot but 0, so the app's second finger -- which it has always tracked and
++ * sent -- went nowhere, and a pinch reached the guest as a one-finger drag.
++ *
++ * DATA before the commit. The digitizer ignores a commit for a slot whose
++ * position it has not seen, which is the same trap that keeps slot 0 on the
++ * legacy path below.
++ */
++static void ios_touch_mtt_bh(void *opaque)
++{
++    struct ios_touch *t = opaque;
++    static bool tracked[IOS_TOUCH_SLOTS];
++    InputMultiTouchType type;
++    bool down = t->phase != QEMU_IOS_TOUCH_END;
++
++    ios_sequence_cancel_current();
++    if (!runstate_is_running() && !runstate_check(RUN_STATE_SUSPENDED)) {
++        /* Let an already delivered contact go without advancing paused input. */
++        if (!down && tracked[t->slot] && ios.con) {
++            InputMultiTouchEvent mtt = {
++                .type = INPUT_MULTI_TOUCH_TYPE_END,
++                .slot = t->slot, .tracking_id = t->slot,
++            };
++            InputEvent event = {.type = INPUT_EVENT_KIND_MTT,
++                                .u.mtt.data = &mtt};
++            qemu_input_event_send_impl(ios.con, &event);
++            qemu_input_event_sync_impl();
++            tracked[t->slot] = false;
++        }
++        if (!down) {
++            ios_manual_touch2 = false;
++        }
++        g_free(t);
++        return;
++    }
++
++    ios_manual_touch2 = down;
++    if (!ios.con) {
++        g_free(t);
++        return;
++    }
++    if (!down) {
++        type = INPUT_MULTI_TOUCH_TYPE_END;
++        tracked[t->slot] = false;
++    } else if (!tracked[t->slot]) {
++        type = INPUT_MULTI_TOUCH_TYPE_BEGIN;
++        tracked[t->slot] = true;
++    } else {
++        type = INPUT_MULTI_TOUCH_TYPE_UPDATE;
++    }
++    qemu_input_queue_mtt_abs(ios.con, INPUT_AXIS_X,
++                             (int)(t->nx * INPUT_EVENT_ABS_MAX),
++                             0, INPUT_EVENT_ABS_MAX, t->slot, t->slot);
++    qemu_input_queue_mtt_abs(ios.con, INPUT_AXIS_Y,
++                             (int)(t->ny * INPUT_EVENT_ABS_MAX),
++                             0, INPUT_EVENT_ABS_MAX, t->slot, t->slot);
++    qemu_input_queue_mtt(ios.con, type, t->slot, t->slot);
++    qemu_input_event_sync();
++    g_free(t);
++}
++
++/*
++ * Slot 0 deliberately takes the LEGACY absolute-pointer path, not QEMU's
++ * multi-touch events, even though the panel model understands both.
+  *
+  * console_handle_touch_event() -- the obvious API -- queues the BEGIN commit
+  * BEFORE the DATA events carrying the coordinates, and the digitizer ignores a
+@@ -554,8 +623,8 @@ struct ios_touch {
+  * nothing". The abs+button sequence below is the one the existing tooling
+  * (qmp-touch.py) has always used.
+  *
+- * The cost is one finger at a time: pinch and rotate need the multi-touch path
+- * with DATA queued before the commit.
++ * Fingers past the first go to ios_touch_mtt() above, which queues DATA before
++ * the commit and so does not hit that trap.
+  */
+ static void ios_touch_bh(void *opaque)
+ {
+@@ -595,17 +664,20 @@ void qemu_ios_ui_touch(int slot, int phase, double nx, double ny)
+ {
+     struct ios_touch *t;
+ 
+-    if (slot != 0 || phase < QEMU_IOS_TOUCH_BEGIN || phase > QEMU_IOS_TOUCH_END ||
++    if (slot < 0 || slot >= IOS_TOUCH_SLOTS ||
++        phase < QEMU_IOS_TOUCH_BEGIN || phase > QEMU_IOS_TOUCH_END ||
+         !isfinite(nx) || !isfinite(ny) || nx < 0 || nx > 1 || ny < 0 || ny > 1 ||
+         !qemu_ios_ui_ready()) {
+-        return;                 /* one finger; no AIO context before attach */
++        return;                 /* no AIO context before attach */
+     }
+ 
+     t = g_new0(struct ios_touch, 1);
+     t->nx = nx;
+     t->ny = ny;
++    t->slot = slot;
++    t->phase = phase;
+     t->down = (phase != QEMU_IOS_TOUCH_END);
+-    qemu_ios_ui_input_later(ios_touch_bh, t);
++    qemu_ios_ui_input_later(slot ? ios_touch_mtt_bh : ios_touch_bh, t);
+ }
+ 
+ /* --- hardware buttons -------------------------------------------------- */
+diff --git a/contrib/ios-app/qemu-ios-ui.h b/contrib/ios-app/qemu-ios-ui.h
+index d51c565332..d7f87d08b0 100644
+--- a/contrib/ios-app/qemu-ios-ui.h
++++ b/contrib/ios-app/qemu-ios-ui.h
+@@ -108,6 +108,12 @@ void qemu_ios_ui_frame_size(int *width, int *height);
+  * Touch position is normalized 0..1 over the guest screen, y downwards.
+  * One finger only for now -- see the note in qemu-ios-ui.c.
+  */
++/* Fingers the app can send. Slot 0 rides the legacy absolute-pointer path;
++ * the rest are delivered as multi-touch events. The digitizer drops anything
++ * past MT_MAX_FINGERS on its own, so this only has to agree with the app,
++ * which tracks two. */
++#define IOS_TOUCH_SLOTS 2
++
+ void qemu_ios_ui_touch(int slot, int phase, double nx, double ny);
+ 
+ /*
+diff --git a/tests/slice/ipod-virtual-input-abi-guards.c b/tests/slice/ipod-virtual-input-abi-guards.c
+index f224267387..fac6f0ae9b 100644
+--- a/tests/slice/ipod-virtual-input-abi-guards.c
++++ b/tests/slice/ipod-virtual-input-abi-guards.c
+@@ -11,12 +11,13 @@
+ #include <stdio.h>
+ #include "qemu-ios-ui.h"
+ #define g_new0(T,n) ((T*)calloc((n),sizeof(T)))
+-struct ios_touch {double nx,ny;bool down;};
++struct ios_touch {double nx,ny;bool down;int slot,phase;};
+ struct ios_button {int button;bool down;};
+ struct mtt_touch {int phase;double nx,ny;};
+ static bool ready=true;static int submitted;
+ bool qemu_ios_ui_ready(void) {return ready;}
+ static void ios_touch_bh(void*p) {free(p);}
++static void ios_touch_mtt_bh(void*p) {free(p);}
+ static void ios_button_bh(void*p) {free(p);}
+ static void mtt_bh(void*p) {free(p);}
+ void qemu_ios_ui_input_later(void(*cb)(void*),void*arg) {submitted++;cb(arg);}
+@@ -31,11 +32,11 @@ int main(void) {
+   qemu_ios_ui_touch2(0,bad[i],.5);qemu_ios_ui_touch2(0,.5,bad[i]);
+  }
+  qemu_ios_ui_button(-1,true);qemu_ios_ui_button(4,false);
+- qemu_ios_ui_touch(1,0,.5,.5);assert(!submitted);
++ qemu_ios_ui_touch(IOS_TOUCH_SLOTS,0,.5,.5);qemu_ios_ui_touch(-1,0,.5,.5);assert(!submitted);
+  ready=false;qemu_ios_ui_touch(0,0,.5,.5);qemu_ios_ui_touch2(0,.5,.5);qemu_ios_ui_button(0,true);
+  assert(!submitted);ready=true;
+- for(int p=0;p<3;p++){qemu_ios_ui_touch(0,p,0,1);qemu_ios_ui_touch2(p,1,0);}
++ for(int p=0;p<3;p++){qemu_ios_ui_touch(0,p,0,1);qemu_ios_ui_touch(1,p,0,1);qemu_ios_ui_touch2(p,1,0);}
+  for(int b=0;b<4;b++){qemu_ios_ui_button(b,true);qemu_ios_ui_button(b,false);}
+- assert(submitted==14);
+- puts("PASS: actual ordinary host touch/button/touch2 ABI rejects bad phase, slot, bounds, NaN/Inf, button and lifecycle before scheduling");
++ assert(submitted==17);
++ puts("PASS: actual ordinary host touch/button/touch2 ABI accepts both finger slots and rejects bad phase, slot, bounds, NaN/Inf, button and lifecycle before scheduling");
+ }
+-- 
+2.43.0
+

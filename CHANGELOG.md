@@ -3,6 +3,18 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 57 — (not yet named)
+
+**Fixed**
+- Two fingers now reach the emulated device, so pinch to zoom, rotate and two-finger scroll work. The app has
+  always tracked a second finger and sent it; the emulator dropped everything but the first, and every gesture
+  arrived in the guest as a one-finger drag (patch 0021).
+
+**Added**
+- The install log now says what icon the app's Info.plist declares, which of those files actually reached the
+  guest, and which of SpringBoard's icon caches were really there to clear. The blank icon on iOS 4 and 5 has
+  survived three fixes aimed at the cache; these three lines say whether the cache was ever the problem.
+
 ## Update 56 — (not yet named)
 
 **Added**

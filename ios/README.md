@@ -275,6 +275,11 @@ can't download alongside yet.
   saved copy of the generic-attribute state and the element-array binding, swapped in and out at bind, because the
   attribute pointers are guest addresses the host resolves at draw time. The group-marker no-ops no longer trip
   the UNHANDLED alarm either.
+- `patches/qemu-ios/0021`: the second finger. The app has always tracked two touches and sent the second as slot 1,
+  and the panel has always taken a slot number, but `qemu_ios_ui_touch()` dropped every slot but 0, so a pinch
+  reached the guest as a one-finger drag. Slot 0 keeps the legacy absolute-pointer path (the digitizer ignores a
+  commit for a slot whose position it has not seen, so the position has to be queued first); the other slots go
+  through multi-touch events, which queue DATA before the commit.
 - The screen is drawn through Metal (`MetalPresenter`): one copy of each frame into a shared texture and a blit,
   instead of a CGImage per frame that Core Animation copied and converted again.
 - The profiler samples 10 times a second (it was 50; every sample stops the virtual CPU for a moment).

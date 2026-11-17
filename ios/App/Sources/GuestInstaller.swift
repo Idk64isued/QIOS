@@ -202,6 +202,33 @@ extension GuestAgent {
         // back out, so deleting the files under a live SpringBoard (as this did) bought nothing — an icon it had once
         // drawn blank came back blank. Unload keeps launchd from restarting it, the files stay gone, and the Home
         // screen that comes back up has nothing cached and draws every icon from the app bundles.
+        // What the bundle says its icon is, and what of that actually reached the guest. A blank icon is either
+        // a stale cache (cleared below), an icon iOS can't find, or one that never got copied, and nothing in
+        // the log has ever said which.
+        if major >= 4 {
+            var declared: [String] = []
+            if let one = info["CFBundleIconFile"] as? String { declared.append(one) }
+            if let files = info["CFBundleIconFiles"] as? [String] { declared += files }
+            if let icons = info["CFBundleIcons"] as? [String: Any],
+                let primary = icons["CFBundlePrimaryIcon"] as? [String: Any],
+                let files = primary["CFBundleIconFiles"] as? [String] { declared += files }
+            // What SpringBoard looks for when the bundle names nothing.
+            if declared.isEmpty { declared = ["Icon"] }
+            log("Icon names in Info.plist: " + declared.joined(separator: ", "))
+            var found: [String] = []
+            for name in Set(declared).sorted() {
+                let stem = name.hasSuffix(".png") ? String(name.dropLast(4)) : name
+                for candidate in Set([name, stem + ".png", stem + "@2x.png"]).sorted() {
+                    if let data = await getFile(appPath + "/" + candidate) {
+                        found.append("\(candidate) (\(data.count) B)")
+                    }
+                }
+            }
+            log(found.isEmpty
+                ? "None of those icon files is in the installed bundle — that is why the icon is blank"
+                : "Icon files in the guest: " + found.joined(separator: ", "))
+        }
+
         progress(0.97, "Restarting the Home screen\u{2026}")
         _ = await sync()
         if major >= 2 { _ = await run(["/bin/launchctl", "stop", "com.apple.mobile.installd"], timeout: 15) }
@@ -214,13 +241,21 @@ extension GuestAgent {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             // Every name SpringBoard uses across iOS 4-6: on a Retina device (the iPhone 4) the caches are the
             // @2x files, which is why deleting only the plain names left once-blank icons blank forever.
+            var removed: [String] = []
             for base in ["icons", "smallicons", "spotlight"] {
                 for scale in ["", "@2x"] {
                     for ext in ["", ".plist"] {
-                        _ = await unlink(path: "/var/mobile/Library/Caches/com.apple.springboard-imagecache-" + base + scale + ext)
+                        let name = "com.apple.springboard-imagecache-" + base + scale + ext
+                        if await unlink(path: "/var/mobile/Library/Caches/" + name) { removed.append(name) }
                     }
                 }
             }
+            // Which caches were actually there. A blank icon that survives this says the cache was not the
+            // culprit (or is not under one of these names), and that is worth knowing from the log rather
+            // than from another round of guessing.
+            log(removed.isEmpty
+                ? "No SpringBoard icon cache to clear (the blank icon is not a stale cache)"
+                : "Cleared \(removed.count) icon cache file(s): " + removed.joined(separator: ", "))
             _ = await sync()
             if cleared {
                 let loaded = await run(["/bin/launchctl", "load", plist], timeout: 20)
