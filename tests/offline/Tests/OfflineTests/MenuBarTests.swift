@@ -14,7 +14,11 @@ extension SharedState {
     @Suite struct MenuBarTests {
         /// One line per item; "-" is a separator. The iPad's differs only in its name: every board lists every item
         /// (Compass Heading, Carrier…), and what its hardware lacks is dimmed by validation, never left out.
-        static func bar(_ app: String) -> String { ipodBar.replacingOccurrences(of: "Light Touch", with: app) }
+        /// The process's name where the menus use it; Help's sponsor item names the project, whatever the process.
+        static func bar(_ app: String) -> String {
+            ipodBar.replacingOccurrences(of: "Light Touch", with: app)
+                .replacingOccurrences(of: "Sponsor the \(app) project", with: "Sponsor the Light Touch project")
+        }
         static let ipodBar = """
             Light Touch/About Light Touch
             Light Touch/Check for Updates…
@@ -152,8 +156,7 @@ extension SharedState {
             Capture/Start Recording  ⌘r
             Capture/Discard Recording…  ⎋
             Capture/-
-            Capture/Capture Screen Only
-            Capture/Record Device Bezel
+            Capture/Include Device Bezel
             Window/Minimize  ⌘m
             Window/Zoom
             Window/-
@@ -163,6 +166,7 @@ extension SharedState {
             Window/-
             Window/Bring All to Front
             Help/Light Touch Help  ⌘?
+            Help/Sponsor the Light Touch project
             Help/-
             Help/Export Diagnostics…
             Help/Copy Bug Report Info
@@ -307,7 +311,7 @@ extension SharedState {
                 capture.items.filter { !$0.isSeparatorItem }.map(\.title) == [
                     "Save Screenshot", "Save Screenshot As…", "Copy Screenshot", "Open Screenshot in Preview",
                     "Start Recording", "Discard Recording…",
-                    "Capture Screen Only", "Record Device Bezel"
+                    "Include Device Bezel"
                 ]
             )
             #expect(
@@ -342,7 +346,13 @@ extension SharedState {
                 keyCode: 53
             )!
             #expect(!capture.performKeyEquivalent(with: esc), "with no device window key, Escape passes on")
-            let deviceWindow = NSWindow(
+            /// A window that reports a sheet without beginSheet, which orders it and the sheet in: both stayed on screen in a
+            /// corner (with AutoFill's popup for the field below) until the test process ended.
+            final class SheetedWindow: NSWindow {
+                var reported: NSWindow?
+                override var attachedSheet: NSWindow? { reported ?? super.attachedSheet }
+            }
+            let deviceWindow = SheetedWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 200, height: 200),
                 styleMask: [.titled],
                 backing: .buffered,
@@ -358,14 +368,7 @@ extension SharedState {
             #expect(deviceWindow.makeFirstResponder(field) && deviceWindow.firstResponder is NSText)
             #expect(!CaptureMenu.escapeDiscards(in: deviceWindow), "Escape stays the text field's")
             deviceWindow.makeFirstResponder(nil)
-            deviceWindow.beginSheet(
-                NSWindow(
-                    contentRect: NSRect(x: 0, y: 0, width: 50, height: 50),
-                    styleMask: [.titled],
-                    backing: .buffered,
-                    defer: false
-                )
-            )
+            deviceWindow.reported = NSWindow()
             #expect(!CaptureMenu.escapeDiscards(in: deviceWindow), "Escape stays the sheet's")
             withExtendedLifetime(owner) {}
             #expect(find("Save Screenshot As…", in: file) == nil)

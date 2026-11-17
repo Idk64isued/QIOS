@@ -20,6 +20,16 @@ jobs:
           X=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1)
           [ -n "$X" ] || { echo "No Xcode 27 on this runner image. Installed:"; ls /Applications | grep -i xcode; exit 1; }
           sudo xcode-select -s "$X"; xcodebuild -version
+      - name: Use the iOS app's emulator pin
+        # A device prepared here runs on the iOS app's emulator (ios/qemu-ios.json), and the guest graphics library
+        # preparation puts in it speaks that emulator's GL name table. The Mac's own pin (build-support/sources.json)
+        # can be newer after an upstream merge and speak another (1ad1c781 is 0xad3b3412; db230fe8e8 is 0xf31a2b68),
+        # so the guest tools are built from the iOS app's pin instead.
+        run: |
+          REF=$(jq -r '."qemu-ios".commit' ios/qemu-ios.json)
+          jq --arg ref "$REF" '."qemu-ios".commit = $ref' build-support/sources.json > "$RUNNER_TEMP/sources.json"
+          mv "$RUNNER_TEMP/sources.json" build-support/sources.json
+          echo "qemu-ios for this preparation: $(jq -r '."qemu-ios".commit' build-support/sources.json)"
       - name: Vendor (emulator, usbmuxd, guest tools, boot ROMs)
         run: scripts/vendor || { echo "scripts/vendor lists what is missing above; see ios/README.md (SecureROMs)"; exit 1; }
       - name: Build the app (it carries firmwarekit, the helper and the guest tools)

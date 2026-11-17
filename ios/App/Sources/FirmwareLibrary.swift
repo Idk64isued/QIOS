@@ -319,7 +319,8 @@ enum IPSWStore {
 enum MacFiles {
     /// The Mac release built from the same sources as this app's emulator. The guest's graphics library and the
     /// emulator speak a versioned protocol, so a newer or older release's files would not match. Change it together
-    /// with an upstream sync (build-support/sources.json).
+    /// with the emulator's pin (ios/qemu-ios.json), not with an upstream merge: the merge moves the Mac's emulator
+    /// (build-support/sources.json) and leaves this app's where it is.
     static let releaseTag = "v1.0-2026.11.05"
     static let assetName = "LightTouchMac-universal.zip"
     static let approximateBytes: Int64 = 392_075_542

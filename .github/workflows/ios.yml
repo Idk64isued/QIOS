@@ -55,6 +55,23 @@ jobs:
           plutil -p ios/App/Info.plist | grep -i bundleversion || true
       - name: Tools
         run: brew install meson ninja pkg-config jq xcodegen ldid
+      - name: The pins the iOS build uses
+        # The caches below are keyed on what goes into them, not on the whole of the Mac app's dependency list: an
+        # upstream merge that only adds a Mac package (TelemetryDeck, say) leaves ANGLE, the libraries and the emulator
+        # as they were, so it must not rebuild them. ios/.ci/ is written here, never committed.
+        run: |
+          mkdir -p ios/.ci
+          python3 - <<'PY'
+          import json
+          used = {"glib", "pcre2", "pixman", "slirp", "proxy-libintl", "ffmpeg", "openssl", "nettle", "ANGLE"}
+          packages = json.load(open("build-support/dependencies.json"))["packages"]
+          picked = sorted((p for p in packages if p["name"] in used), key=lambda p: p["name"])
+          missing = used - {p["name"] for p in picked}
+          if missing:
+              raise SystemExit(f"build-support/dependencies.json no longer has {sorted(missing)}")
+          json.dump(picked, open("ios/.ci/deps.json", "w"), sort_keys=True, indent=1)
+          PY
+          jq -r '."qemu-ios".commit' ios/qemu-ios.json
       - name: Apply the HostRuntime iOS patch
         run: patch -p1 < ios/patches/0001-hostruntime-ios.patch
       - name: Patch FirmwareKit for iOS (on-device firmware preparation)
@@ -124,7 +141,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/angle-ios
-          key: angle-ios-${{ hashFiles('build-support/dependencies.json', 'build-support/patches/angle-metal-strong.patch', 'ios/scripts/build-angle-ios.sh') }}
+          key: angle-ios-${{ hashFiles('ios/.ci/deps.json', 'build-support/patches/angle-metal-strong.patch', 'ios/scripts/build-angle-ios.sh') }}
       - name: Build ANGLE (Metal, arm64 iOS)
         id: abuild
         if: steps.acache.outputs.cache-hit != 'true'
@@ -159,12 +176,15 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/qemu-lib
-          key: qemu-lib-${{ steps.qkey.outputs.xcode }}-angle-${{ steps.angle.outputs.have }}-${{ hashFiles('build-support/sources.json', 'build-support/dependencies.json', 'ios/patches/qemu-ios/**', 'ios/scripts/build-qemu.sh', 'ios/scripts/make-dylib-ios.sh', 'ios/scripts/build-deps.sh') }}
-      - name: Fetch qemu-ios at the commit build-support/sources.json pins
+          key: qemu-lib-${{ steps.qkey.outputs.xcode }}-angle-${{ steps.angle.outputs.have }}-${{ hashFiles('ios/qemu-ios.json', 'ios/.ci/deps.json', 'ios/patches/qemu-ios/**', 'ios/scripts/build-qemu.sh', 'ios/scripts/make-dylib-ios.sh', 'ios/scripts/build-deps.sh') }}
+      - name: Fetch qemu-ios at the commit ios/qemu-ios.json pins
+        # The iOS emulator has its own pin, not the Mac app's (build-support/sources.json): ios/patches/qemu-ios are
+        # made against this commit, and an upstream merge that moves the Mac's emulator must not move this one under
+        # them. Moving it is its own job: rebase the patches onto the new commit, then change ios/qemu-ios.json.
         if: steps.qcache.outputs.cache-hit != 'true'
         run: |
-          URL=$(jq -r '."qemu-ios".repository' build-support/sources.json)
-          REF=$(jq -r '."qemu-ios".commit' build-support/sources.json)
+          URL=$(jq -r '."qemu-ios".repository' ios/qemu-ios.json)
+          REF=$(jq -r '."qemu-ios".commit' ios/qemu-ios.json)
           git clone "$URL" "$RUNNER_TEMP/qemu-ios"
           git -C "$RUNNER_TEMP/qemu-ios" checkout "$REF"
       - name: Restore dependencies cache
@@ -173,7 +193,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/ios-deps
-          key: ios-deps-${{ hashFiles('build-support/dependencies.json', 'ios/scripts/build-deps.sh') }}
+          key: ios-deps-${{ hashFiles('ios/.ci/deps.json', 'ios/scripts/build-deps.sh') }}
       - name: Build dependencies
         if: steps.qcache.outputs.cache-hit != 'true' && steps.cache.outputs.cache-hit != 'true'
         run: bash ios/scripts/build-deps.sh "$RUNNER_TEMP/qemu-ios" "$RUNNER_TEMP/ios-deps"
@@ -182,7 +202,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/ios-deps
-          key: ios-deps-${{ hashFiles('build-support/dependencies.json', 'ios/scripts/build-deps.sh') }}
+          key: ios-deps-${{ hashFiles('ios/.ci/deps.json', 'ios/scripts/build-deps.sh') }}
       - name: Build emulator libraries (JIT + interpreter)
         if: steps.qcache.outputs.cache-hit != 'true'
         run: |

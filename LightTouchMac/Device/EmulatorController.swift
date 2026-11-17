@@ -38,6 +38,12 @@ final class EmulatorController {
     /// When this boot powered on, and the processes whose crash reports it has logged (openSerialLog resets both).
     @ObservationIgnored var poweredOn = Date()
     @ObservationIgnored var crashesLogged: Set<String> = []
+    /// The app in front of the guest at the last look, and whether this boot's guest tools going quiet was reported
+    /// (openSerialLog resets it): for Analytics.
+    @ObservationIgnored var frontBundleID: String?
+    @ObservationIgnored var reportedToolsQuiet = false
+    /// The GL bridge's refusals this helper's emulator has reported, per front app (a fresh helper starts over).
+    @ObservationIgnored var glesRefusals = GLESRefusals()
     var isErasing = false { didSet { trackStartup(was: oldValue || state == .booting || preparingDevice) } }
     /// When the current startup (erase, boot, readiness) began: the toast's counter, per device, not per window.
     private(set) var startupBegan = Date()
@@ -123,7 +129,11 @@ final class EmulatorController {
     var preparationStatus: String { readiness.preparationStatus }
     /// How far this boot has provably got (BootStage): the boot toast's subtitle.
     var bootStage: BootStage { readiness.bootStage }
-    func noteBoot(_ event: BootStage.Event) { readiness.noteBoot(event) }
+    func noteBoot(_ event: BootStage.Event) {
+        let was = bootStage
+        readiness.noteBoot(event)
+        if bootStage != was { Analytics.breadcrumb("\(profile.rawValue) \(bootStage)") }
+    }
     var readinessFailure: String? { readiness.readinessFailure }
 
     /// The VM's lifecycle. Everything the UI enables or disables keys off this;
@@ -134,7 +144,10 @@ final class EmulatorController {
         didSet { trackStartup(was: isErasing || oldValue == .booting || preparingDevice) }
     }
     /// The one way `state` changes (VMState.transition(to:): its table, and why erasing and stopping aren't states).
-    func transition(to next: VMState) { state.transition(to: next) }
+    func transition(to next: VMState) {
+        if next != state { Analytics.breadcrumb("\(profile.rawValue) \(next)") }
+        state.transition(to: next)
+    }
 
     /// Set by the inspector's poll: nil = never checked, true/false = last read.
     var deviceReachable: Bool? {
@@ -143,6 +156,7 @@ final class EmulatorController {
             if deviceReachable == true { recovery.servicesAnswered() }
             if deviceReachable == true, reachableSince == nil {
                 reachableSince = Date()
+                Analytics.signal("Device.booted", analyticsParameters, value: Date().timeIntervalSince(poweredOn))
                 startFileWatch()  // iOS is up: every file the helper depends on exists now
                 checkGuestMounts()
                 watchCrashReports()
@@ -254,6 +268,8 @@ final class EmulatorController {
     @ObservationIgnored var lastFrameAdvance = Date.distantPast
     /// The agent's ping (its ops), until it restarts.
     let agentCache = GuestAgentCache()
+    /// When a reporting guest agent's session last ended (its report dropped): the agent died or was restarted.
+    @ObservationIgnored var agentSessionEnded: Date?
     @ObservationIgnored var lastAgentStatusCheck = Date.distantPast
     var agentStatus = 0
     /// Set by the status poll: when the agent last went stale (2), nil while it answers.

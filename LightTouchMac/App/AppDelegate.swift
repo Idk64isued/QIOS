@@ -25,7 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// Light Touch ▸ Check for Updates… and Sparkle's scheduled checks.
     let updaterController = SPUStandardUpdaterController(
         startingUpdater: true,
-        updaterDelegate: nil,
+        updaterDelegate: Analytics.updates,
         userDriverDelegate: nil
     )
     private let quitting = QuitCoordinator(budget: EmulatorController.stopBudget, retry: AppDelegate.requestTermination)
@@ -83,7 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var settingsMenu: DeviceSettingsMenu {
         let stopped = stoppedSelection.flatMap { instance in
             instance.profile.map {
-                var device = DeviceSettingsMenu.Device(marketingName: $0.marketingName, shortName: $0.shortName)
+                var device = DeviceSettingsMenu.Device(marketingName: $0.preferredName, shortName: $0.shortName)
                 device.localNetworkEnabled = DeviceSettings.load(instance.paths.directory).localNetwork ?? false
                 device.isRunning = false
                 return device
@@ -93,7 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             device: stopped
                 ?? emulator.map {
                     var device = DeviceSettingsMenu.Device(
-                        marketingName: $0.profile.marketingName,
+                        marketingName: $0.profile.preferredName,
                         shortName: $0.profile.shortName
                     )
                     device.localNetworkEnabled = $0.localNetworkEnabled
@@ -123,6 +123,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if let on = validation.isOn { item.state = on ? .on : .off }
         item.toolTip = validation.toolTip
         return validation.isEnabled
+    }
+
+    @objc func sponsorProject(_ sender: Any?) {
+        NSWorkspace.shared.open(URL(string: "https://github.com/sponsors/samhenrigold")!)
     }
 
     @objc func showHelp(_ sender: Any?) {
@@ -156,6 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @objc func showAbout(_ sender: Any?) { AboutCredits.show() }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        offerMoveToApplications()
         // The boards' hardware facts are the emulator's: the bundled helper lists them once, here off the main thread.
         Machines.helper = DeviceLink.Configuration.bundledHelper
         Task.detached { _ = Board.n72.hardware }
@@ -167,13 +172,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         MainMenuBuilder.install(profile: .n72)
     }
 
+    private static let moveDeclinedKey = "moveToApplicationsDeclined"
+
+    /// Sparkle can't update a copy macOS runs translocated (opened where it was downloaded) or from a disk image
+    /// (AppMove), so the launch offers to move it before anything else runs: the move copies Light Touch to an
+    /// Applications folder, opens the copy and quits this one; Don’t Move, or a move that fails, carries on here.
+    private func offerMoveToApplications() {
+        let bundle = Bundle.main.bundleURL
+        guard AppMove.isStuck(bundle), !UserDefaults.standard.bool(forKey: Self.moveDeclinedKey) else { return }
+        let destination = AppMove.destination(for: bundle)
+        let alert = NSAlert()
+        alert.messageText =
+            destination.deletingLastPathComponent().path == "/Applications"
+            ? "Move Light Touch to the Applications folder?"
+            : "Move Light Touch to the Applications folder in your home folder?"
+        alert.informativeText = "Light Touch needs to be in the Applications folder to install updates."
+        alert.addButton(withTitle: "Move to Applications Folder")
+        alert.addButton(withTitle: "Don’t Move")
+        alert.showsSuppressionButton = true
+        NSApp.activate()
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            if alert.suppressionButton?.state == .on { UserDefaults.standard.set(true, forKey: Self.moveDeclinedKey) }
+            return
+        }
+        do {
+            try AppMove.copy(bundle, to: destination)
+            // -n: a new instance, as Launch Services would otherwise bring this one forward
+            let open = try Process.run(URL(fileURLWithPath: "/usr/bin/open"), arguments: ["-n", destination.path])
+            open.waitUntilExit()
+            if open.terminationStatus == 0 { exit(0) }
+            logEvent("move: open exited \(open.terminationStatus) for \(destination.path)")
+        } catch {
+            logEvent("move: copying to \(destination.path) failed: \(error)")
+        }
+        let failed = NSAlert()
+        failed.messageText = "Light Touch couldn’t move to the Applications folder."
+        failed.runModal()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // An Xcode preview's host only draws views: no library lock (the app run beside it would be refused), alerts,
+        // reports or devices.
+        guard !Bundled.isPreview else {
+            return
+        }
+        Analytics.launch()
         do { try Bundled.requireStorage() } catch {
             let alert = NSAlert()
             if (error as? CocoaError)?.code == .fileLocking {
                 alert.messageText = Bundled.appLockMessage
                 alert.informativeText = "Quit the other copy first."
             } else {
+                Analytics.failure("App.storageUnavailable", error)
                 alert.alertStyle = .critical
                 alert.messageText = "Couldn’t open device storage"
                 alert.informativeText = error.localizedDescription
@@ -188,7 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             logEvent("logging: native output capture unavailable: \(error.localizedDescription)")
         }
         // This copy holds the library: the marks of the steps a crash interrupted are its own to read.
-        CrashGuard.launch()
+        for step in CrashGuard.launch() { Analytics.lastRunDied(in: step) }
         // State from before devices were prepared from IPSWs: erased once, or the app quits. The erase
         // runs off the main actor behind a progress window; a launch after a quit midway resumes without asking.
         if let legacy = LegacyState.find(
@@ -243,9 +293,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     /// The rest of the launch, once no legacy state is left.
     private func finishLaunching() {
+        warnIfIncomplete()
         // The network question belongs to the device being started (DeviceSessionHost.start), not to the app.
         let host = DeviceSessionHost()
         Self.sweepStorage()
+        Board.prepareIcons()
         #if DEBUG
             Self.adoptDevelopmentBase(catalog: host.catalog)
         #endif
@@ -264,11 +316,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         ClipboardSharing.shared.emulators = { [weak self] in self?.emulators ?? [] }
         ClipboardSharing.shared.start()
         controller.selectLaunchDevice()
+        Analytics.libraryOpened(host.library.instances)
         dockProgress.start()
         if !pendingOpen.isEmpty {
             controller.open(pendingOpen)
             pendingOpen = []
         }
+    }
+
+    /// A copy missing a part it ships (a partial copy, something quarantined, a Debug build without the checkout's
+    /// usbmuxd) loses app management or the guest tools without a word, so say so before a device starts, until
+    /// "don't show" is checked for that same set of missing parts.
+    private func warnIfIncomplete() {
+        var missing: [String] = []
+        if !FileManager.default.isExecutableFile(atPath: USBMux.binary) { missing.append("usbmuxd") }
+        if Bundled.resource("Guest/guest.aar") == nil { missing.append("guest.aar") }
+        guard !missing.isEmpty else { return }
+        let names = missing.joined(separator: " ")
+        Analytics.failure("App.componentsMissing", nil, ["missing": names])
+        let ignoredKey = "ignoredMissingComponents"
+        guard UserDefaults.standard.string(forKey: ignoredKey) != names else { return }
+        let alert = NSAlert()
+        alert.messageText = "Some of Light Touch’s files are missing"
+        alert.informativeText =
+            "Installing apps and transferring files won’t work until you download Light Touch again."
+        alert.addButton(withTitle: "Download Light Touch")
+        alert.addButton(withTitle: "Continue")
+        alert.showsSuppressionButton = true
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(URL(string: "https://samhenri.gold/lighttouch/")!)
+        }
+        if alert.suppressionButton?.state == .on { UserDefaults.standard.set(names, forKey: ignoredKey) }
     }
 
     /// Development runs: LTM_DEV_BASE names a `firmwarekit create` output directory to run as a
@@ -350,6 +428,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// On quit: guard an in-flight install, then halt each device
     /// (EmulatorController.halt: storage flushed, no guest shutdown).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // the trail says a run that ended in a step (CrashGuard) was asked to quit: a force quit after it, not a crash
+        Analytics.breadcrumb("App.quitAsked")
         let answer = quitting.shouldTerminate(
             busy: { [weak self] in
                 if self?.emulators.contains(where: \.isErasing) == true || self?.host?.storageWork.isErasing == true {

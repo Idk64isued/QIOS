@@ -60,6 +60,22 @@ except prepare firmware. The `build-logs` artifact has the compiler's errors.
 On a PC you can also unpack a packed device with `ios/tools/unpack_itbase.py` (a copied NAND image loses its holes
 and gets big, so unpacking on the phone is better).
 
+### Upstream merges, and the emulator's own pin
+
+Everything outside `ios/`, `.github/` and the iOS README and changelog is LightTouchMac as upstream ships it, and a
+merge takes it whole (QIOS changes none of it). Three things keep a merge from moving the iOS app by accident:
+
+- **The emulator has its own pin, `ios/qemu-ios.json`**, not the Mac's (`build-support/sources.json`). The patches in
+  `ios/patches/qemu-ios` are made against that commit; a merge that moves the Mac's emulator leaves this one alone.
+  Moving it is its own job: rebase every patch onto the new commit, then change the pin, and the Mac release in
+  `MacFiles.releaseTag` with it (its guest tools speak the emulator's GL protocol).
+- **The caches are keyed on what goes into them**: the CI writes the nine `build-support/dependencies.json` entries the
+  iOS build uses to `ios/.ci/deps.json` and keys ANGLE, the libraries and the emulator on that, so a merge that only
+  adds a Mac package rebuilds nothing.
+- **The shared packages' APIs are checked**: HostRuntime's patch (`ios/patches/0001-hostruntime-ios.patch`) and
+  `patch-firmwarekit.py` must still apply, and the build falls back to the app without FirmwareKit if FirmwareKit no
+  longer compiles for iOS (the run summary says so).
+
 ## Which original-iPhone firmware to use
 
 On the original iPhone, **iPhone OS 1.0 runs well** — calls, texts, the carrier and the clipboard all work there.
@@ -180,17 +196,28 @@ leave a device unbootable.
 
 ## Installing apps (no jailbreak)
 
-Apps install through the guest agent, which runs as root inside the device. A stock image has no tool to make a
-folder, so the app puts one in: `lt-mkdirs` (ios/guest-helper), a 456-byte static armv6 program, built from
-`lt-mkdirs.S` by `build.py` and embedded in `GuestHelperBinary.swift`; `test.py` runs it under an ARM emulator. On
-iPhone OS 2 and later the app goes into a container in /var/mobile/Applications owned by mobile; on iPhone OS 1 it
-goes into /Applications. Registration splits by version: iPhone OS 2 to iOS 4 get the app's entry written into
-MobileInstallation's cache by hand; iOS 5 and 6 don't accept a hand-made entry (blank icon on 5, not on the Home
-screen at all on 6), so there the cache is deleted instead and MobileInstallation rebuilds it from the folders on
-disk as SpringBoard restarts — iOS writes the entry itself, in the shape it wants. The install waits up to 30 s and
-checks the rebuilt cache lists the app; if no cache reappears, the old one goes back with the hand-made entry as a
-safety net. SpringBoard then restarts and shows the app. The Apps list reads the same cache, so it works without a
-jailbreak too.
+**iOS 4 and later: the device's own installer.** This is how the Mac app installs (over USB, with
+`ideviceinstaller`) and how iTunes did: `installd` unpacks the app, places it, registers it and tells SpringBoard, which
+draws its icon like any other app's. Preparation bakes AppSync into installd (every iOS 4-capable recipe has
+`appsync: true`), so a decrypted, unsigned app is accepted. Without USB the app reaches installd from inside the guest:
+the .ipa is copied to `/var/mobile/Media/LightTouch/install/` and `lt-install` (ios/guest-helper) calls
+`MobileInstallationInstall(path, {ApplicationType: User}, NULL, path)`, the call jailbreak-era `ipainstaller` made.
+`lt-install` is the one guest helper that dyld loads: `build.py` lays it out with `LC_LOAD_DYLINKER`, binds libSystem's
+`dlopen` and `dlsym` into its `__DATA`, and it looks up everything else (CoreFoundation, MobileInstallation) itself.
+`test.py` plays dyld's part for it under the ARM emulator, reads the bind opcodes the way dyld does and fakes the three
+libraries, and checks the call, its arguments, the stack alignment and the result line. The log says
+`installd installed <app> ...` on success, or why not (`lt-install: N`), and the install then falls back to the
+hand-written path below, so a device prepared without AppSync still gets the app.
+
+**iPhone OS 1 to 3, and the fallback: written in by hand.** Apps install through the guest agent, which runs as root
+inside the device. A stock image has no tool to make a folder, so the app puts one in: `lt-mkdirs`, a 456-byte static
+armv6 program, built from `lt-mkdirs.S` by `build.py` and embedded in `GuestHelperBinary.swift`. On iPhone OS 2 and
+later the app goes into a container in /var/mobile/Applications owned by mobile; on iPhone OS 1 it goes into
+/Applications. iPhone OS 2 and 3 get the app's entry written into MobileInstallation's cache by hand; from iOS 4 the
+cache is deleted instead and MobileInstallation rebuilds it from the folders on disk as SpringBoard restarts. The
+install waits up to 30 s and checks the rebuilt cache lists the app; if no cache reappears, the old one goes back with
+the hand-made entry as a safety net. This path gets apps listed, but on iOS 4 and 5 their icons stayed blank — which
+is what moved those versions onto installd. The Apps list reads the same cache, so it works without a jailbreak too.
 
 ## Closing the app
 

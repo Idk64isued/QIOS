@@ -266,6 +266,7 @@ public enum AppInstaller {
                     NotificationCenter.default.post(name: .ltmInstallProgress, object: job)
                 }
                 job.status = "Added to \(media.destination)"
+                AppReports.used("Media.imported", reportParameters(job, ["destination": media.destination]))
             } catch is CancellationError {
                 // The uploader removes incomplete files. A completed staged
                 // file is retained if the library outcome could be uncertain.
@@ -273,7 +274,7 @@ public enum AppInstaller {
                 guard !Task.isCancelled else { return }
                 job.failed = true
                 pauseIfNeeded(error, with: emulator, excluding: job)
-                job.status = failureText(error, job)
+                job.status = failureText(error, job, report: "Media.importFailed")
             }
         }
         return job
@@ -282,11 +283,23 @@ public enum AppInstaller {
     /// A failed job's row text, with the whole error in app.log first: the row's words alone
     /// ("isn't in the correct format") left diagnostics with nothing to go on. A decoding error
     /// never reaches the row as Foundation's text.
-    public static func failureText(_ error: Error, _ job: InstallJob) -> String {
+    public static func failureText(_ error: Error, _ job: InstallJob, report: String = "Apps.installFailed") -> String {
         log(
             "install: \(job.name) failed: \(String(reflecting: error)) [\((error as NSError).domain) \((error as NSError).code)]"
         )
+        // the host a network error came from: Legacy Store's API or archive.org's copy
+        AppReports.failed(report, error, reportParameters(job, ["host": (error as? URLError)?.failingURL?.host ?? ""]))
         return error is DecodingError ? CatalogError.unreadable.localizedDescription : error.localizedDescription
+    }
+
+    /// A job's report: the app's bundle id (a public App Store identifier), whether it came from Legacy Store and its
+    /// device's firmware.
+    static func reportParameters(_ job: InstallJob, _ more: [String: String] = [:]) -> [String: String] {
+        var parameters = more
+        parameters["bundleID"] = job.bundleID
+        parameters["store"] = job.catalogIpaID == nil ? "no" : "yes"
+        parameters["firmware"] = devices().first { $0.id == job.deviceID }?.firmware
+        return parameters
     }
 
     /// A Legacy Store copy: same pipeline, same queue, but the row exists —
@@ -402,6 +415,15 @@ public enum AppInstaller {
         presenting window: AnyObject?,
         placeholderRaised: Bool = false
     ) async {
+        // The one refusal for every install entry point (drop, Apps inspector, store): a firmware that
+        // doesn't manage apps (iOS 10+, where installd's signature check isn't bypassed yet). iPhone OS 1
+        // has no installation service and never reaches here.
+        guard FirmwareCatalog.Entry.managesApps(major: FirmwareCatalog.Entry.major(of: emulator.iosVersion)) else {
+            job.failed = true
+            job.status = "App installs aren’t supported on iOS 10 yet."
+            NotificationCenter.default.post(name: .ltmInstallProgress, object: job)
+            return
+        }
         let readyQueue = queue(for: emulator.instance.id)
         if readyQueue.isBusy || readyQueue.isPaused {
             job.status = readyQueue.isPaused ? "Paused" : "Waiting for device…"
@@ -444,6 +466,7 @@ public enum AppInstaller {
                     device: emulator.instance
                 )
             }
+            AppReports.used("Apps.installed", reportParameters(job))
             if output.contains("newer than the device's") { emulator.warnMayNotLaunch(job.name, in: window) }
         } catch is CancellationError {
             // Cancelling is a decision, not a failure. The placeholder icon

@@ -77,8 +77,8 @@ extension SharedState {
                 }
                 return true
             }
-            func window(_ size: NSSize) -> NSWindow {
-                let w = NSWindow(
+            func window(_ size: NSSize) -> QuietWindow {
+                let w = QuietWindow(
                     contentRect: NSRect(origin: .zero, size: size),
                     styleMask: [.titled],
                     backing: .buffered,
@@ -107,7 +107,7 @@ extension SharedState {
                 }
             }
             func sidebar(_ ids: [String], names: [String: String] = [:], host: DeviceSessionHost) -> (
-                DeviceLibraryViewController, NSWindow
+                DeviceLibraryViewController, QuietWindow
             ) {
                 SidebarList(ids: ids, names: names).save(defaults)
                 let vc = DeviceLibraryViewController(host: host, defaults: defaults)
@@ -381,6 +381,9 @@ extension SharedState {
             if !delegate.deletes.isEmpty || vc.entries.map(\.id) != before {
                 fail("a bare Delete key removed \(delegate.deletes), left \(vc.entries.map(\.id))")
             }
+            if w.unhandled != [#selector(NSResponder.keyDown(with:)), #selector(NSResponder.keyDown(with:))] {
+                fail("Delete and Forward Delete reached no handler: \(w.unhandled)")
+            }
             vc.delete(nil)
             if delegate.deletes != ["n72ap-8C148"] || !vc.entries.contains(where: { $0.id == "n72ap-8C148" }) {
                 fail("prepared delete: \(delegate.deletes)")
@@ -602,7 +605,7 @@ extension SharedState {
             if sheet.groups.map(\.name) != [
                 "iPad", "iPod touch", "iPod touch (2nd generation)", "iPod touch (3rd generation)",
                 "iPod touch (4th generation)", "iPhone", "iPhone 3GS",
-                "iPhone 4"
+                "iPhone 4", "iPhone 5"
             ] {
                 fail("sheet groups: \(sheet.groups.map(\.name))")
             }
@@ -636,7 +639,7 @@ extension SharedState {
         /// The Add Device sheet's split, in its own window never ordered in: devices on the left (only those with a
         /// shown build), the chosen device's versions on the right. Add, and Return in the versions list, hand over
         /// the picks across devices in catalog order, never an entry already added or one hidden by Show experimental;
-        /// an added row can't be picked by keyboard; letters type-select a device; the sheet resizes, autosaves its
+        /// an added row can be selected but adds nothing; letters type-select a device; the sheet resizes, autosaves its
         /// size and grows no toolbar. Renders (light and dark) go to the temporary directory.
         @Test func addDeviceSheetSplitsByDevice() throws {
             _ = NSApplication.shared
@@ -806,16 +809,31 @@ extension SharedState {
             if !addedIDs.isEmpty { fail("Add with nothing picked handed over \(addedIDs)") }
             try render(window, "stable-light")
 
-            // An added iPad version: Return on it adds nothing, the arrow skips it.
+            // An added iPad version: the arrow selects it like any row, and Return on it adds nothing.
             if let versions = tables.last {
+                let ipad = AddDeviceView.shown(
+                    AddDeviceView(
+                        catalog: catalog, added: [], downloaded: [], selection: [],
+                        onAdd: { _ in }, onCancel: {}
+                    ).groups, experimental: false
+                ).first { $0.id == "k48ap" }
                 window.makeFirstResponder(versions)
                 versions.keyDown(with: key(String(UnicodeScalar(NSDownArrowFunctionKey)!), 125, in: window))
                 versions.keyDown(with: key(String(UnicodeScalar(NSDownArrowFunctionKey)!), 125, in: window))
+                if versions.selectedRow != ipad?.entries.firstIndex(where: { $0.id == "k48ap-7B500" }) {
+                    fail("the arrow didn't select the added version: row \(versions.selectedRow)")
+                }
                 versions.keyDown(with: key("\r", 36, in: window))
                 if addedIDs.last.map({ $0.contains("k48ap-7B500") }) ?? false {
                     fail("an added version was picked: \(addedIDs)")
                 }
             }
+            // Only an added version selected: it shows selected, and Add hands over nothing.
+            addedIDs = []
+            (window, tables) = sheet(experimental: false, selection: ["k48ap-7B500"], device: "k48ap")
+            if tables.last?.selectedRow == -1 { fail("an added version can't be selected") }
+            pressAdd(window)
+            if !addedIDs.isEmpty { fail("Add with only an added version selected handed over \(addedIDs)") }
 
             // The sheet opens with the versions list focused, not the devices: its selection is the active one and
             // the arrow keys move through the versions and leave the device.
@@ -873,7 +891,7 @@ extension SharedState {
             // Experimental shown: every device. One pick on each device below, and several, in light and dark;
             // type-select reaches the iPhone 3GS.
             (window, tables) = sheet(experimental: true, selection: ["n88ap-10B500"], device: "n88ap")
-            if tables.first?.numberOfRows != 8 { fail("experimental devices: \(tables.first?.numberOfRows ?? -1)") }
+            if tables.first?.numberOfRows != 9 { fail("experimental devices: \(tables.first?.numberOfRows ?? -1)") }
             let picks: [(String, Set<String>, String)] = [
                 ("iphone3gs-6.1.6", ["n88ap-10B500"], "n88ap"),
                 ("iphone4-7.1.2", ["n90ap-11D257"], "n90ap"),
@@ -939,4 +957,11 @@ extension SharedState {
             #expect(delegate.sessionChanges == 1)
         }
     }
+}
+
+/// A key nothing handles ends at the window, which beeps; this window notes it instead, so a test that checks a key
+/// does nothing stays quiet and can say the key went unhandled.
+final class QuietWindow: NSWindow {
+    var unhandled: [Selector] = []
+    override func noResponder(for eventSelector: Selector) { unhandled.append(eventSelector) }
 }

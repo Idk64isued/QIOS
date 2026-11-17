@@ -170,6 +170,10 @@ link.onEvent = { event in
         audioLoud = 0
     case .guestPasteboard(let text):
         emit("guestPasteboard", ["text": text])
+    case .agentReport(let text):
+        emit("agentReport", ["text": text])
+    case .glesRefusals(let text):
+        emit("glesRefusals", ["text": text])
     }
 }
 link.onInvalidated = { error in
@@ -296,6 +300,8 @@ func blocking<T: Sendable>(_ body: @escaping @Sendable () async throws -> T) -> 
     sync { done in Task { done(await Result { try await body() }) } }
 }
 
+/// What each `told` step last read for its key (its `~` waits for another value).
+nonisolated(unsafe) var toldLast: [String: String] = [:]
 Thread.detachNewThread {
     for step in scenario.steps {
         let p = step.split(separator: " ").map(String.init)
@@ -312,6 +318,94 @@ Thread.detachNewThread {
             guard case .success(.ok(true)) = request(.boot(boot)) else { fail("boot refused") }
         case "wait":
             usleep(UInt32(v[0] * 1e6))
+        // told SECONDS KEY VALUE…: until the guest agent's report says `KEY VALUE` (`-`: it has no KEY line, `+`: it
+        // has one, `~`: one with another value than the last told of KEY got, and not 0), which it does within a
+        // quarter second of the guest changing: a wait for the fact, not for a time
+        case "told":
+            let want = p.dropFirst(3).joined(separator: " ")
+            let before = toldLast[p[2]]
+            let start = Date()
+            var got = "-"
+            func met() -> Bool {
+                guard got != "no report" else { return false }
+                return want == "+" ? got != "-" : want == "~" ? !["-", "0", before].contains(got) : got == want
+            }
+            repeat {
+                // No report (none yet, or its session ended) tells nothing, the absence of a line included.
+                let report = link.agentReport ?? ""
+                got =
+                    report.isEmpty
+                    ? "no report"
+                    : report.split(separator: "\n").first { $0.hasPrefix(p[2] + " ") }
+                        .map { String($0.dropFirst(p[2].count + 1)) } ?? "-"
+                if met() { break }
+                usleep(50_000)
+            } while Date().timeIntervalSince(start) < v[0]
+            toldLast[p[2]] = got
+            emit(
+                "told",
+                [
+                    "key": p[2], "want": want, "got": got, "ok": met(),
+                    "report": link.agentReport ?? "", "seconds": Date().timeIntervalSince(start),
+                    "sinceBoot": Date().timeIntervalSince(bootAt)
+                ]
+            )
+        // home [PRESSES]: Home (on the guest's clock) until the agent's report shows no app in front, at most PRESSES
+        // (3) times 5 s apart: an alert standing over the app takes a press for itself (7.x's notice of the USB
+        // keyboard does at every boot). `presses`, and `ok` when the app left
+        case "home":
+            var presses = 0
+            var left = false
+            let start = Date()
+            while !left, presses < (v.first.map(Int.init) ?? 3) {
+                presses += 1
+                _ = blocking {
+                    try await HostInputAutomation.perform(HostInputAutomation.press(0)) {
+                        try await link.request($0, timeout: 5)
+                    }
+                }
+                left =
+                    (try? blocking {
+                        await guest.agent.waitForReport(seconds: 5) { $0.isAnswering && $0.frontmost == nil }
+                    }
+                    .get()) == true
+            }
+            emit("home", ["presses": presses, "ok": left, "seconds": Date().timeIntervalSince(start)])
+        // launch BUNDLE-ID: the app's own launch (GuestServices.launch, which asks a busy SpringBoard again)
+        case "launch":
+            let start = Date()
+            let r = blocking { try await guest.launch(p[1]) }
+            emit("launch", ["bundle": p[1], "result": "\(r)", "seconds": Date().timeIntervalSince(start)])
+        // gesture tap X Y | drag X0 Y0 X1 Y1 | press BUTTON: made on the guest's clock, until the emulator made all
+        // of it and the guest's digitizer driver read the touch (HostInputAutomation.perform); `ok` or why not.
+        // tapshown and dragshown: the points as the window shows the picture (tapshown's mapping)
+        case "gesture":
+            var v = v
+            if p[1].hasSuffix("shown"), let r = rotationDriver {
+                v = onMain {
+                    stride(from: 0, to: v.count - 1, by: 2).flatMap { i -> [Double] in
+                        let point = r.touchPoint(shown: v[i], v[i + 1])
+                        return [point.0, point.1]
+                    }
+                }
+            }
+            let events =
+                p[1].hasPrefix("tap")
+                ? HostInputAutomation.tap(v[0], v[1])
+                : p[1].hasPrefix("drag")
+                    ? HostInputAutomation.drag(from: (v[0], v[1]), to: (v[2], v[3]))
+                    : HostInputAutomation.press(Int32(v[0]))
+            let start = Date()
+            let r = blocking {
+                try await HostInputAutomation.perform(events) { try await link.request($0, timeout: 5) }
+            }
+            emit(
+                "gesture",
+                [
+                    "kind": p[1], "ok": (try? r.get()) != nil, "result": "\(r)",
+                    "seconds": Date().timeIntervalSince(start)
+                ]
+            )
         case "lit":
             let start = Date()
             var b = 0.0
@@ -354,11 +448,14 @@ Thread.detachNewThread {
             }
             usleep(300_000)
             link.send(.touch(slot: 0, phase: 2, x: v[2], y: v[3]))
-        // wake X0 Y0 X1 Y1: until the display is on and the agent says unlocked (6 tries): Home (then Sleep/Wake)
-        // while it sleeps, the unlock drag while locked
+        // wake X0 Y0 X1 Y1 [SECONDS]: until the display is on and the agent says unlocked, at most SECONDS (60): Home
+        // (then Sleep/Wake) while it sleeps, the unlock drag while locked, nothing while SpringBoard doesn't answer (a
+        // respring) or its lock screen doesn't take the drag yet
         case "wake":
             var tries = 0
-            while tries < 6 {
+            var lockedNow: Bool?
+            let start = Date()
+            while Date().timeIntervalSince(start) < (v.count > 4 ? v[4] : 60) {
                 tries += 1
                 if link.status?.displaySleeping == true {
                     let button = tries > 2 ? 1 : 0  // Home, then Sleep/Wake
@@ -367,7 +464,12 @@ Thread.detachNewThread {
                     link.send(.button(button, down: false))
                     usleep(2_000_000)
                 }
-                guard (try? blocking({ try await guest.agent.isLocked() }).get()) != false else {
+                lockedNow = try? blocking({ try await guest.agent.isLocked() }).get()
+                guard let locked = lockedNow else {
+                    usleep(1_000_000)
+                    continue
+                }
+                guard locked else {
                     if link.status?.displaySleeping == false { break }
                     continue
                 }
@@ -382,7 +484,13 @@ Thread.detachNewThread {
                 link.send(.touch(slot: 0, phase: 2, x: v[2], y: v[3]))
                 usleep(3_000_000)
             }
-            emit("wake", ["tries": tries, "sleeping": link.status?.displaySleeping ?? true])
+            emit(
+                "wake",
+                [
+                    "tries": tries, "sleeping": link.status?.displaySleeping ?? true, "locked": lockedNow ?? true,
+                    "seconds": Date().timeIntervalSince(start)
+                ]
+            )
         case "button":
             link.send(.button(Int(v[0]), down: true))
             usleep(150_000)
@@ -627,11 +735,13 @@ Thread.detachNewThread {
                 tweaksWritten = result.written
                 tweaksApplied = true
             }
+            let resprung = (try? r.get().resprung) ?? false
             emit(
                 "tweaks",
                 [
                     "result": "\(r.map { "written \($0.written) resprung \($0.resprung) missing \($0.missing)" })",
-                    "resprung": (try? r.get().resprung) ?? false, "ok": (try? r.get()) != nil
+                    "resprung": resprung, "ok": (try? r.get()) != nil,
+                    "landedSeconds": resprung ? respringLanded() : 0
                 ]
             )
         // sbread NAME: what SpringBoard's status bar server holds (the agent's statusbarget): whether its overrides
@@ -665,7 +775,13 @@ Thread.detachNewThread {
             dump(p[1])
             let shown = URL(fileURLWithPath: "\(dumpDir)/\(p[1])-shown.png")
             _ = onMain { r.writeShown(URL(fileURLWithPath: "\(dumpDir)/\(p[1]).png"), to: shown) }
-            emit("ocr", ["name": p[1], "lines": readText(in: shown), "redness": redness(of: shown)])
+            emit(
+                "ocr",
+                [
+                    "name": p[1], "lines": readText(in: shown), "statusBar": readStatusBar(in: shown),
+                    "tint": tint(of: shown)
+                ]
+            )
         case "seen":  // seen WORD SECONDS: until Vision reads WORD on the screen (an icon's label: Home is up)
             guard let r = rotationDriver else { fail("seen: no board") }
             let start = Date()
@@ -694,9 +810,46 @@ Thread.detachNewThread {
                 ]
             )
         case "respring":  // Device ▸ Respring and Tweaks' restart (GuestServices.respring)
-            emit("respring", ["result": "\(blocking { try await guest.respring() })"])
+            let r = blocking { try await guest.respring() }
+            emit("respring", ["result": "\(r)", "landedSeconds": respringLanded()])
         case "reset":  // the app's Restart (MachineOp.reset): the guest reboots in place
             link.send(.machine(.reset))
+        // until SECONDS CONDITION: polls until CONDITION holds, at most SECONDS, where a fixed wait would stand in for
+        // it; an "until" event says whether it was met. `text REGEX` (_ for a space): Vision reads a line matching
+        // REGEX on the window's picture or its status bar; `locked`: the agent says locked (a restarted SpringBoard is
+        // at its lock screen); `front`: an app, not SpringBoard, is frontmost (an app that quits soon after counts).
+        case "until":
+            let condition = p.dropFirst(2).joined(separator: " ")
+            let start = Date()
+            var met = false
+            var front = ""
+            while !met {
+                switch p[2] {
+                case "text":
+                    dump("until")
+                    var shown = URL(fileURLWithPath: "\(dumpDir)/until.png")
+                    if let r = rotationDriver {
+                        let turned = URL(fileURLWithPath: "\(dumpDir)/until-shown.png")
+                        if onMain({ r.writeShown(shown, to: turned) }) { shown = turned }
+                    }
+                    let lines = readText(in: shown) + readStatusBar(in: shown)
+                    let pattern = p[3].replacingOccurrences(of: "_", with: " ")
+                    met = lines.contains { $0.range(of: pattern, options: .regularExpression) != nil }
+                case "locked":
+                    met = (try? blocking({ try await guest.agent.isLocked() }).get()) == true
+                case "front":
+                    front = (try? blocking({ try await guest.agent.frontmost() }).get())?.bundleID ?? ""
+                    met = !front.isEmpty && front != "com.apple.springboard"
+                default:
+                    fail("unknown condition \(condition)")
+                }
+                if met || Date().timeIntervalSince(start) >= v[0] { break }
+                usleep(500_000)
+            }
+            emit(
+                "until",
+                ["condition": condition, "met": met, "seconds": Date().timeIntervalSince(start), "front": front]
+            )
         case "waitagent":  // waitagent SECONDS: until the agent is alive
             let start = Date()
             while link.status?.agentStatus != 1, Date().timeIntervalSince(start) < v[0] { usleep(250_000) }
@@ -851,6 +1004,16 @@ Thread.detachNewThread {
     }
     emit("done")
     exit(0)
+}
+
+/// After a respring, until the new SpringBoard is up at its lock screen (the agent says locked; the old one, still
+/// answering, says unlocked), at most 60 s: the seconds it took.
+func respringLanded() -> Double {
+    let start = Date()
+    while (try? blocking({ try await guest.agent.isLocked() }).get()) != true, Date().timeIntervalSince(start) < 60 {
+        usleep(500_000)
+    }
+    return Date().timeIntervalSince(start)
 }
 
 /// The helper's CPU seconds, wakeups and energy (nJ) so far.

@@ -65,6 +65,35 @@ import Testing
         }
     }
 
+    /// leaveJournalToDevice writes the whole .journal_info_block, not the bytes newfs left after offset/size (0x5a
+    /// on some hosts, 0 on others), so two hosts prepare the same block: the block is a zeroed 4096 bytes with only
+    /// the in-FS and need-init flags and the journal's offset and size. Here the block is pre-filled with 0x5a, as a
+    /// host's kernel can leave it, and comes out the same as newfs's.
+    @Test func leaveJournalToDeviceWritesADeterministicInfoBlock() async throws {
+        try await Oracle.withTemp { dir in
+            let img = dir.appendingPathComponent("j.img")
+            try HFSPlusWriter.makeHFS(img, size: 64 << 20, journaled: true)
+            let v = try HFSPlusVolume(img, writable: true)
+            // the info block's location (volume header journalInfoBlock, at file offset 1024 + 12), then its offset
+            // and size as makeHFS wrote them
+            let at = try Data(contentsOf: img)[1036..<1040].reduce(0) { $0 << 8 | Int($1) } * v.blockSize
+            let before = try Data(contentsOf: img)[at..<(at + 52)]
+            let offsetSize = before[(at + 36)..<(at + 52)]
+            // a host's kernel fill: 0x5a over the whole block, offset and size restored
+            var dirty = Data(repeating: 0x5a, count: v.blockSize)
+            // kJIJournalInFSMask, as the block says before the handoff
+            dirty.replaceSubrange(0..<4, with: [0, 0, 0, 1])
+            dirty.replaceSubrange(36..<52, with: offsetSize)
+            try v.restore([(at, dirty)])
+            try v.leaveJournalToDevice()
+            let block = try Data(contentsOf: img)[at..<(at + v.blockSize)]
+            #expect(block[(at)..<(at + 4)].elementsEqual([0, 0, 0, 5]))  // in-FS + need-init
+            #expect(block[(at + 4)..<(at + 36)].allSatisfy { $0 == 0 })  // the device signature, zeroed
+            #expect(block[(at + 36)..<(at + 52)].elementsEqual(offsetSize))  // the journal's offset and size kept
+            #expect(block[(at + 52)...].allSatisfy { $0 == 0 })  // the fill newfs leaves zero
+        }
+    }
+
     @Test func aFreshVolumeIsCleanAndEmpty() async throws {
         try await Oracle.withTemp { dir in
             for journaled in [true, false] {
@@ -245,7 +274,8 @@ import Testing
     /// sizes, content, link targets, flags) as the kernel route's extraction (MountedVolume.extract: /usr/bin/tar
     /// -xkf on the host, merged in) into a kernel-mounted newfs_hfs one, both over the same existing folder and file,
     /// which -k keeps; and every file and folder the archive dates has the same modification date in both.
-    @Test func tarExtractionMatchesTheKernel() async throws {
+    @Test(.enabled(if: FixtureRequirements.corpusEnabled, "Firmware corpus test; set FK_TEST_CORPUS=1 to run"))
+    func tarExtractionMatchesTheKernel() async throws {
         let tar = Oracle.path("Library/Caches/gold.samhenri.LightTouchMac/Jailbreak/freeze.tar.gz")
         guard Oracle.exists(tar) else { try FixtureRequirements.missing(tar.path) }
         try await Oracle.withTemp { dir in
@@ -336,8 +366,9 @@ import Testing
     }
 
     /// A file HFS-compressed by macOS (ditto --hfsCompression onto a kernel-mounted volume: its content in the
-    /// com.apple.decmpfs attribute or the resource fork) overwritten in place is stored plainly: compressed flag,
-    /// decmpfs attribute and kHFSHasAttributesMask gone, its record and owner kept, and fsck_hfs passes.
+    /// com.apple.decmpfs attribute or the resource fork) overwritten in place is stored plainly: compressed flag and
+    /// decmpfs attribute gone, its record and owner kept, and fsck_hfs passes. kHFSHasAttributesMask stays only while
+    /// another attribute does: macOS 13 on adds com.apple.provenance to what ditto writes, which the overwrite keeps.
     @Test func overwritingACompressedFileStoresItPlainly() async throws {
         try await Oracle.withTemp { dir in
             let img = dir.appendingPathComponent("c.img")
@@ -367,8 +398,10 @@ import Testing
             try w.put(Data("plain".utf8), at: "f")
             try w.close()
             let after = try flags()
-            #expect(after.owner & 0x20 == 0 && after.record & 0x04 == 0 && after.cnid == before.cnid)
-            #expect(try HFSPlusVolume(img).attributeOwners().isEmpty)
+            #expect(after.owner & 0x20 == 0 && after.cnid == before.cnid)
+            let v = try HFSPlusVolume(img)
+            #expect(try v.decmpfsHeader(after.cnid) == nil)
+            #expect((after.record & 0x04 != 0) == (try v.attributeOwners().contains(after.cnid)))
             #expect(try HFSPlusVolume(img).contents(HFSPlusVolume(img).record(at: "f")) == Data("plain".utf8))
             let fsck = try await Self.fsck(img)
             #expect(fsck.ok, "\(fsck.output)")

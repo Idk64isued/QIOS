@@ -98,7 +98,7 @@ extension MainWindowController {
             alert.addButton(withTitle: "Force Stop")
         case .jailbreak:
             alert.messageText = "Jailbreak \(count == 1 ? name(batch.targets[0]) : "\(count) devices")?"
-            let substrate = batch.targets.contains { (3...6).contains(Int($0.version.prefix { $0 != "." }) ?? 0) }
+            let substrate = batch.targets.contains { (3...6).contains($0.major) }
             info =
                 "Adds Cydia\(substrate ? ", Substrate on iOS 4 to 6," : "") and afc2, which shows the whole file system in Files, to \(names). Erase All Content and Settings removes them."
             alert.addButton(withTitle: "Jailbreak")
@@ -326,6 +326,17 @@ extension MainWindowController {
     /// Settings ▸ Storage lists every record, also one no row shows: its entry left the catalog, or a newer record
     /// for the same entry is the row's (host.instance(for:)). The row's own device goes the row's way; such a record
     /// has no session, so it goes whenever nothing else works on its storage.
+    /// The sidebar's label for the record its row runs (Settings ▸ Storage names a device as its row does); nil for a
+    /// record no row runs.
+    func sidebarLabel(_ instance: DeviceInstance) -> SidebarList.Label? {
+        guard let entry = host.catalog.entry(id: instance.firmware), library.list.contains(entry.id),
+            host.instance(for: entry)?.id == instance.id
+        else {
+            return nil
+        }
+        return library.label(for: entry)
+    }
+
     func canDeleteFromStorage(_ instance: DeviceInstance) -> Bool {
         if let entry = host.catalog.entry(id: instance.firmware), host.instance(for: entry)?.id == instance.id {
             return canPerform(.delete, for: entry)

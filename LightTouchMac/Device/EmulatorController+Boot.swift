@@ -23,6 +23,7 @@ extension EmulatorController {
             return
         }
         started = true
+        Analytics.signal("Device.started", analyticsParameters)
         transition(to: .booting)
         notices.helperStarted()  // the last boot's notices end; a fresh helper opens the files as they are now
         let process = DeviceProcess(
@@ -42,6 +43,20 @@ extension EmulatorController {
         process.onGuestPasteboard = { [weak self] text in
             guard let self else { return }
             ClipboardSharing.shared.guestCopied(text, on: self)
+        }
+        // An empty report is the end of an agent's session (the guest reset, the agent restarted): the next agent
+        // may be another version, whatever the status poll's once-a-second sample caught of the change.
+        process.onAgentReport = { [weak self] text in
+            guard let self, text.isEmpty else { return }
+            agentCache.reset()
+            agentSessionEnded = Date()
+        }
+        glesRefusals = GLESRefusals()
+        process.onGLESRefusals = { [weak self] lines in
+            guard let self else { return }
+            for refusal in glesRefusals.reports(lines, frontApp: frontBundleID) {
+                Analytics.fault("Guest.glRefused", analyticsParameters.merging(refusal) { $1 })
+            }
         }
         startStatusPoll()
         // Low space doesn't stop a boot; it's said before writes start failing.
@@ -83,7 +98,10 @@ extension EmulatorController {
                     log: self.instance.paths.logs.appendingPathComponent("firmwarekit.log")
                 )
                 // a storage update that couldn't run (no room, or it failed): the device starts as before
-                if let notice = admitted.report.notice { self.reportDeviceNotice(notice, for: .storageUpdate) }
+                if let notice = admitted.report.notice {
+                    self.reportDeviceNotice(notice, for: .storageUpdate)
+                    Analytics.failure("Device.storageUpdateSkipped", nil, self.analyticsParameters)
+                }
                 self.instance = admitted.instance
                 self.admittedStorage = admitted.proof
                 self.onStorageGenerationChanged?()
@@ -224,6 +242,7 @@ extension EmulatorController {
         guestFaultsSeen = []
         poweredOn = Date()
         crashesLogged = []
+        reportedToolsQuiet = false
         do {
             serialCapture = try SerialLogCapture(
                 url: instance.paths.logs.appendingPathComponent("serial.log"),
@@ -242,6 +261,15 @@ extension EmulatorController {
                         self.guestFaultsSeen.insert(phrase)
                         if let meaning = GuestFaults.phrases[phrase] {
                             logEvent("guest: \(self.instance.name): error: \(meaning) (Device Console: “\(phrase)”)")
+                            let serial = self.instance.paths.logs.appendingPathComponent("serial.log")
+                            Task {
+                                try? await Task.sleep(for: .seconds(2))  // the rest of the phrase's line
+                                let line = await Self.serialLine(phrase, at: serial) ?? ""
+                                Analytics.fault(
+                                    "Guest.fault",
+                                    self.analyticsParameters.merging(["fault": phrase, "line": line]) { $1 }
+                                )
+                            }
                         }
                     default: self.noteBoot(.serial(phrase))
                     }
@@ -250,10 +278,20 @@ extension EmulatorController {
         } catch { logEvent("logging: serial capture unavailable: \(error.localizedDescription)") }
     }
 
+    /// The serial log's last line showing `phrase`, from its last 64 KB (the fault was just printed).
+    @concurrent nonisolated static func serialLine(_ phrase: String, at url: URL) async -> String? {
+        guard let file = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? file.close() }
+        let end = (try? file.seekToEnd()) ?? 0
+        try? file.seek(toOffset: end > 65_536 ? end - 65_536 : 0)
+        return GuestFaults.line(phrase, in: String(decoding: (try? file.readToEnd()) ?? Data(), as: UTF8.self))
+    }
+
     /// iOS answered: by now launchd has mounted every volume it is going to.
     func checkGuestMounts() {
         if let fault = GuestFaults.dataVolumeFault(seen: guestFaultsSeen, dataVolume: lock?.hasDataVolume == true) {
             logEvent("guest: \(instance.name): error: \(fault)")
+            Analytics.fault("Guest.dataVolumeMissing", analyticsParameters)
         }
     }
 
@@ -276,6 +314,7 @@ extension EmulatorController {
         for process in GuestFaults.crashedProcesses(ages: ages, uptime: uptime)
         where crashesLogged.insert(process).inserted {
             logEvent("guest: \(instance.name): error: \(process) crashed (the device wrote a crash report for it)")
+            Analytics.fault("Guest.processCrashed", analyticsParameters.merging(["process": process]) { $1 })
         }
     }
 
@@ -298,6 +337,7 @@ extension EmulatorController {
         filesMeddled = true
         fileWatch = nil
         logEvent("files: \(path) changed under the running device; Stop will quit without a flush")
+        Analytics.fault("Device.filesChanged", analyticsParameters)
         reportDeviceNotice(DeviceFileWatch.notice(shortName: profile.shortName), for: .files)
     }
 }

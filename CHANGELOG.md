@@ -3,6 +3,42 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 60 — (not yet named)
+
+**Changed**
+- iOS 4 and up install apps the way the Mac app and iTunes do: through the device's own installer, installd. Every
+  earlier fix wrote the app in by hand — its folders, its files, its entry in the app list (or the list rebuilt from
+  disk) — and on iOS 4 and 5 the icon stayed blank through all of them, with the icon files present, readable and
+  uncached and the app list written by iOS itself. Upstream's own documentation says it never does any of that: "User
+  applications are installed after boot by native MobileInstallation", with AppSync baked into installd at
+  preparation so unsigned apps are accepted — which every iOS 4-capable device here already has (its recipe's
+  `appsync: true`); nothing had ever asked installd to do anything. Now the .ipa is copied in and a new guest helper,
+  `lt-install`, calls `MobileInstallationInstall`, the call jailbreak-era `ipainstaller` made. installd unpacks,
+  places and registers the app and tells SpringBoard, which draws the icon as it does any other app's — no respring.
+  If installd won't take an app, the log says why (`lt-install: N`) and the install falls back to the old path, so
+  nothing that installed before stops installing. iPhone OS 1 to 3 keep the old path, which always worked there.
+  - `lt-install` is the first guest helper that dyld loads (it needs CoreFoundation and MobileInstallation). It is
+    laid out by hand like the others, and its test plays dyld under the ARM emulator: binds its symbols from the
+    opcodes the way dyld does, fakes the three libraries, and checks the call, its arguments and the result line.
+
+**Merged**
+- LightTouchMac as of today (upstream 668b1fe1, from 2f170060 of Nov 5): 247 files, mostly the Mac app and the iPhone
+  5 (iOS 10.3.4, which this app doesn't offer: preparing one needs the Mac). On the phone it brings
+  the iPhone 5's device art and FirmwareKit's newer preparation code; nothing in this app's own behaviour changes.
+  Checked before shipping: no public API the app uses was removed or changed (two gained a defaulted parameter), the
+  HostRuntime patch and the FirmwareKit iOS patch still apply, and every check passes on the merged tree.
+- **The iOS emulator keeps its own pin** (`ios/qemu-ios.json`, still 1ad1c781). Upstream moved the Mac's emulator to
+  db230fe8e8, and 9 of the 22 iOS emulator patches no longer apply there; following it would have broken the build.
+  Moving it — which would also bring upstream's faster TCG engine work — is its own job: rebase those 9, then move
+  the pin and the Mac files release together.
+- The Prepare device workflow (the Mac preparer on a GitHub runner) builds its guest tools from the iOS emulator's pin
+  too. Upstream's newer emulator speaks a different GL name table (0xf31a2b68 against this emulator's 0xad3b3412), so a
+  device prepared with it would have carried a graphics library this app's emulator doesn't match. Not run since the
+  merge: if `scripts/vendor` refuses the older pin, that workflow fails at its Vendor step and says so.
+- The build's caches are now keyed on the nine dependencies the iOS build actually uses, not the Mac app's whole list,
+  so a merge that only adds a Mac package (this one added TelemetryDeck) doesn't rebuild ANGLE and the emulator. The
+  change of key itself costs one full rebuild, this once.
+
 ## Update 59 — (not yet named)
 
 **Fixed**

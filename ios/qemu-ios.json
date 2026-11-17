@@ -1,0 +1,7 @@
+{
+  "comment": "The qemu-ios commit the iOS emulator is built from, and that ios/patches/qemu-ios apply to. Its own pin, not build-support/sources.json's (the Mac app's), so an upstream merge never moves the emulator under the patches. To move it: rebase every patch onto the new commit (all must apply in order, as ios/scripts/build-qemu.sh requires), then change this line.",
+  "qemu-ios": {
+    "repository": "https://github.com/samhenrigold/qemu-ios",
+    "commit": "1ad1c781fe55b933035d6a8b4511c00ccb994f23"
+  }
+}

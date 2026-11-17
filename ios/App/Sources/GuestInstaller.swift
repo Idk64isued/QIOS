@@ -108,6 +108,26 @@ extension GuestAgent {
             if raised { Task { @MainActor in _ = await self.request("dlicon cancel \(placeholder)") } }
         }
 
+        // 1b. iOS 4 and up: the device's own installer, which is how the Mac app installs and how iTunes did.
+        //
+        // Everything from step 2 on writes the app in by hand: its folders, its files, and an entry in the app list
+        // (or, on 5 and 6, the app list rebuilt from disk). That got apps listed, but on iOS 4 and 5 their icons stayed
+        // blank through every fix aimed at them, with the icon files present, readable and uncached, and the app list
+        // rebuilt by iOS itself. Upstream never does any of this: "User applications are installed after boot by
+        // native MobileInstallation" (FirmwareKit's README), with AppSync baked into installd by preparation so an
+        // unsigned app is accepted, which every iOS 4-capable recipe does (appsync: true). So the .ipa goes to installd
+        // through lt-install, and installd unpacks, places and registers the app and tells SpringBoard, which draws
+        // the icon as it does for any other app. The hand-written path stays below for iOS 2 and 3, where it has
+        // always worked, and as the fallback when installd refuses (a device prepared without AppSync, say).
+        if major >= 4, ops.contains("spawn") {
+            if let installed = try await installThroughInstalld(
+                ipa: ipa, bundleID: bundleID, display: display, progress: progress)
+            {
+                return InstalledApp(name: display, bundleID: bundleID, path: installed, needsRestart: false)
+            }
+            progress(0.06, "Copying \(display) in by hand\u{2026}")
+        }
+
         // 2. Where it goes, and who owns it.
         var cache: [String: Any]?
         var cacheFormat = PropertyListSerialization.PropertyListFormat.binary
@@ -491,6 +511,90 @@ extension GuestAgent {
             return false
         }
         log("Installed \(files.count) files and \(folders.count) folders from one archive in \(Int(Date().timeIntervalSince(started))) s")
+        return true
+    }
+
+    /// Where an .ipa waits for installd: on the data volume, owned by mobile, readable by installd whichever user it
+    /// runs as.
+    static let installStaging = "/var/mobile/Media/LightTouch/install"
+
+    /// Hands the .ipa to installd (lt-install: MobileInstallationInstall). The app's path once installd has listed
+    /// it, or nil when this way didn't work, after saying why, so the caller can install it by hand instead.
+    private func installThroughInstalld(
+        ipa: URL, bundleID: String, display: String, progress: @escaping (Double, String) -> Void
+    ) async throws -> String? {
+        progress(0.06, "Preparing the device\u{2026}")
+        guard (try? await ensureHelper()) != nil,
+            (try? await runHelper(uid: 501, gid: 501, paths: ["/var/mobile/Media/LightTouch", Self.installStaging],
+                what: "make the install folder")) != nil,
+            await ensureInstaller()
+        else {
+            log("installd: the install helpers didn\u{2019}t go in; installing \(display) by hand")
+            return nil
+        }
+        let staged = Self.installStaging + "/" + UUID().uuidString + ".ipa"
+        let sent = await putFile(localURL: ipa, guestPath: staged, mode: "0644") { done, total in
+            let fraction = Double(done) / Double(max(total, 1))
+            progress(0.08 + 0.72 * fraction, "Copying \(display)\u{2026} " + String(format: "%.0f%%", fraction * 100))
+        }
+        defer { Task { @MainActor in _ = await self.unlink(path: staged) } }
+        guard sent else {
+            log("installd: the .ipa didn\u{2019}t copy in; installing \(display) by hand")
+            return nil
+        }
+        try? await runHelper(uid: 501, gid: 501, paths: [staged], what: "hand the .ipa to mobile")
+        try Task.checkCancellation()
+
+        // installd unzips, checks (AppSync answers the signature check), places and registers the app. A big app
+        // takes it a while on an emulated CPU, so the wait is long; the agent's spawn reports when it has finished.
+        progress(0.82, "Installing \(display)\u{2026}")
+        let started = Date()
+        let result = await run([GuestInstallBinary.guestPath, staged], timeout: 900)
+        let output = result.map { String(decoding: $0.output, as: UTF8.self) } ?? ""
+        let line = output.split(separator: "\n").last { $0.hasPrefix("lt-install: ") }
+        let code = line.flatMap { Int($0.dropFirst("lt-install: ".count).trimmingCharacters(in: .whitespaces)) }
+        guard let code else {
+            log("installd: no answer from lt-install (\(result.map { "status \($0.status)" } ?? "timed out")"
+                + (output.isEmpty ? "" : ": " + output.trimmingCharacters(in: .whitespacesAndNewlines))
+                + "); installing \(display) by hand")
+            return nil
+        }
+        guard code == 0 else {
+            let why: String
+            switch code {
+            case -2, -3: why = "a system framework it needs would not load"
+            case -4, -5: why = "this iOS has no MobileInstallationInstall"
+            case -6: why = "the path could not be passed on"
+            default: why = "installd refused it (an unsigned app on a device prepared without AppSync is refused)"
+            }
+            log("installd: \(display) not installed, code \(code): \(why); installing it by hand instead")
+            return nil
+        }
+        // installd has written the app list before it answers: the entry says where the app went.
+        var path = "(installed by installd)"
+        if let data = await getFile(Self.installationCache),
+            let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+            let entry = (plist["User"] as? [String: Any])?[bundleID] as? [String: Any],
+            let listed = entry["Path"] as? String
+        {
+            path = listed
+        }
+        log("installd installed \(display) (\(bundleID)) at \(path) in \(Int(Date().timeIntervalSince(started))) s")
+        progress(1, "Installed \(display)")
+        return path
+    }
+
+    /// Puts lt-install into the guest once per session; false if it can't.
+    func ensureInstaller() async -> Bool {
+        if installReady { return true }
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("lt-install")
+        guard (try? GuestInstallBinary.data.write(to: tmp)) != nil else { return false }
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        guard await putFile(localURL: tmp, guestPath: GuestInstallBinary.guestPath, mode: "0755") else {
+            log("Could not put lt-install into the device")
+            return false
+        }
+        installReady = true
         return true
     }
 

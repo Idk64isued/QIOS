@@ -86,7 +86,14 @@ extension EmulatorController {
 
     func startForegroundWatch() { foreground.start() }
     var overlay: URL { overlayURL }
-    func foregroundApp() async throws -> (bundleID: String, name: String?) { try await guest.foreground() }
+    func foregroundApp() async throws -> (bundleID: String, name: String?) {
+        let app = try await guest.foreground()
+        if app.bundleID != frontBundleID {
+            frontBundleID = app.bundleID
+            Analytics.frontApp(app.bundleID, analyticsParameters)
+        }
+        return app
+    }
     func applyWebProxy(since applied: Int?, generation: Int) async throws -> Int? {
         try await proxy.apply(
             since: applied,
@@ -96,7 +103,8 @@ extension EmulatorController {
                     services: self.services,
                     guest: self.guest,
                     proxyDirectory: self.proxyDirectory,
-                    stoppedTrust: self.trustsStopped ? (self.instance.paths.directory, self.instance.storage.key) : nil
+                    stoppedTrust: self.trustsStopped ? (self.instance.paths.directory, self.instance.storage.key) : nil,
+                    reportParameters: self.analyticsParameters
                 )
                 .configure(enabled: enabled)
             }

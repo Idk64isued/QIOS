@@ -17,10 +17,12 @@ public enum Board: String, Sendable, CaseIterable, Codable {
     case k48 = "k48ap"
     case n81 = "n81ap"
     case n90 = "n90ap"
+    case n42 = "n42ap"
 
     /// The SoC family, which decides the prepared base's boot: the S5L8900's iBoot + NOR (iPhone OS 1), the
-    /// S5L8720's direct iBoot or SecureROM chain, the S5L8920/S5L8930's direct-kernel kboot (iBoot too on K48).
-    public enum SoC: Sendable { case s5l8900, s5l8720, s5l8920, s5l8930 }
+    /// S5L8720's direct iBoot or SecureROM chain, the S5L8920/S5L8930's direct-kernel kboot (iBoot too on K48), the
+    /// S5L8950's (A6) kboot on its PPN store.
+    public enum SoC: Sendable { case s5l8900, s5l8720, s5l8920, s5l8930, s5l8950 }
     public enum Kind: String, Sendable {
         case iPod = "iPod touch"
         case iPhone
@@ -50,6 +52,8 @@ public enum Board: String, Sendable, CaseIterable, Codable {
         /// The model ID ("iPod2,1"): macOS's device type, the store's device.
         public var productType: String
         public var marketingName: String
+        /// The short name people use ("iPod 2G", "iPhone 3GS", "iPad 1").
+        public var abbreviatedName: String
         /// The image carries our guest agent and shell from preparation (iPod touch 2G); the others get theirs as
         /// a guest package at boot.
         public var guestTools = false
@@ -86,6 +90,7 @@ public enum Board: String, Sendable, CaseIterable, Codable {
                 kind: .iPod,
                 productType: "iPod1,1",
                 marketingName: "iPod touch",
+                abbreviatedName: "iPod 1G",
                 art: art("shell-1g", "N45", (734, 1311), (70, 211, 594, 891), home: 112, inset: 59, ppi: 163)
             )
         case .m68:
@@ -94,6 +99,7 @@ public enum Board: String, Sendable, CaseIterable, Codable {
                 kind: .iPhone,
                 productType: "iPhone1,1",
                 marketingName: "iPhone",
+                abbreviatedName: "iPhone 2G",
                 art: art("shell-iphone2g", nil, (383, 729), (33, 130, 320, 480), home: 70, inset: 34, ppi: 163)
             )
         case .n72:
@@ -102,6 +108,7 @@ public enum Board: String, Sendable, CaseIterable, Codable {
                 kind: .iPod,
                 productType: "iPod2,1",
                 marketingName: "iPod touch (2nd generation)",
+                abbreviatedName: "iPod 2G",
                 guestTools: true,
                 art: art("shell", "N72", (737, 1318), (74, 213, 594, 891), home: 122, inset: 54, ppi: 163)
             )
@@ -111,6 +118,7 @@ public enum Board: String, Sendable, CaseIterable, Codable {
                 kind: .iPod,
                 productType: "iPod3,1",
                 marketingName: "iPod touch (3rd generation)",
+                abbreviatedName: "iPod 3G",
                 art: art("shell", "N72", (737, 1318), (74, 213, 594, 891), home: 122, inset: 54, ppi: 163)
             )
         case .n88:
@@ -119,6 +127,7 @@ public enum Board: String, Sendable, CaseIterable, Codable {
                 kind: .iPhone,
                 productType: "iPhone2,1",
                 marketingName: "iPhone 3GS",
+                abbreviatedName: "iPhone 3GS",
                 hasGPS: true,
                 art: art("shell-iphone2g", "N88", (383, 729), (33, 130, 320, 480), home: 70, inset: 34, ppi: 163)
             )
@@ -129,6 +138,7 @@ public enum Board: String, Sendable, CaseIterable, Codable {
                 kind: .iPad,
                 productType: "iPad1,1",
                 marketingName: "iPad",
+                abbreviatedName: "iPad 1",
                 art: art("ipad-frame", "K48", (852, 1108), (42, 42, 768, 1024), home: 31, inset: 9, ppi: 132)
             )
         case .n81:
@@ -137,6 +147,7 @@ public enum Board: String, Sendable, CaseIterable, Codable {
                 kind: .iPod,
                 productType: "iPod4,1",
                 marketingName: "iPod touch (4th generation)",
+                abbreviatedName: "iPod 4G",
                 art: art("shell-4g", "N81", (696, 1310), (54, 213, 590, 886), home: 119, inset: 49, ppi: 326)
             )
         case .n90:
@@ -145,7 +156,21 @@ public enum Board: String, Sendable, CaseIterable, Codable {
                 kind: .iPhone,
                 productType: "iPhone3,1",
                 marketingName: "iPhone 4",
+                abbreviatedName: "iPhone 4",
                 art: art("shell-iphone4", nil, (730, 1426), (48, 236, 640, 960), home: 140, inset: 52, ppi: 326)
+            )
+        // Its image carries the guest agent from preparation (FirmwareKit's N42 recipe, SideloadTools). Its art is the
+        // Xcode 4.6 Simulator's "iPhone (Retina 4-inch)" chrome_halfsize@2x.png cropped to the phone (x 1, y 2) and
+        // its screen filled with the iPhone 4's LCD tone, as shell-iphone4 is the "Retina 3.5-inch" one's.
+        case .n42:
+            return Facts(
+                soc: .s5l8950,
+                kind: .iPhone,
+                productType: "iPhone5,2",
+                marketingName: "iPhone 5",
+                abbreviatedName: "iPhone 5",
+                guestTools: true,
+                art: art("shell-iphone5", nil, (762, 1599), (65, 236, 640, 1136), home: 140, inset: 47, ppi: 326)
             )
         }
     }
@@ -171,6 +196,35 @@ public enum Board: String, Sendable, CaseIterable, Codable {
 
     public var productType: String { facts.productType }
     public var marketingName: String { facts.marketingName }
+
+    /// How the app names a device: Settings ▸ General's Device Names.
+    public enum NameStyle: String, CaseIterable, Sendable {
+        /// "iPod touch (2nd generation)".
+        case marketing
+        /// "iPod2,1".
+        case model
+        /// "iPod 2G".
+        case abbreviated
+
+        public static let key = "deviceNameStyle"
+        /// Posted when the setting changes, for the names already on screen.
+        public static let didChangeNotification = Notification.Name("DeviceNameStyleDidChange")
+
+        public static var current: NameStyle {
+            UserDefaults.standard.string(forKey: key).flatMap(NameStyle.init(rawValue:)) ?? .marketing
+        }
+    }
+
+    public func name(_ style: NameStyle) -> String {
+        switch style {
+        case .marketing: marketingName
+        case .model: productType
+        case .abbreviated: facts.abbreviatedName
+        }
+    }
+
+    /// The device's name as Settings ▸ General's Device Names chose.
+    public var preferredName: String { name(.current) }
     /// "iPod touch", "iPhone", "iPad".
     public var displayName: String { facts.kind.rawValue }
     /// What the device is called in menus, titles and messages ("the iPod").
@@ -182,8 +236,8 @@ public enum Board: String, Sendable, CaseIterable, Codable {
     public var hasGPS: Bool { facts.hasGPS }
 
     /// The S5L8920/S5L8930 boards: FirmwareKit prepares them alike and they boot kboot (iBoot too on K48) through
-    /// BootRecipe.iPad.
-    public var isKBoot: Bool { soc == .s5l8920 || soc == .s5l8930 }
+    /// BootRecipe.iPad; and the S5L8950 (iPhone 5), which boots kboot through BootRecipe.iPhone5.
+    public var isKBoot: Bool { soc == .s5l8920 || soc == .s5l8930 || soc == .s5l8950 }
     /// The guest packages' architecture.
     public var arch: String { soc == .s5l8900 || soc == .s5l8720 ? "armv6" : "armv7" }
     /// The SecureROM image the machine boots, under the device assets (BootRecipe.bootrom).
@@ -216,6 +270,8 @@ public enum Board: String, Sendable, CaseIterable, Codable {
         case (_, "bootrom") where self == .k48: return ("SecureROM.bin", ["nor.bin", "gid-blobs.bin"])
         case (.s5l8920, nil), (.s5l8920, "kboot"), (.s5l8930, nil), (.s5l8930, "kboot"):
             return ("kboot.bin", ["nor.bin"])
+        // no NOR: the A6 keeps its NVRAM and effaceable storage on the PPN store
+        case (.s5l8950, nil), (.s5l8950, "kboot"): return ("kboot.bin", [])
         default: throw unknown()
         }
     }

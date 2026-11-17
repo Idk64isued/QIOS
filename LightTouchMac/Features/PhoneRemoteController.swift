@@ -55,6 +55,7 @@ import os
 
     /// The QR code's address (this session's token in its fragment) and the certificate's fingerprint.
     private func start(_ session: DeviceSession?) async throws -> (URL, String) {
+        Analytics.signal("Remote.started")
         // Each session has its own token; builds before kept one across launches.
         UserDefaults.standard.removeObject(forKey: PhoneRemoteRequest.storedTokenKey)
         let token = PhoneRemoteRequest.newToken()
@@ -83,6 +84,7 @@ import os
         listener.stateUpdateHandler = { [weak self] state in
             guard let self, case .failed(let error) = state else { return }
             MainActor.assumeIsolated {
+                Analytics.failure("Remote.failed", error)
                 stop()
                 show(error)
             }
@@ -386,8 +388,7 @@ import os
 /// WebSocket once the request is read would be tidier, but prependApplicationProtocol refuses it (EINVAL, macOS 27).
 nonisolated final class PhoneRemoteFramer: NWProtocolFramerImplementation {
     static let label = "PhoneRemote"
-    // nonisolated(unsafe): made once, then only read; Network.framework holds definitions across its own queues.
-    nonisolated(unsafe) static let definition = NWProtocolFramer.Definition(implementation: PhoneRemoteFramer.self)
+    static let definition = NWProtocolFramer.Definition(implementation: PhoneRemoteFramer.self)
     /// The running session's token (PhoneRemoteController.start); empty, which opens nothing, while stopped.
     static let token = OSAllocatedUnfairLock(initialState: "")
     static let page =

@@ -405,11 +405,58 @@ extension String {
     var services: DeviceServices { DeviceServices(clientSocket: mux.clientSocket, session: serviceSession) }
 
     func brightness() -> Double? { process.link.frontSurface().map { FrameTools.brightness($0.surface) } }
+    /// A gesture made on the guest's clock, so a busy Mac neither stretches nor squeezes it, and waited for until
+    /// the emulator made all of it and the guest's digitizer driver read the touch (HostInputAutomation.perform).
+    /// One the emulator refused or the guest didn't read is in the events, as `gesture` with its error: the
+    /// caller's own evidence then fails with the reason beside it. False when the guest's digitizer driver didn't read
+    /// it.
+    @discardableResult
+    func gesture(_ events: [VirtualInputEvent], _ what: String) async -> Bool {
+        do {
+            try await HostInputAutomation.perform(events) { try await self.process.link.request($0, timeout: 5) }
+        } catch {
+            emit("gesture", ["device": name, "what": what, "error": "\(error)"])
+            return (error as? HostInputAutomation.Failure) != .unread
+        }
+        return true
+    }
     /// Home, pressed and released: wakes a display that slept.
-    func home() async {
-        process.link.send(.button(0, down: true))
-        try? await Task.sleep(for: .milliseconds(150))
-        process.link.send(.button(0, down: false))
+    func home() async { await gesture(HostInputAutomation.press(0), "home") }
+    /// iOS 10's lock screen: one Home press wakes the panel ("Press home to open"), a second while it is lit opens it.
+    func unlockWithHome() async {
+        await home()
+        try? await Task.sleep(for: .seconds(1.5))
+        await home()
+    }
+    /// iOS 7 and later pair with a computer only once the device's "Trust This Computer?" is answered, which it asks
+    /// while unlocked; the iPhone 5 (iOS 10) asks on a new device's first connection. Answered as a user does: lockdown
+    /// says the device is locked (-17), so it is opened; the answer is pending (-19), so Trust is tapped (the left
+    /// button of the centered alert, 640x1136). Returns once lockdown answers, or after `seconds`.
+    func trustThisComputer(_ generation: Int, _ seconds: Double) async {
+        let start = Date()
+        var taps = 0
+        while Date().timeIntervalSince(start) < seconds {
+            do {
+                _ = try await services.lockdownValue("ProductType")
+                break
+            } catch DeviceError.lockdown(-17) {
+                await unlockWithHome()
+            } catch DeviceError.lockdown(-19) {
+                // the alert waits on an unlocked screen; a panel that slept has locked again
+                if (brightness() ?? 0) < 0.03 {
+                    await unlockWithHome()
+                    try? await Task.sleep(for: .seconds(2))
+                }
+                _ = screenshot("trust\(generation)-\(taps)")
+                await tap(0.29, 0.6)
+                taps += 1
+            } catch {}
+            try? await Task.sleep(for: .seconds(3))
+        }
+        emit(
+            "trust",
+            ["device": name, "generation": generation, "taps": taps, "seconds": Date().timeIntervalSince(start)]
+        )
     }
     /// An iPad's lock screen turns its panel off about 7 s after it appears (iPhone OS 3.2, untouched): Home wakes it,
     /// up to three times while the frame stays dark.
@@ -430,20 +477,25 @@ extension String {
             [
                 "device": name, "path": url.path, "serial": frame.serial,
                 "width": frame.surface.width, "height": frame.surface.height,
-                "brightness": FrameTools.brightness(frame.surface)
+                "brightness": FrameTools.brightness(frame.surface), "asleep": displaySleeping.map { $0 ? 1 : 0 } ?? -1
             ]
         )
         return url.path
     }
 
+    /// Whether the emulator says the guest turned its panel off (SharedStatus.displaySleeping); nil before the helper
+    /// publishes a status.
+    var displaySleeping: Bool? { process.status?.displaySleeping }
+
     /// Wake the panel, then capture. The display sleeps ~12 s after `lit`, so an unqualified
-    /// screenshot lands on a black panel (audit finding 3). Press Home, re-check brightness, and
-    /// capture only once it is lit -- or capture the black frame after the last try, so the matrix
-    /// fails the row honestly rather than passing a slept panel.
+    /// screenshot lands on a black panel (audit finding 3). Press Home while the emulator says the panel
+    /// is off or the frame is dark (a panel that slept keeps its last frame), and capture only once it is
+    /// lit -- or capture the frame after the last try, so the matrix fails the row honestly rather than
+    /// passing a slept panel.
     @discardableResult
     func wakeForShot(_ label: String, floor: Double = 0.05, tries: Int = 5) async -> String? {
         for _ in 0..<tries {
-            if (brightness() ?? 0) >= floor { break }
+            if displaySleeping != true, (brightness() ?? 0) >= floor { break }
             process.link.send(.button(0, down: true))
             try? await Task.sleep(for: .milliseconds(150))
             process.link.send(.button(0, down: false))
@@ -452,18 +504,41 @@ extension String {
         return screenshot(label)
     }
 
-    /// Slide to unlock, again while the guest agent (where the boot has one) says it is still locked: a slide can
-    /// miss (4.2.1's iPod, rejudge 09-29; 4.2.1's iPad first boot under host load, smoke #66), and the lock screen
-    /// sleeps a few seconds after a miss, so each retry wakes the panel first (`unlockN-M.png`). Emits `unlock`.
+    /// Slide to unlock, again while the guest agent (where the boot has one) says it is still locked 20 s on: a slide
+    /// can miss (4.2.1's iPod, rejudge 09-29; 4.2.1's iPad first boot under host load, smoke #66), and the lock screen
+    /// sleeps a few seconds after a miss, so each retry wakes the panel first (`unlockN-M.png`). A lock screen left
+    /// alone turns its panel off, and the digitizer with it (about 10 s after a respring brings it up): Home first
+    /// while the emulator says the panel is off, or when the guest's digitizer driver didn't read the last slide (it
+    /// slept as the slide began). Emits `unlock`.
     func slideToUnlock(_ generation: Int, agent: GuestAgent?) async {
         var attempts = 0
         var locked: Bool?
+        var read = true
         for attempt in 0..<3 {
+            if !read || displaySleeping == true {
+                await home()
+                try? await Task.sleep(for: .seconds(2))
+            }
             if attempt > 0 { await wakeForShot("unlock\(generation)-\(attempt)") }
-            if profile == .k48 { await drag(0.9365, 0.621, 0.9365, 0.0612) } else { await drag(0.18, 0.9, 0.92, 0.9) }
+            if profile == .n42 {
+                // iOS 10 (the iPhone 5's) opens from the lock screen with Home, where a slide shows the widgets; a panel
+                // that slept was woken above
+                if attempt == 0, (try? await agent?.isLocked()) == false { break }  // trustThisComputer opened it
+                await home()
+            } else {
+                read =
+                    profile == .k48 ? await drag(0.9365, 0.621, 0.9365, 0.0612) : await drag(0.18, 0.9, 0.92, 0.9)
+            }
             attempts += 1
             try? await Task.sleep(for: .seconds(5))
             locked = try? await agent?.isLocked()
+            // A guest slowed by host load can still say locked 5 s after a slide that landed, and a slide then lands on
+            // what the unlock brings up (n90 11D257: Setup's language list, whose row at y 0.9, 繁體中文, the slide
+            // chose): the guest has 15 s more to say so before the next slide.
+            for _ in 0..<15 where locked == true {
+                try? await Task.sleep(for: .seconds(1))
+                locked = try? await agent?.isLocked()
+            }
             guard locked == true else { break }
         }
         emit(
@@ -492,25 +567,13 @@ extension String {
         }
     }
 
-    func drag(_ x0: Double, _ y0: Double, _ x1: Double, _ y1: Double) async {
-        let link = process.link
-        link.send(.touch(slot: 0, phase: 0, x: x0, y: y0))
-        try? await Task.sleep(for: .milliseconds(150))
-        for i in 1...30 {
-            let f = Double(i) / 30
-            link.send(.touch(slot: 0, phase: 1, x: x0 + (x1 - x0) * f, y: y0 + (y1 - y0) * f))
-            try? await Task.sleep(for: .milliseconds(30))
-        }
-        try? await Task.sleep(for: .milliseconds(300))
-        link.send(.touch(slot: 0, phase: 2, x: x1, y: y1))
+    @discardableResult
+    func drag(_ x0: Double, _ y0: Double, _ x1: Double, _ y1: Double) async -> Bool {
+        await gesture(HostInputAutomation.drag(from: (x0, y0), to: (x1, y1)), "drag")
     }
 
     /// A short tap (a drag holds long enough to start SpringBoard's icon editing).
-    func tap(_ x: Double, _ y: Double) async {
-        process.link.send(.touch(slot: 0, phase: 0, x: x, y: y))
-        try? await Task.sleep(for: .milliseconds(80))
-        process.link.send(.touch(slot: 0, phase: 2, x: x, y: y))
-    }
+    func tap(_ x: Double, _ y: Double) async { await gesture(HostInputAutomation.tap(x, y), "tap") }
 
     /// lockdown's ProductType through this device's socket, under the gate.
     func productType() async -> String? { await lockdownValue("ProductType") }
@@ -521,8 +584,11 @@ extension String {
     }
 }
 
-/// Waits for the panel to light, `seconds` counted from the end of boot admission, as the app's boot budget is.
+/// Waits for the panel to light, `seconds` counted from the end of boot admission, as the app's boot budget is. A
+/// panel the guest turned off on the way (auto-lock, on a boot slower than its idle timer) is woken with Home
+/// (PanelWake), as a person would, and emits `wake`.
 @MainActor func waitLit(_ d: Device, _ threshold: Double, _ seconds: Double) async {
+    var wake = PanelWake()
     while true {
         if d.process.isDead { fail("\(d.name) died before it lit: \(d.deaths)") }
         if let error = d.bootError { fail("\(d.name) did not boot: \(error)") }
@@ -533,6 +599,10 @@ extension String {
         if litSeconds(admitted: d.admitted) > seconds {
             d.screenshot("never-lit")
             fail("\(d.name) never lit")
+        }
+        if wake.pressesHome(sleeping: d.displaySleeping) {
+            emit("wake", ["device": d.name, "seconds": litSeconds(admitted: d.admitted)])
+            await d.home()
         }
         try? await Task.sleep(for: .milliseconds(250))
     }
@@ -769,8 +839,8 @@ func checkPreparedFiles() throws {
     await ipad.wakeIPad()
     ipod.screenshot("ipod-lock")
     ipad.screenshot("ipad-lock")
-    async let u1: Void = ipod.drag(0.18, 0.9, 0.92, 0.9)
-    async let u2: Void = ipad.drag(0.9365, 0.621, 0.9365, 0.0612)
+    async let u1 = ipod.drag(0.18, 0.9, 0.92, 0.9)
+    async let u2 = ipad.drag(0.9365, 0.621, 0.9365, 0.0612)
     _ = await (u1, u2)
     try? await Task.sleep(for: .seconds(5))
     ipod.screenshot("ipod-home")
@@ -942,7 +1012,14 @@ func checkPreparedFiles() throws {
         var status: Int32 = 0
         errno = 0
         let reaped = pid > 0 && waitpid(pid, &status, WNOHANG) == -1 && errno == ECHILD
-        let expected: DeviceLinkError = .helperFailure(admitted ? "not booted" : DeviceLinkWire.leaseRefusal)
+        // Only a lease another helper holds is refused as a device in use; the rest say why (HeldLease.failure).
+        let refusal =
+            switch name {
+            case "pending": "unfinished storage edit \(intent.path); resolve it before booting"
+            case "symlink": "lease \(lease.path): \(String(cString: strerror(ELOOP)))"
+            default: DeviceLinkWire.leaseRefusal
+            }
+        let expected: DeviceLinkError = .helperFailure(admitted ? "not booted" : refusal)
         guard exited, reaped, deaths == 1, process.link.pid == 0,
             hello == admitted, completionError == expected
         else {

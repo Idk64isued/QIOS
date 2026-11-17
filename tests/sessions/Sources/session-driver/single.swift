@@ -19,7 +19,8 @@ import SessionKit
 // lockdown and still hold a file uploaded before the clean shutdown (the persist check).
 
 struct SingleConfig: Decodable {
-    var board: String  // "ipod" | "ipad" | "ipod1g" | "iphone2g" | "ipod4g" | "iphone4" | "ipod3g" | "iphone3gs"
+    /// "ipod", "ipad", "ipod1g", "iphone2g", "ipod4g", "iphone4", "ipod3g", "iphone3gs" or "iphone5".
+    var board: String
     var base: String
     /// AFC upload + download sizes; 16384 and 65536 are 512-byte multiples (a ZLP ends each transfer).
     var afcBytes: [Int]?
@@ -91,8 +92,9 @@ struct SingleConfig: Decodable {
     /// The app's armv6.itpack: ittrust for a guest whose package lacks it (WebProxySetup.bundledGuestTool, which
     /// the app runs on every board).
     var proxyItpack: String?
-    /// contrib/it-proxy/httpget (armv6): at the first Home the guest fetches `WiFiProbe.url`, which only wifi0's
-    /// guestfwd answers, so the board's Wi-Fi joined (`wifi`).
+    /// contrib/it-proxy/httpget (armv6, or httpget-armv7 for 10.x): at the first Home the guest fetches
+    /// `WiFiProbe.url`, which only wifi0's guestfwd answers, so the board's Wi-Fi joined (`wifi`). A guest whose image
+    /// carries it runs that copy (GuestAgent.httpget).
     var httpget: String?
     /// Free-form Apply at this panel ("WxH" as it scans): after boot 1's home, the app's Stop and a fresh boot at
     /// panel=WxH on the same overlay (EmulatorController.setPanel); then the frame's size, the dock row in the new
@@ -136,6 +138,7 @@ nonisolated enum WiFiProbe {
         case "iphone4": (.n90, "n90ap")
         case "ipod3g": (.n18, "n18ap")
         case "iphone3gs": (.n88, "n88ap")
+        case "iphone5": (.n42, "n42ap")
         default: (.n72, "n72ap")
         }
     // The A4 and S5L8920 boards boot as the iPad does (kboot, the armv7 offer from ipadItpack); input, wake and
@@ -207,6 +210,9 @@ nonisolated enum WiFiProbe {
     /// idevicecrashreport on PATH where there is one; before 3.0 every report, by the services worker) to read.
     var poweredOn = Date()
     /// The reports the base already carries (baseCrashReports), read at the first listing: none of them is this run's.
+    /// Where its data volume can't be read offline (the iPhone 5's: content-protected Data on a PPN flash, whose FTL and
+    /// keys VolumeRebuild doesn't have) and the boot leaves the guest's clock alone, the first listing's reports older
+    /// than this boot by the guest's own clock: its preparation's boot wrote them.
     var baseRead = false
     var inBase: [String]?
     func crashReports(_ generation: Int, _ when: String) async {
@@ -216,7 +222,6 @@ nonisolated enum WiFiProbe {
             baseRead = true
         }
         var event: [String: Any] = ["device": d.name, "generation": generation, "when": when]
-        if let inBase { event["base"] = inBase }
         for attempt in 0..<3 {
             if attempt > 0 { try? await Task.sleep(for: .seconds(10)) }
             do {
@@ -231,6 +236,13 @@ nonisolated enum WiFiProbe {
                 let uptime = Date().timeIntervalSince(poweredOn)
                 event = event.merging(["ages": ages, "uptime": uptime]) { $1 }
                 event["error"] = nil
+                if inBase == nil, lock?.pinsClock == false {
+                    // where the crash report service serves them from, as the base's own paths would name them
+                    inBase = ages.filter { $0.value > uptime }.map {
+                        "/var/mobile/Library/Logs/CrashReporter/" + $0.key
+                    }
+                    .sorted()
+                }
                 if !whole, when != "booted",
                     !GuestFaults.crashedProcesses(listed: ages.keys, base: inBase ?? []).isEmpty
                 {
@@ -256,6 +268,7 @@ nonisolated enum WiFiProbe {
                 break
             } catch { event["error"] = "\(error)" }
         }
+        if let inBase { event["base"] = inBase }
         emit("crashReports", event)
     }
 
@@ -263,6 +276,7 @@ nonisolated enum WiFiProbe {
         poweredOn = Date()
         do { try d.boot(generation: generation, guestPackage: offer()) } catch { fail("boot \(generation): \(error)") }
         await waitLit(d, ipad ? 0.2 : 0.03, d.profile.bootBudget * slow)  // the app's own boot budget (iPad 300 s)
+        if d.profile == .n42 { await d.trustThisComputer(generation, 300 * slow) }
         await waitUSB(d, expecting: d.profile.productType, 300 * slow)
         // The app's readiness answer (ReadinessWatch through DeviceApps.waitForSpringBoard): SpringBoard's layout
         // service, or the agent naming SpringBoard or Setup frontmost. Until wave 2.5 the app gave up after one 45 s
@@ -424,7 +438,8 @@ nonisolated enum WiFiProbe {
                 ]
             )
         }
-        if !ipad { await d.home() }  // wake: the display may have slept while it booted
+        // wake: the display may have slept while it booted (iOS 10 unlocked at Home would take Home to Spotlight)
+        if !ipad, d.profile != .n42 { await d.home() }
         try? await Task.sleep(for: .seconds(3))
         if ipad { await d.wakeIPad() }
         let lockShot = d.screenshot(generation == 1 ? "lock" : "lock\(generation)")
@@ -505,11 +520,14 @@ nonisolated enum WiFiProbe {
                 for attempt in 0..<9 {
                     if attempt > 0 { try? await Task.sleep(for: .seconds(10)) }
                     do {
-                        try await guestAgent.put("/tmp/ltm-httpget", mode: 0o755, bytes)
-                        let page = try await guestAgent.spawn(["/tmp/ltm-httpget", WiFiProbe.url])
+                        let page = try await guestAgent.spawn([guestAgent.httpget(bytes), WiFiProbe.url])
                         output = String(decoding: page, as: UTF8.self)
                     } catch let error as GuestAgentError {
-                        output = String(decoding: error.output.prefix(300), as: UTF8.self)
+                        // A failed put or exec says nothing on its own: its status (a negative errno, or 128 plus
+                        // a signal) is what the verdict shows then.
+                        output =
+                            error.output.isEmpty
+                            ? "agent status \(error.status)" : String(decoding: error.output.prefix(300), as: UTF8.self)
                     } catch { output = "\(error)" }
                     if output.hasPrefix("HTTP 200") { break }
                 }
@@ -745,12 +763,21 @@ nonisolated enum WiFiProbe {
             ["System/Library/Audio/UISounds/lock.caf", "System/Library/CoreServices/SpringBoard.app/lock.aiff"],
             agent: agent
         )
+        // Hold locks only an open device: one that sat past Auto-Lock (the iPhone 5 locked itself during the Wi-Fi
+        // check's retries) would only wake, and a wake plays nothing.
+        let locked = try? await agent?.isLocked()
+        if d.displaySleeping == true || locked == true {
+            await d.slideToUnlock(1, agent: agent)
+        }
         let plain = await lockSound(references: [lockFile].compactMap { $0 }, wav: wav, label: "lock-sound")
         (event["scale"], event["match"], event["reference"], event["support"], event["loud"]) =
             (plain.scale, plain.match, plain.reference, plain.support, plain.loud)
         await d.wakeForShot("lock-sound")
         await d.slideToUnlock(1, agent: agent)
-        if let agent, s.lockdownTZ != nil {
+        // A board or version without VoiceOver (the iPod touch 2G, anything before 3.0) would only wait out every try.
+        let noVoiceOver = AccessibilityFeature.unavailableReason(board: d.profile, version: lock?.productVersion ?? "")
+        if let noVoiceOver { event["voiceOverOn"] = noVoiceOver }
+        if let agent, s.lockdownTZ != nil, noVoiceOver == nil {
             let guest = GuestServices(agent: agent)
             func on() async -> String {
                 guard
@@ -762,8 +789,19 @@ nonisolated enum WiFiProbe {
                 else { return "unreadable" }
                 return on.map { "\($0)" }.sorted().joined(separator: ",")
             }
-            try? await d.services.setAccessibility(.voiceOver, on: true, tool: s.lockdownTZ)
-            try? await Task.sleep(for: .seconds(6))
+            func set(_ on: Bool) async -> String {
+                do {
+                    try await d.services.setAccessibility(.voiceOver, on: on, tool: s.lockdownTZ)
+                    return "ok"
+                } catch { return "\(error)" }
+            }
+            // lockdown-ax returns when notification_proxy answers: at once when it is running, at the 15 s deadline when
+            // launchd starts it cold (10.3.4, where the lockdown key alone switches VoiceOver). The preferences show the
+            // switch seconds later (5 s after a 0.5 s return), so a read 6 s after the return missed it: read until it
+            // shows, and switch again if it never does.
+            event["voiceOverSet"] = await SettingSwitch.apply(
+                set: { await set(true) }, took: { await on().contains("voiceOver") }
+            ).attempts
             event["voiceOverOn"] = await on()
             if (event["voiceOverOn"] as? String)?.contains("voiceOver") == true {
                 let screenChange = await systemFile(
@@ -783,9 +821,11 @@ nonisolated enum WiFiProbe {
                     (vo.scale, vo.match, vo.reference, vo.support, vo.loud)
             }
             // Off while locked: VoiceOver's slide to unlock is a double tap.
-            try? await d.services.setAccessibility(.voiceOver, on: false, tool: s.lockdownTZ)
-            try? await Task.sleep(for: .seconds(3))
+            event["voiceOverOffSet"] = await SettingSwitch.apply(
+                set: { await set(false) }, took: { await !on().contains("voiceOver") }
+            ).attempts
             event["voiceOverAfter"] = await on()
+            try? await Task.sleep(for: .seconds(3))  // VoiceOver's own exit, before the slide
             if event["voiceOverScale"] != nil {
                 await d.wakeForShot("lock-sound-voiceover")
                 await d.slideToUnlock(1, agent: agent)
@@ -1728,19 +1768,44 @@ nonisolated enum CydiaSources {
     guard installed != nil else { return emit("substrate", event) }
     let file = d.dir.appendingPathComponent("substrate-syslog.txt")
     FileManager.default.createFile(atPath: file.path, contents: nil)
-    let syslog = Process()
-    syslog.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-    syslog.arguments = ["idevicesyslog", "--no-colors"]
-    syslog.environment = ProcessInfo.processInfo.environment.merging(
-        ["USBMUXD_SOCKET_ADDRESS": d.mux.clientSocket]
-    ) { $1 }
-    syslog.standardOutput = FileHandle(forWritingAtPath: file.path)
-    syslog.standardError = FileHandle.nullDevice
+    var syslog: Process?
+    func relay() throws {
+        syslog?.terminate()
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        p.arguments = ["idevicesyslog", "--no-colors"]
+        p.environment = ProcessInfo.processInfo.environment.merging(["USBMUXD_SOCKET_ADDRESS": d.mux.clientSocket]) {
+            $1
+        }
+        p.standardOutput = FileHandle(fileDescriptor: open(file.path, O_WRONLY | O_APPEND), closeOnDealloc: true)
+        p.standardError = FileHandle.nullDevice
+        try p.run()
+        syslog = p
+    }
+    /// The guest's log lines the relay wrote ("… SpringBoard[42] <Notice>: …"), not its banner or connection notes.
+    func delivered() -> Int {
+        ((try? String(contentsOf: file, encoding: .utf8)) ?? "").split(separator: "\n").filter {
+            $0.contains(#/\[\d+\] </#)
+        }.count
+    }
+    /// launchd restarts SpringBoard: until the agent's frontmost is it again, then until the relay has its lines.
+    func respring() async -> Bool {
+        _ = try? await agent.spawn(["/usr/bin/killall", "SpringBoard"])
+        var back = false
+        for _ in 0..<30 where !back {
+            try? await Task.sleep(for: .seconds(2))
+            back = (try? await agent.frontmost())?.bundleID == "com.apple.springboard"
+        }
+        for _ in 0..<10 where delivered() == 0 { try? await Task.sleep(for: .seconds(1)) }
+        return back
+    }
     do {
-        try syslog.run()
+        try relay()
         try await Task.sleep(for: .seconds(1))
         // Through env, a missing tool isn't a run() failure: it reads as Substrate never loading.
-        if !syslog.isRunning { event["error"] = "no idevicesyslog on PATH (the vendor directory's work/*/prefix/bin)" }
+        if syslog?.isRunning != true {
+            event["error"] = "no idevicesyslog in the vendor directory's work/*/prefix/bin: run scripts/vendor"
+        }
         try await agent.put(
             probe[0],
             mode: 0o644,
@@ -1752,13 +1817,17 @@ nonisolated enum CydiaSources {
         event["extensions"] = String(decoding: try await agent.spawn(["/bin/ls", dir]), as: UTF8.self)
             .split(separator: "\n").map(String.init)
         try await Task.sleep(for: .seconds(3))
-        try await agent.spawn(["/usr/bin/killall", "SpringBoard"])
     } catch { event["error"] = "\(error)" }
-    var back = false
-    for _ in 0..<30 where !back {
-        try? await Task.sleep(for: .seconds(2))
-        back = (try? await agent.frontmost())?.bundleID == "com.apple.springboard"
+    var back = await respring()
+    // A relay can connect, print syslogd's banner and deliver nothing after it (a loaded host): that reads as
+    // Substrate never loading, so it is started again and SpringBoard restarted once more, the probe still in place.
+    if delivered() == 0, syslog?.isRunning == true {
+        event["relayRestarted"] = true
+        try? relay()
+        try? await Task.sleep(for: .seconds(1))
+        back = await respring()
     }
+    event["relayLines"] = delivered()
     for path in probe { try? await agent.unlink(path) }
     try? await Task.sleep(for: .seconds(5))
     await d.slideToUnlock(9, agent: agent)
@@ -1770,7 +1839,7 @@ nonisolated enum CydiaSources {
     try? await Task.sleep(for: .milliseconds(150))
     d.process.link.send(.button(0, down: false))
     try? await Task.sleep(for: .seconds(3))
-    syslog.terminate()
+    syslog?.terminate()
     let text = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
     let lines = { (process: String) in text.split(separator: "\n").filter { $0.contains(" \(process)[") } }
     let loaded = { (process: String) in

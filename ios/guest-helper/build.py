@@ -4,7 +4,8 @@
     python3 ios/guest-helper/build.py          (needs clang with the ARM target)
     python3 ios/guest-helper/build.py --check  (fails if an app copy is not what its .S builds)
 
-The programs are lt-mkdirs.S (folders and owners) and lt-unpack.S (a whole app bundle from one archive). Nothing links it: there is no libSystem to link against and no linker left that makes
+The programs are lt-mkdirs.S (folders and owners), lt-unpack.S (a whole app bundle from one archive) and lt-install.S
+(an .ipa to installd, the one that dyld loads: see macho_dyld). Nothing links them: there is no libSystem to link against and no linker left that makes
 32-bit iOS binaries, so this script lays out the executable itself, the way a static iPhone OS 1-3 binary looks:
 __PAGEZERO, one __TEXT segment holding the header and the code, and LC_UNIXTHREAD pointing the PC at the code. The
 kernel maps it and jumps in with sp at argc. iPhone OS 1 had no code signing; 2 and 3 run unsigned code with the
@@ -31,12 +32,22 @@ HELPERS = [
     ("lt-unpack.S", "GuestUnpackBinary.swift", "GuestUnpackBinary", "/usr/local/bin/lt-unpack",
      "lt-unpack, a static armv6 program the app puts into the guest to write a whole app bundle from one archive\n"
      "/// (`lt-unpack UID GID ARCHIVE`, the archive GuestInstaller.Pack writes), instead of one agent request per file."),
+    ("lt-install.S", "GuestInstallBinary.swift", "GuestInstallBinary", "/usr/local/bin/lt-install",
+     "lt-install, an armv6 program the app puts into the guest to hand an .ipa to the device's own installer\n"
+     "/// (`lt-install IPA`: MobileInstallationInstall, which installd answers). Dynamically linked: see macho_dyld."),
 ]
 
+# The helpers dyld loads, and the libSystem symbols bound into their __DATA, in slot order.
+DYLD_HELPERS = {"lt-install.S": ["_dlopen", "_dlsym"]}
+
 CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V6 = 12, 6
-MH_MAGIC, MH_EXECUTE, MH_NOUNDEFS = 0xFEEDFACE, 2, 1
+MH_MAGIC, MH_EXECUTE, MH_NOUNDEFS, MH_DYLDLINK, MH_TWOLEVEL = 0xFEEDFACE, 2, 1, 4, 0x80
 LC_SEGMENT, LC_UNIXTHREAD, ARM_THREAD_STATE, ARM_THREAD_STATE_COUNT = 0x1, 0x5, 1, 17
+LC_SYMTAB, LC_DYSYMTAB, LC_LOAD_DYLIB, LC_LOAD_DYLINKER, LC_DYLD_INFO_ONLY = 0x2, 0xB, 0xC, 0xE, 0x80000022
 BASE = 0x1000
+PAGE = 0x1000
+# Where macho_dyld puts __DATA. lt-install.S addresses it directly (mov r11, #0x2000).
+DYLD_DATA = 0x2000
 
 
 def text_bytes(source):
@@ -94,6 +105,85 @@ def macho(code):
     return blob, entry
 
 
+def lc_str(cmd, fixed, text):
+    """A load command whose fixed part is followed by a NUL-terminated string, padded to a word."""
+    raw = text.encode() + b"\0"
+    raw += b"\0" * (-len(raw) % 4)
+    return struct.pack("<II", cmd, 8 + len(fixed) + len(raw)) + fixed + raw
+
+
+def uleb(n):
+    out = bytearray()
+    while True:
+        byte, n = n & 0x7F, n >> 7
+        out.append(byte | (0x80 if n else 0))
+        if not n:
+            return bytes(out)
+
+
+def bind_opcodes(symbols, segment_index):
+    """dyld's compressed binding for `symbols`, one pointer each from offset 0 of segment `segment_index`, all from
+    the first library (libSystem). DO_BIND advances by a pointer, so consecutive symbols land in consecutive slots."""
+    ops = bytearray([0x11, 0x51, 0x70 | segment_index]) + uleb(0)  # dylib 1, type pointer, segment + offset 0
+    for name in symbols:
+        ops += b"\x40" + name.encode() + b"\0"                      # SET_SYMBOL_TRAILING_FLAGS_IMM(0)
+        ops += b"\x90"                                              # DO_BIND
+    ops += b"\x00"                                                  # DONE
+    ops += b"\0" * (-len(ops) % 4)
+    return bytes(ops)
+
+
+def macho_dyld(code, symbols):
+    """A dynamically linked executable, laid out as ld would for iPhone OS 3-6 without a PIE flag:
+
+        __PAGEZERO 0x0      __TEXT 0x1000 (header, load commands, code)
+        __DATA 0x2000 (one pointer per symbol, then scratch the code uses)   __LINKEDIT 0x3000 (bind opcodes)
+
+    LC_LOAD_DYLINKER makes the kernel start dyld, which binds `symbols` from libSystem into __DATA (LC_DYLD_INFO_ONLY
+    binding, which dyld has read since 3.1: the stock MBXGLEngine uses it), then jumps to the LC_UNIXTHREAD pc with sp
+    at argc, as for a static program. LC_SYMTAB and LC_DYSYMTAB are there and empty because dyld refuses an image
+    without them. No code signature: every prepared device boots with cs_enforcement_disable=1."""
+    linkedit = bind_opcodes(symbols, 2)
+    strtab_off = len(linkedit)
+    linkedit += b"\0" * 4                                            # the string table: "" (and padding)
+    text_vm, data_vm, link_vm = BASE, DYLD_DATA, DYLD_DATA + PAGE
+    data_off, link_off = PAGE, 2 * PAGE
+
+    def build(code_off):
+        entry = text_vm + code_off
+        section = struct.pack("<16s16sIIIIIIIII", b"__text", b"__TEXT", entry, len(code), code_off, 2, 0, 0,
+                              0x80000400, 0, 0)
+        cmds = seg("__PAGEZERO", 0, BASE, 0, 0, 0)
+        cmds += seg("__TEXT", text_vm, PAGE, 0, PAGE, 5, section, 1)
+        # One ordinary section over the slots: dyld binds by segment and offset either way, but a segment with no
+        # sections is one tools (and some loaders) skip when they number segments for binding.
+        data_section = struct.pack("<16s16sIIIIIIIII", b"__data", b"__DATA", data_vm, 64, data_off, 2, 0, 0, 0, 0, 0)
+        cmds += seg("__DATA", data_vm, PAGE, data_off, PAGE, 3, data_section, 1)
+        cmds += seg("__LINKEDIT", link_vm, PAGE, link_off, len(linkedit), 1)
+        cmds += struct.pack("<12I", LC_DYLD_INFO_ONLY, 48, 0, 0, link_off, strtab_off, 0, 0, 0, 0, 0, 0)
+        cmds += struct.pack("<6I", LC_SYMTAB, 24, link_off + strtab_off, 0, link_off + strtab_off, 4)
+        cmds += struct.pack("<II18I", LC_DYSYMTAB, 80, *([0] * 18))
+        cmds += lc_str(LC_LOAD_DYLINKER, struct.pack("<I", 12), "/usr/lib/dyld")
+        # name at 24, timestamp 2, current 1.0.0, compatibility 1.0.0 (every libSystem since 1.0 is >= that)
+        cmds += lc_str(LC_LOAD_DYLIB, struct.pack("<IIII", 24, 2, 0x10000, 0x10000), "/usr/lib/libSystem.B.dylib")
+        regs = [0] * 13 + [0, 0, entry, 0x10]
+        cmds += struct.pack("<IIII", LC_UNIXTHREAD, 16 + 4 * ARM_THREAD_STATE_COUNT, ARM_THREAD_STATE,
+                            ARM_THREAD_STATE_COUNT) + struct.pack("<17I", *regs)
+        ncmds = 10
+        header = struct.pack("<IiiIIII", MH_MAGIC, CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V6, MH_EXECUTE, ncmds, len(cmds),
+                             MH_NOUNDEFS | MH_DYLDLINK | MH_TWOLEVEL)
+        return header, cmds, entry
+
+    header, cmds, _ = build(0)
+    code_off = len(header) + len(cmds)
+    header, cmds, entry = build(code_off)
+    assert len(header) + len(cmds) == code_off and code_off % 4 == 0
+    text = header + cmds + code
+    assert len(text) <= PAGE, "lt-install's code no longer fits its one page of __TEXT"
+    blob = text + b"\0" * (PAGE - len(text)) + b"\0" * PAGE + linkedit
+    return blob, entry
+
+
 def embedded(path):
     import re
     current = open(path).read()
@@ -103,7 +193,8 @@ def embedded(path):
 def main():
     stale = []
     for source, swift_name, enum, guest_path, doc in HELPERS:
-        blob, _ = macho(text_bytes(source))
+        blob, _ = (macho_dyld(text_bytes(source), DYLD_HELPERS[source]) if source in DYLD_HELPERS
+                   else macho(text_bytes(source)))
         out = os.path.join(SOURCES, swift_name)
         if "--check" in sys.argv:
             if not os.path.exists(out) or embedded(out) != blob:

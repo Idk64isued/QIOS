@@ -27,6 +27,8 @@ final class GuestAgent: ObservableObject {
     var helperReady = false
     /// lt-unpack is in the guest (GuestInstaller.ensureUnpacker).
     var unpackReady = false
+    /// lt-install is in the guest (GuestInstaller.ensureInstaller).
+    var installReady = false
     /// The end of the queue of installs and imports: each waits for the one before it (one at a time, so two never
     /// write into the guest at once).
     var jobTail: Task<Void, Never>?

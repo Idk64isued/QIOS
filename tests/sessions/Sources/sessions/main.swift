@@ -19,7 +19,13 @@ struct Inputs: ParsableArguments {
     )
     var dylib: URL?
     @Option(transform: path) var usbmuxd: URL?
-    @Option(help: "The guest's HTTP client (default: the pinned qemu-ios's contrib/it-proxy/httpget).", transform: path)
+    @Option(
+        help: """
+            The guest's HTTP client (default: the pinned qemu-ios's contrib/it-proxy/httpget, or for iOS 10 its \
+            httpget-armv7, else the vendor directory's).
+            """,
+        transform: path
+    )
     var httpget: URL?
     @Option(
         help: "Where the run's logs, events, frames and overlays go (default: a temporary directory).",
@@ -69,7 +75,8 @@ struct Sessions: ParsableCommand {
             SingleCheck.self, PairCheck.self, ProxyTrustCheck.self, LocalNetworkCheck.self, HelperCheck.self,
             HelperBootCheck.self, PhoneCheck.self, RotationCheck.self, KeyboardCheck.self, FlickCheck.self,
             ScrollTopCheck.self, MatrixCheck.self, AffectedCheck.self, ListingsCheck.self, ResumeCheck.self,
-            TweaksCheck.self, RespringCheck.self, ClipboardCheck.self, BasesCheck.self, ReprepareCheck.self
+            TweaksCheck.self, RespringCheck.self, ClipboardCheck.self, ToldCheck.self, BasesCheck.self,
+            ReprepareCheck.self
         ]
     )
 }
@@ -123,7 +130,7 @@ struct SingleCheck: ParsableCommand {
         help: """
             The base was prepared with --jailbreak: Files reads the whole file system through afc2, Cydia launches \
             with the web proxy on (its front page through it, its sources refreshed, and on a phone a package \
-            installed through Cydia's pages), Substrate loads into SpringBoard (3.x to 6.x; idevicesyslog on PATH). \
+            installed through Cydia's pages), Substrate loads into SpringBoard (3.x to 6.x; the vendor directory's idevicesyslog). \
             Cydia's repositories are local ones the proxy serves (no internet) unless --network.
             """
     )
@@ -336,7 +343,7 @@ struct FlickCheck: ParsableCommand {
             "Trackpad swipes on the Home screen: a quick short flick turns the page, a slow short drag snaps back."
     )
     @Argument var base: String
-    @Option(help: "The overlay of a boot that walked Setup (5.x-7.x), cloned.", transform: path) var overlay: URL?
+    @Option(help: "The overlay of a boot that walked Setup (5.x or 6.x), cloned.", transform: path) var overlay: URL?
     @Option(help: "Gestures of each kind.") var runs = 10
     @Option(help: "The kinds, comma-separated (helper-driver's trackpadGesture).") var kinds = "flick,slow"
     @Option(help: "The least median frames/s of motion each kind's gestures may reach the app at.") var minFps = 45.0

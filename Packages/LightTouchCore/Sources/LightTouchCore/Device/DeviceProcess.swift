@@ -14,6 +14,10 @@ import HostRuntime
     public var info: HelperInfo? { process.info }
     public var status: SharedStatus? { process.status }
     public var isDead: Bool { process.isDead }
+    /// How the helper ended, once it has: deathReason's classification.
+    public var death: DeviceProcessDeath? { process.death }
+    /// How the helper's process ended ("signaled(11), QEMU exit none"), once it has.
+    public private(set) var exitStatus: String?
     public var onAudio: ((LinkEvent) -> Void)? {
         get { process.onAudio }
         set { process.onAudio = newValue }
@@ -21,6 +25,14 @@ import HostRuntime
     public var onGuestPasteboard: ((String) -> Void)? {
         get { process.onGuestPasteboard }
         set { process.onGuestPasteboard = newValue }
+    }
+    public var onAgentReport: ((String) -> Void)? {
+        get { process.onAgentReport }
+        set { process.onAgentReport = newValue }
+    }
+    public var onGLESRefusals: ((String) -> Void)? {
+        get { process.onGLESRefusals }
+        set { process.onGLESRefusals = newValue }
     }
     public var onDeath: ((String) -> Void)?
 
@@ -44,8 +56,10 @@ import HostRuntime
         configuration.lease = lease
         process = DeviceSessionProcess(configuration: configuration)
         var terminationLog: String?
-        process.onTermination = { pid, termination, code in
-            terminationLog = "device helper \(pid): \(termination), QEMU exit \(code.map(String.init) ?? "none")"
+        process.onTermination = { [weak self] pid, termination, code in
+            let status = "\(termination), QEMU exit \(code.map(String.init) ?? "none")"
+            self?.exitStatus = status
+            terminationLog = "device helper \(pid): \(status)"
         }
         process.onDeath = { [weak self] death in
             guard let self else { return }
@@ -92,6 +106,9 @@ import HostRuntime
         logEvent(
             "emulator dylib: \(info.dylibPath) (built \(Date(timeIntervalSince1970: info.dylibModified)), build \(info.buildID ?? "unknown")) in helper \(info.pid)"
         )
-        if info.deviceInfo == nil { logEvent("display: libqemu-arm.dylib has no machine for \(profile.rawValue)") }
+        if info.deviceInfo == nil {
+            logEvent("display: libqemu-arm.dylib has no machine for \(profile.rawValue)")
+            AppReports.failed("Device.noMachine", nil, ["board": profile.rawValue])
+        }
     }
 }

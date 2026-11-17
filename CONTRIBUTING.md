@@ -1,8 +1,8 @@
 # Contributing to Light Touch
 
 Light Touch is a native macOS (AppKit) app that runs a library of emulated legacy iOS devices.
-The device catalog covers the iPhone (m68ap), iPhone 3GS (n88ap), iPhone 4 (n90ap), iPod touch 1G to 4G
-(n45ap, n72ap, n18ap, n81ap) and iPad (k48ap). Each device is prepared
+The device catalog covers the iPhone (m68ap), iPhone 3GS (n88ap), iPhone 4 (n90ap), iPhone 5 (n42ap), iPod touch 1G
+to 4G (n45ap, n72ap, n18ap, n81ap) and iPad (k48ap). Each device is prepared
 from a stock Apple IPSW by the bundled Swift preparer, `firmwarekit` (`Packages/FirmwareKit`), using
 the keys pinned in `LightTouchMac/Resources/firmware-catalog.json`; there are no hand-prepared images
 per firmware. Each running device is its own helper process (`LightTouchDevice`), which is the only
@@ -40,6 +40,8 @@ software and firmware are never downloaded or copied for you), and then builds t
 minutes). After that, build the `LightTouchMac` scheme in Xcode. `scripts/vendor --check` only checks. Either way it
 turns on the pre-commit formatter (`git config core.hooksPath scripts/hooks`, and `git config blame.ignoreRevsFile
 ':(optional).git-blame-ignore-revs'` so blame skips reformat commits).
+
+ANGLE needs Xcode's Metal Toolchain: `xcodebuild -downloadComponent MetalToolchain`.
 
 ## Building
 
@@ -193,7 +195,7 @@ swift run --package-path tests/sessions sessions affected main [--run] [--bases 
 # and prints every change, and the commit that re-records says why each changed path changed
 swift run --package-path tests/sessions sessions listings [ROW …] [--record]
 # snapshot resume (an n72ap base): Home saved after a cold boot, booted again from it; not yet a way to skip boots,
-# since a resumed guest takes no taps
+# since a resumed guest's screen stops following it (a tap opens Settings, the screen keeps the Home screen it saved)
 swift run --package-path tests/sessions sessions resume N72_BASE
 # as a device the user already has, through the app's boot admission; an old device must take its admission steps
 # (the old devices in ~/Developer/qemu-ios-files/old-devices: tests/sessions/Sources/sessions/Managed.swift)
@@ -201,6 +203,10 @@ swift run --package-path tests/sessions sessions single BASE --managed
 swift run --package-path tests/sessions sessions single OLD_DEVICE --expect-admission STEP
 swift run --package-path tests/sessions sessions phone N90_BASE --only carrier --overlay PAST_SETUP_OVERLAY
 swift run --package-path tests/sessions sessions local-network N72_BASE
+# the guest agent's report on a base past Setup (2.x on): what the host is told without asking (SpringBoard
+# answering, the lock, the frontmost app, the interface's orientation, a respring), against the agent's own ops, and
+# a tap and Home made on the guest's clock reaching its digitizer driver; about half a minute after the boot
+swift run --package-path tests/sessions sessions told BASE
 # a built app (Releases, step 2)
 TEST_RUNNER_LTM_RELEASE_APP="path/to/Light Touch.app" xcodebuild test -skipMacroValidation -project LightTouchMac.xcodeproj \
     -scheme LightTouchMac -testPlan Release
@@ -290,11 +296,31 @@ the USB charger and the `panel=` limits; the helper reports them in its hello an
 `LightTouchDevice '{"mode":{"machines":{}}}'`, and the app reads them as `DeviceInfo` (`Board.hardware`). The app's: one `Board`
 case and its `Facts` in `Packages/HostRuntime/Sources/HostRuntime/Board.swift`: the names, the model ID, the SoC
 family (which decides how its prepared base boots and its guest architecture) and the art. Adding a board touches
-those two places; its firmware is catalog entries, and preparing it is a FirmwareKit recipe if no existing one fits.
-`tests/fixtures/machines.json` is the listing the tests use without an emulator; the Release plan
+those two places, and a new SoC family also the branches on `Board.soc` (PreparedDeviceBoot's recipe, `isKBoot`,
+`requiredFiles`) and the harness's board names (`tests/sessions`: Inputs.swift, session-driver's single.swift,
+SessionKit's Affected rows); its firmware is catalog entries, and preparing it is a FirmwareKit recipe if no existing
+one fits. `tests/fixtures/machines.json` is the listing the tests use without an emulator (and the machines
+`scripts/vendor` lists options for); the Release plan
 (`ReleaseAppStaticTests`) holds each of its machines to the bundled library's.
 
 `device.lock.json` is `DeviceLock` (HostRuntime): FirmwareKit writes it, everything else reads it through that type.
+
+### Porting a board
+
+- PRs: one concern each; shared code before boards. qemu-ios lands first; the app PR pins it.
+- Shared code: gate per board (SoC compat props, e.g. `s5l8950.c`'s `a6`/`mca`) or per host capability
+  (`GLES_CAP_*`; the guest GL library runs on iOS 1–10). Changed snapshot state: bump `SNAP_VERSION`, keep old
+  versions loading. Full matrix (all catalog rows, jailbroken with `--network`) plus `sessions resume`.
+- Guest package: bump `contrib/guest-package/VERSION` only when contents change; on collision the merge takes the
+  next free serial. Guest binaries are built from source by `contrib/export-guest-artifacts.sh`, every arch the
+  boards need; none checked in or hand-made.
+- Preparation: one more board in FirmwareKit's `Recipe`/`Preparer` (shared steps, caches, lock), no separate tool.
+  Bakes are deterministic for a seed (seeded UUIDs, fixed dates, sorted plists) or `sessions listings` can't hold.
+- Done = `sessions single` passes on its catalog row prepared from the IPSW alone, first boot inside the app's 300 s
+  budget (migrate during preparation), and the row is in `Packages/ReleaseChecks/boots.json`.
+- Misbehavior: fix the model (register, PMU, codec) to match hardware; reuse another SoC's mechanism where one exists.
+  Harness or app waits only for races hardware has too.
+- qemu-ios: `tests/gate.sh --all` (qtests built beside `qemu-system-arm`); each fix adds a `tests/slice/` test.
 
 ## Rules
 
@@ -315,7 +341,7 @@ those two places; its firmware is catalog entries, and preparing it is a Firmwar
 | `LightTouchMac/` | The app, one directory per layer (below), plus `Resources/firmware-catalog.json` (its `bundled` names the built-in iPod, `Resources/Device/n72ap-7E18.itbase`, which a fresh install unpacks and selects; `first_run` is what a first launch selects without it: an `available` build Apple still serves), `Assets.xcassets`, `Shim/` |
 | `LightTouchMac/Transport/` | The wire to a device and the app's logs: `USBMux` (each device's usbmuxd), `NativeLogging`, `AppEventLog` |
 | `LightTouchMac/Services/` | What the app layers on the stock services: `LockdownTools` (the lockdown-tz and lockdown-mcinstall writes run as child processes of the services helper, `LightTouchServices/Lockdown`), `MediaStaging`, `HomeScreenOrdering`, `ClockRegion` |
-| `LightTouchMac/Guest/` | The guest agent: `GuestAgent` (the wire and typed ops), `GuestServices` (media commit, trust, proxy route, respring, launch), `GuestPackage` |
+| `LightTouchMac/Guest/` | The guest agent: `GuestAgent` (the wire and typed ops), `GuestReport` (what an agent from v6 tells of the guest with each poll: SpringBoard, the lock, the frontmost app, the orientation; the ops that would ask answer from it), `GuestServices` (media commit, trust, proxy route, respring, launch, typing), `GuestPackage` |
 | `LightTouchMac/Library/` | What the app keeps: `DeviceInstance`, `DeviceLibrary`, `DeviceStateStorage`, `StorageLocations`, `Bundled`, `LegacyState`, `IPSWStore`, `FirmwareCatalog`, `FirmwareJobs`, `FirmwareDownloads`, `PreparationJob`, `IPALibrary`, `IPAMembers`, `AppMetadataCache` |
 | `LightTouchMac/Device/` | One running device: `Board+App` (what the app derives from a board), `DeviceSession`, `DeviceProcess` (its helper), `EmulatorController` (lifecycle and input; vends `services`, `guest`, `installPipeline`), `DeviceRow`, `DeviceConnectionIssue`, `DeviceFileWatch`, `WebProxyConfiguration` |
 | `LightTouchMac/Features/` | What the app does with a device: `AppInstaller` (the per-device install and removal queue), `AppInstallPipeline`, `MediaImport` (+ `Media*`, `PreparedMedia`), `WebProxySetup`, `CaptureController` (+ recording, movie writer, canvas capture, capture preferences), `CatalogClient`/`CatalogCopy`, `DiagnosticsExport` |

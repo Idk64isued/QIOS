@@ -12,8 +12,14 @@ func single(_ args: SingleCheck) -> Never {
     let work = workDirectory(args.inputs, "single")
     let tools = Tools.resolve(args.inputs, work: work)
     let d = base.driverBoard
-    let install = !args.noInstall && base.major >= 2  // 1.x has no installation_proxy
-    let ipa = args.ipa ?? checkout("qemu-ios").appendingPathComponent("contrib/it-harness/build/Harness.ipa")
+    // The shared rule: 1.x has no installation_proxy, and iOS 10+ installs aren't supported yet.
+    let install = !args.noInstall && FirmwareCatalog.Entry.managesApps(major: base.major)
+    // iOS 10 runs no armv6 code: the harness app's armv7 build there
+    let ipa =
+        args.ipa
+        ?? checkout("qemu-ios").appendingPathComponent(
+            "contrib/it-harness/build/" + (base.major >= 10 ? "Harness-armv7.ipa" : "Harness.ipa")
+        )
     if install, !FileManager.default.fileExists(atPath: ipa.path) { die("no test IPA at \(ipa.path) (--ipa)") }
     let before = SessionJudge.tree(base.url)
     // The driver's state is the work directory (LTM_STATE_DIR), so the device is under its Devices/.
@@ -34,7 +40,8 @@ func single(_ args: SingleCheck) -> Never {
 
     var single: [String: Any] = [
         "board": d, "base": base.url.path, "lockdownTZ": tools.services.path,
-        "launch": args.launch, "reboot": args.reboot, "install": install, "httpget": httpget(args.inputs).path
+        "launch": args.launch, "reboot": args.reboot, "install": install,
+        "httpget": httpget(args.inputs, major: base.major).path
     ]
     let homeReference = repository.appendingPathComponent("tests/sessions/matrix-refs/\(base.entryID)-home.png")
     if FileManager.default.fileExists(atPath: homeReference.path) { single["homeReference"] = homeReference.path }
@@ -371,6 +378,12 @@ func single(_ args: SingleCheck) -> Never {
             let ms = events.one("substrate", ["device": d])
             let loaded = ms["loaded"] as? [String] ?? []
             let errors = ms["errors"] as? [String] ?? []
+            // An empty capture is the relay failing, not Substrate: its own verdict, read first.
+            r.check(
+                (ms.int("relayLines") ?? 0) > 0,
+                "\(d): the syslog relay delivered the guest's log (\(ms.int("relayLines") ?? 0) lines"
+                    + (ms.bool("relayRestarted") ? ", started again after delivering nothing)" : ")")
+            )
             r.check(
                 ms.bool("injected") && loaded.contains { $0.hasSuffix("/LTMProbe.dylib") } && errors.isEmpty
                     && !ms.bool("safeMode") && ms.bool("back") && !ms.bool("locked"),
@@ -624,7 +637,10 @@ func judgeSystemSound(_ r: Report, _ d: String, events: Events, board: String) {
                 + "'\(e.string("voiceOverAfter") ?? "?")')"
         )
     } else {
-        r.note("\(d): no VoiceOver to run the lock sound under (\(e.string("voiceOverOn") ?? "no agent"))")
+        r.note(
+            "\(d): no VoiceOver to run the lock sound under (\(e.string("voiceOverOn") ?? "no agent"); switched: "
+                + "\(e["voiceOverSet"] as? [String] ?? []))"
+        )
     }
 }
 

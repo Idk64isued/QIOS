@@ -28,7 +28,7 @@ Apps → Import Media accepts MP3, M4A, AAC and WAV audio, JPEG, PNG and HEIC ph
 # Screenshots and recordings
 Capture → Save Screenshot (⌘S) saves immediately. Save Screenshot As (⇧⌘S) lets you choose a location. Copy Screenshot copies it to the Clipboard; ⌘C does the same when the device screen has focus and no text is selected. Open Screenshot opens a new capture in Preview or your chosen app.
 
-Screenshots include the device, its motion, and the gradient. Turn on Capture → Capture Screen Only to capture just the screen. Recordings show just the screen; turn on Capture → Record Device Bezel to include the device and the gradient. View → Show/Hide Finger Dots controls touch indicators on the device and in captures.
+Screenshots and recordings include the device, its motion, and the gradient. Turn off Capture → Include Device Bezel to capture just the screen. View → Show/Hide Finger Dots controls touch indicators on the device and in captures.
 
 Recordings include device audio. Start/Stop Recording is ⌘R; Escape discards a recording (it asks first). The toolbar shows elapsed time while recording and progress while saving. If saving fails, choose another location; a recording that still can't be saved is shown in the Finder. Hiding or minimizing the app stops recording.
 
@@ -53,6 +53,8 @@ Device → Pause freezes the device; Resume continues it.
 During startup, progress stays visible until the Home screen responds. If startup takes more than 90 seconds, use Show Logs. A status message above the device explains preparation, saved-state, erase, or shutdown failures. Storage-write failures keep the message visible until you free disk space and reopen Light Touch.
 
 Window → Device Logs shows app events, available device console output, and USB logs, including retained previous files. Help → Export Diagnostics collects the complete retained logs for a bug report, and Help → Copy Bug Report Info copies a short summary to paste into one. Both leave out personal details: your home folder, user and Mac names, serial numbers and device identifiers.
+
+Light Touch sends anonymous usage and error reports to TelemetryDeck (https://telemetrydeck.com): that it opened and how many devices of which kinds it has; which device starts, with its iOS version, how it was prepared and how long it took; the apps you open on a device and install in it, by their App Store identifiers; features such as screenshots, recordings and Play on Phone; and what failed, such as a device that didn’t start or stopped responding, a preparation, download, install or update that failed, storage the device couldn’t write, a graphics call an app made that the device couldn’t carry out (the call’s name and numbers, once per app each time the device starts), or a crash of Light Touch or one of its own processes, with the last steps before it. Each report includes the Mac’s model, graphics, macOS version and language, and the bezel and renderer settings. They carry no names, file paths or device identifiers, and no messages but the line iOS printed for a problem inside a device; a crash is sent only as where in Light Touch’s code it happened, and a random identifier for this copy of Light Touch is hashed before it’s sent. Turn off Light Touch → Settings → General → Share anonymous usage and error reports to stop them.
 
 Use Shut Down or Quit when you can, so the device finishes saving. Restart and Erase All Content and Settings ask first. Erase removes installed apps, media, and settings.
 
