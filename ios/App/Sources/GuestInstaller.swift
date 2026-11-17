@@ -233,17 +233,26 @@ extension GuestAgent {
             }
         }
 
-        // 6. Register it. iPhone OS 2 to iOS 4 take our word for it: an entry written into the cache by hand is
-        // listed and drawn. iOS 5 and 6 don't — however the entry was shaped (placeholders skipped, sequence
-        // numbers bumped, icon caches cleared), iOS 5 drew the icon blank and iOS 6 never put the app on the Home
-        // screen, full restart included. So there iOS writes the entry itself: the cache is taken away, and
-        // MobileInstallation rebuilds it from the app folders on disk as the Home screen starts (the jailbreak-era
-        // "delete the plist" fix), this app included, every entry in exactly the shape that iOS wants. Step 9
-        // checks the rebuild happened; if it didn't, the cache read in step 2 goes back (with the hand-made
-        // entry), so the device is never left without its app list.
+        // 6. Register it. iPhone OS 2 and 3 take our word for it: an entry written into the cache by hand is listed
+        // and drawn. iOS 4, 5 and 6 don't. iOS 5 drew the icon blank, iOS 6 never put the app on the Home screen at
+        // all, and iOS 4 listed the app under its right name and drew the blank tile beside it — however the entry
+        // was shaped (placeholders skipped, sequence numbers bumped, icon caches cleared).
+        //
+        // iOS 4 took four updates to place because the obvious causes were all ruled out one at a time, each by its
+        // own evidence: the bundle declares Icon.png, both Icon.png and Icon@2x.png are in the guest at full size,
+        // and the device has no SpringBoard icon cache to have gone stale (the install says so now). An app whose
+        // icon is right there, readable and uncached, and which still draws blank, is not an app with an icon
+        // problem — it is an app iOS never really registered, exactly as on 5 and 6. The entry is enough to get a
+        // name onto the Home screen and not enough to get an icon drawn.
+        //
+        // So from iOS 4 up, iOS writes the entry itself: the cache is taken away, and MobileInstallation rebuilds it
+        // from the app folders on disk as the Home screen starts (the jailbreak-era "delete the plist" fix), this
+        // app included, every entry in exactly the shape that iOS wants. Step 9 checks the rebuild happened; if it
+        // didn't, the cache read in step 2 goes back (with the hand-made entry), so the device is never left without
+        // its app list.
         var needsRestart = false
         var verifyRebuild = false
-        if major >= 5, container != nil {
+        if major >= 4, container != nil {
             progress(0.94, "Registering \(display)\u{2026}")
             _ = await unlink(path: Self.installationCache)
             verifyRebuild = true

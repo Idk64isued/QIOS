@@ -3,6 +3,26 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 59 — (not yet named)
+
+**Fixed**
+- The blank white icon on iOS 4, with the guesswork finally cut out of it. Update 58's diagnostics ruled out every
+  cause the last four updates aimed at: the bundle declares `Icon.png`, both `Icon.png` and `Icon@2x.png` are in
+  the guest at full size, and the device has no SpringBoard icon cache that could have gone stale — and a
+  period-correct build of the app drew the blank tile anyway. An icon that is present, readable and uncached and
+  still doesn't draw is not an icon problem: it is an app iOS never properly registered, which is exactly what
+  iOS 5 and 6 turned out to be doing. The hand-written app-list entry is enough to get a name onto the Home screen
+  and not enough to get an icon drawn. So iOS 4 now registers the way 5 and 6 do: the app list is taken away and
+  MobileInstallation rebuilds it from the apps on disk, in the shape iOS wants. If the rebuild doesn't come, the
+  old list goes back with the entry written by hand, as before, so a device is never left without its apps.
+
+**Added**
+- Names the GL entry points the dispatch table loses on iOS 6 and 7, where OpenGLES gives the bridge no names to
+  read and it has to recognise each call by decoding its code — 309 of 914 against all 905 on iOS 5, and every one
+  it misses is a call it refuses. Each failure is now counted by reason and named, and the calls that build a
+  render target are checked by name, since one of those missing is enough on its own to explain Minecraft's black
+  screen (patch 0022).
+
 ## Update 58 — Family Fun
 
 **Added**

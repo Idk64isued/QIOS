@@ -280,6 +280,12 @@ can't download alongside yet.
   reached the guest as a one-finger drag. Slot 0 keeps the legacy absolute-pointer path (the digitizer ignores a
   commit for a slot whose position it has not seen, so the position has to be queued first); the other slots go
   through multi-touch events, which queue DATA before the commit.
+- `patches/qemu-ios/0022`: names the GL entry points the dispatch table loses. On iOS 6 and 7 the OpenGLES
+  `@encode` carries its dispatch record without field names, so the layout can only be named by decoding exported
+  trampolines, which reached 309 of 914 slots against iOS 5's 905 of 905. Each failure is now counted by reason and
+  the first of each named — not exported at all, against a trampoline the decoder cannot read — and the framebuffer
+  and renderbuffer calls are checked by name, since one of those unnamed is enough on its own to explain a black
+  screen.
 - The screen is drawn through Metal (`MetalPresenter`): one copy of each frame into a shared texture and a blit,
   instead of a CGImage per frame that Core Animation copied and converted again.
 - The profiler samples 10 times a second (it was 50; every sample stops the virtual CPU for a moment).

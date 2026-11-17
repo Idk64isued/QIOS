@@ -1,0 +1,120 @@
+From f9d5b6623ee743e2fd6d9845f77d7d2d356beb83 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 16 Nov 2026 19:20:00 -0700
+Subject: [PATCH] ios: say which GL entry points the dispatch table loses
+
+On 6.x and 7.x the OpenGLES @encode carries the dispatch record without
+field names, so the layout can only be named by decoding the exported
+trampolines -- which named 309 of 914 slots, against 5.x's 905 of 905.
+Every slot left unnamed is a GL call the bridge refuses, and the symptom
+is an app whose framebuffer never gets its attachment and which then draws
+into an incomplete target: a black screen with a healthy-looking call
+stream behind it.
+
+The count alone could not say whether the lost slots are entry points apps
+call or internal rows nothing reaches, and those want different fixes. So
+each failure is now counted by its reason and the first of each is named --
+a function the image does not export at all, against one whose trampoline
+the decoder cannot read, which is a decoder gap and says which forms to
+teach it. The framebuffer and renderbuffer calls are checked by name too,
+since one of those missing is on its own enough to explain a black screen.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01UGCtLRD1vYicb9wVRzGR7X
+---
+ contrib/it-gles/gles_dispatch.c | 57 +++++++++++++++++++++++++++++++--
+ 1 file changed, 54 insertions(+), 3 deletions(-)
+
+diff --git a/contrib/it-gles/gles_dispatch.c b/contrib/it-gles/gles_dispatch.c
+index 178d141985..fd7fdca919 100644
+--- a/contrib/it-gles/gles_dispatch.c
++++ b/contrib/it-gles/gles_dispatch.c
+@@ -317,7 +317,7 @@ static void *(*gles_export_lookup)(const char *name);
+  * compared against what is already there (the @encode's), and disagreements are logged. */
+ static unsigned gles_layout_from_exports(unsigned nslots, int check)
+ {
+-    unsigned i, found = 0, agree = 0, differ = 0;
++    unsigned i, found = 0, agree = 0, differ = 0, missing = 0, undecoded = 0, shown = 0;
+     for (i = 0; i < GLES_N_FNS; i++) {
+         const gles_fn_t *f = &gles_fns[i];
+         void *p;
+@@ -330,9 +330,30 @@ static unsigned gles_layout_from_exports(unsigned nslots, int check)
+             alias[k] = 'O'; alias[k + 1] = 'E'; alias[k + 2] = 'S'; alias[k + 3] = 0;
+             p = gles_export_lookup ? gles_export_lookup(alias) : dlsym(RTLD_DEFAULT, alias);
+         }
+-        if (!p) continue;
++        /*
++         * Say which ones get away.
++         *
++         * This path is all that names the table on 6.x and 7.x, whose @encode carries no field
++         * names, and there it named 309 of 914 slots against 5.x's 905 of 905. Every slot it
++         * misses is a GL call the bridge refuses, which is how an app ends up drawing into a
++         * framebuffer whose attachment call went nowhere -- a black screen with no draws in it.
++         * The count alone could not say whether the lost ones are entry points apps actually
++         * call or internal rows nothing reaches, and the two want completely different fixes.
++         * So each failure is counted by its reason, and the first of each is named: a function
++         * the image does not export at all, against one whose trampoline this decoder could not
++         * read. The second kind is a decoder gap, and the names say which forms to teach it.
++         */
++        if (!p) {
++            missing++;
++            if (!check && shown < 24) { w("[gles]   no export: "); w(f->name); w("\n"); shown++; }
++            continue;
++        }
+         slot = gles_trampoline_slot((const void *)((unsigned long)p & ~1UL), (unsigned long)p & 1, nslots);
+-        if (slot < 0 || slot >= (int)GLES_MAX_SLOTS) continue;
++        if (slot < 0 || slot >= (int)GLES_MAX_SLOTS) {
++            undecoded++;
++            if (!check && shown < 24) { w("[gles]   undecoded trampoline: "); w(f->name); w("\n"); shown++; }
++            continue;
++        }
+         found++;
+         if (check) {
+             if (gli.fn[slot] == (int)i) agree++;
+@@ -348,6 +369,9 @@ static unsigned gles_layout_from_exports(unsigned nslots, int check)
+     if (check) {
+         w("[gles] exports cross-check: "); wd(agree); w(" agree, "); wd(differ); w(" differ, of ");
+         wd(found); w(" decoded\n");
++    } else if (missing || undecoded) {
++        w("[gles] exports: "); wd(found); w(" decoded, "); wd(undecoded);
++        w(" with a trampoline this decoder cannot read, "); wd(missing); w(" not exported at all\n");
+     }
+     return found;
+ }
+@@ -407,6 +431,33 @@ static unsigned gles_discover(unsigned nslots)
+         w("[gles] the host speaks another wire protocol: GL calls may go astray\n");
+         refused("hello:", "protocol", ~0u);
+     }
++    /*
++     * The calls that decide whether anything is drawn at all. An app renders into its own
++     * framebuffer and the screen only ever shows what the attachment calls hooked up to it, so a
++     * single one of these left unnamed is the difference between a picture and a black screen with
++     * a complete-looking call stream behind it. Named here once, by name, so a log says outright
++     * whether the render target could be built rather than leaving it to be inferred from a
++     * framebuffer-incomplete warning several thousand lines later.
++     */
++    if (unknown) {
++        static const char *const vital[] = {
++            "glBindFramebuffer", "glFramebufferRenderbuffer", "glFramebufferTexture2D",
++            "glRenderbufferStorage", "glBindRenderbuffer", "glCheckFramebufferStatus",
++            "glGenFramebuffers", "glGenRenderbuffers", 0
++        };
++        unsigned v;
++        for (v = 0; vital[v]; v++) {
++            unsigned f;
++            for (f = 0; f < GLES_N_FNS; f++) {
++                if (!gles_streq(gles_fns[f].name, vital[v])) continue;
++                if (gli.slot[gles_fns[f].id] < 0) {
++                    w("[gles] NO SLOT for "); w(vital[v]);
++                    w(" -- the guest cannot build a render target, so its draws go nowhere\n");
++                }
++                break;
++            }
++        }
++    }
+     for (i = 0; i < gli.n; i++) {
+         if (gli.fn[i] < 0 && gli.field[i]) {
+             w("[gles] unknown dispatch field "); w(gli.field[i]); w(" at slot "); wd(i); w("\n");
+-- 
+2.43.0
+
