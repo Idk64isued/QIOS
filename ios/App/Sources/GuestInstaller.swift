@@ -447,6 +447,10 @@ extension GuestAgent {
             }
             if listed {
                 log("\(display) is in the device\u{2019}s app list")
+                // Listed and still no icon is the other half of "installs don't work", and on a device with no
+                // jailbreak there is no uicache to fall back on. If SpringBoard is rejecting the entry we wrote,
+                // the entries iOS wrote itself say what it wants.
+                if major >= 4 { await compareInstallationEntry(bundleID: bundleID) }
             } else {
                 log("\(display) is on the device at \(appPath) but its app list no longer has the entry "
                     + "(iOS rewrote the list). Restart the device; if the icon is still missing, send this log.")
@@ -606,6 +610,9 @@ extension GuestAgent {
         // installd unzips, checks (AppSync answers the signature check), places and registers the app. A big app
         // takes it a while on an emulated CPU, so the wait is long; the agent's spawn reports when it has finished.
         progress(0.82, "Installing \(display)\u{2026}")
+        // Give installd somewhere to write before asking it for anything, so a refusal leaves its own words behind.
+        await ensureInstalldLogging()
+        let logBefore = await installdLogSize()
         let started = Date()
         let result = await run([GuestInstallBinary.guestPath, staged], timeout: 900)
         let output = result.map { String(decoding: $0.output, as: UTF8.self) } ?? ""
@@ -634,8 +641,12 @@ extension GuestAgent {
                 .filter { !$0.hasPrefix("lt-install: ") }
                 .joined(separator: " / ")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            // installd's own stderr, which is the thing nobody has had yet.
+            let said = await installdLogTail(since: logBefore)
             log("installd: \(display) not installed, code \(code): \(why)"
-                + (detail.isEmpty ? "" : " — installd said: " + detail)
+                + (detail.isEmpty ? "" : " — lt-install said: " + detail)
+                + (said.isEmpty ? " — and installd itself logged nothing"
+                                : " — installd itself said: " + said)
                 + "; installing it by hand instead")
             // Whether AppSync is actually on this device, since "no AppSync" is the thing everyone assumes and
             // nobody has checked. Preparation is supposed to put libappsync.dylib on the system volume and name it

@@ -3,6 +3,30 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 66 — Make It Say Why
+
+App-side only: no emulator change, so this builds from cache.
+
+**Added**
+- **installd's own words, instead of its return code.** Three explanations for its refusal have now died on
+  evidence — AppSync is baked in and named in its job (63), the dyld restriction marker that would drop that
+  insertion isn't there (64), and the `.ipa` reaches the device intact. All that is left is `code -1`, which is
+  `MobileInstallationInstall` saying no without saying why.
+  installd isn't silent, though: it writes to its own stderr, and its launchd job sends that nowhere. That job is a
+  plist the agent can read and write, so it is now pointed at a file before installd is asked for anything, and
+  whatever it writes during a refusal is read back and put in the log beside the code. The job is backed up first,
+  and if installd won't start with its log redirected the original is put straight back.
+  This matters most on a device that is **not** jailbroken. There the hand-install fallback can place an app, list
+  it, and still not get an icon drawn, because SpringBoard was never told — and `uicache`, which would tell it,
+  comes from Cydia and so does not exist there. Making installd do the install is the only route on such a device,
+  which makes knowing why it refuses the thing everything else waits on.
+- **What iOS puts in an app's entry that ours doesn't.** The other half of "installs don't work": a hand-written
+  entry gets the app listed (reading the cache back finds it) and still leaves the Home screen blank. Either
+  SpringBoard isn't reading that file or it is reading it and rejecting what we wrote. The device already holds
+  entries iOS wrote itself, so the install now compares the two and logs which keys are missing from ours. If a
+  missing key is what SpringBoard is objecting to, that names it — and fixes the icon on a stock device without
+  uicache at all.
+
 ## Update 65 — The Attachments It Threw Away
 
 **Fixed**

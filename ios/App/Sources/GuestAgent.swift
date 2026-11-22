@@ -35,6 +35,8 @@ final class GuestAgent: ObservableObject {
     /// installd's dyld restriction marker has been looked at this boot (GuestInstallD), so a second refusal
     /// doesn't read and rewrite the same binary again.
     var installdRestrictionTried = false
+    /// installd's stderr has been pointed somewhere readable this boot (GuestInstallD).
+    var installdLoggingReady = false
     /// The end of the queue of installs and imports: each waits for the one before it (one at a time, so two never
     /// write into the guest at once).
     var jobTail: Task<Void, Never>?
@@ -127,6 +129,7 @@ final class GuestAgent: ObservableObject {
             toolsInPlace.removeAll()
             installdRefuses = false
             installdRestrictionTried = false
+            installdLoggingReady = false
         }
         if let opsLine = lines.first(where: { $0.hasPrefix("ops ") }) {
             ops = opsLine.dropFirst(4).components(separatedBy: " ").filter { !$0.isEmpty }

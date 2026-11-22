@@ -163,3 +163,111 @@ extension GuestAgent {
         }
     }
 }
+
+// MARK: - Making installd say why
+
+// Three explanations for installd's refusal have now died on evidence: AppSync is baked in and named in its job
+// (update 63), the dyld restriction marker that would drop that insertion is not there (update 64), and the .ipa
+// reaches the device intact. What is left is `code -1` from MobileInstallationInstall, which is the API saying no
+// without saying why.
+//
+// installd is not silent, though — it writes to its own stderr, and its launchd job sends that nowhere. That job is
+// a plist on the system volume, which the agent can read and write, so the fix is to give it somewhere to write and
+// then read it back after a refusal. No guest binary to rebuild and no emulator change: installd's own words, in
+// the log, next to the code.
+//
+// This matters most on a device that is NOT jailbroken. There, the hand-install fallback can place the app and list
+// it and still not get an icon drawn, because SpringBoard was never told, and `uicache` — the tool that would tell
+// it — comes from Cydia and so does not exist. Making installd do the install is the only route on such a device,
+// which makes knowing why it refuses the thing everything else waits on.
+
+enum InstallDLog {
+    /// Where installd's stderr is pointed. On the data volume, which is writable on every prepared device.
+    static let path = "/var/mobile/Media/LightTouch/installd.log"
+    static let jobs = [
+        "/System/Library/LaunchDaemons/com.apple.mobile.installd.plist",
+        "/System/Library/LaunchDaemons/com.apple.installd.plist"
+    ]
+}
+
+extension GuestAgent {
+    /// Points installd's stderr at a file we can read, once per boot. Quiet if it is already pointed there.
+    /// The job plist is backed up first and put back if it will not load again.
+    func ensureInstalldLogging() async {
+        guard !installdLoggingReady, ops.contains("get"), ops.contains("spawn"),
+            ops.contains("put") || ops.contains("putpart")
+        else { return }
+        installdLoggingReady = true   // once per boot either way: a failure here must not retry every install
+
+        for job in InstallDLog.jobs {
+            guard let data = await getFile(job),
+                var plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+            else { continue }
+            if plist["StandardErrorPath"] as? String == InstallDLog.path { return }
+
+            plist["StandardErrorPath"] = InstallDLog.path
+            plist["StandardOutPath"] = InstallDLog.path
+            guard let edited = try? PropertyListSerialization.data(
+                fromPropertyList: plist, format: .xml, options: 0)
+            else { return }
+            // Keep the original: if the edited job will not load, installd must come back as it was.
+            let backup = job + ".ltm-old"
+            if await getFile(backup) == nil { _ = await putData(data, guestPath: backup, mode: "0644") }
+            guard await putData(edited, guestPath: job, mode: "0644") else {
+                log("installd: couldn\u{2019}t point its log anywhere. \(lastLog)")
+                return
+            }
+            _ = await run(["/bin/launchctl", "unload", job], timeout: 20)
+            let loaded = await run(["/bin/launchctl", "load", job], timeout: 20)
+            if (loaded?.status ?? -1) != 0 {
+                log("installd: it would not start with its log redirected; putting its job back")
+                _ = await putData(data, guestPath: job, mode: "0644")
+                _ = await run(["/bin/launchctl", "load", job], timeout: 20)
+                return
+            }
+            log("installd: its messages now go to \(InstallDLog.path), so a refusal can say why")
+            return
+        }
+    }
+
+    /// How much installd has written so far, so only what a given install adds is read back.
+    func installdLogSize() async -> Int { await getFile(InstallDLog.path)?.count ?? 0 }
+
+    /// What installd wrote past `since`, trimmed for the log.
+    func installdLogTail(since: Int) async -> String {
+        guard let data = await getFile(InstallDLog.path), data.count > since else { return "" }
+        let text = String(decoding: data.dropFirst(since), as: UTF8.self)
+        let lines = text.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return lines.suffix(8).joined(separator: " / ")
+    }
+
+    /// What iOS puts in an app's entry that this app's hand-written one does not.
+    ///
+    /// On iOS 6 a hand-written installation-cache entry gets the app listed — reading the cache back finds it — and
+    /// still leaves the Home screen without an icon. Either SpringBoard is not reading that file, or it is reading
+    /// it and rejecting the entry. The device already holds entries iOS wrote itself, so the two can be compared
+    /// instead of guessed at: if a key is missing, this says which.
+    func compareInstallationEntry(bundleID: String) async {
+        guard let data = await getFile(Self.installationCache),
+            let cache = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        else { return }
+        let ours = (cache["User"] as? [String: Any])?[bundleID] as? [String: Any]
+        guard let ours else { return }
+        // iOS wrote every System entry itself, so their shape is this firmware's own.
+        guard let system = cache["System"] as? [String: Any],
+            let theirs = system.values.compactMap({ $0 as? [String: Any] })
+                .max(by: { $0.keys.count < $1.keys.count })
+        else { return }
+
+        // Keys that only make sense for one kind of app are not evidence of anything.
+        let expected: Set<String> = ["ApplicationType", "Container", "Path", "EnvironmentVariables",
+                                     "SequenceNumber", "CFBundleIdentifier"]
+        let missing = Set(theirs.keys).subtracting(ours.keys).subtracting(expected).sorted()
+        let extra = Set(ours.keys).subtracting(theirs.keys).subtracting(expected).sorted()
+        log("App list entry: ours has \(ours.keys.count) keys, one iOS wrote has \(theirs.keys.count)."
+            + (missing.isEmpty ? " Nothing iOS writes is missing from ours."
+                               : " Missing from ours: " + missing.prefix(12).joined(separator: ", ") + ".")
+            + (extra.isEmpty ? "" : " Only in ours: " + extra.prefix(8).joined(separator: ", ") + "."))
+    }
+}
