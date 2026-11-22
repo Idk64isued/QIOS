@@ -366,10 +366,18 @@ extension GuestAgent {
         // only exists on a jailbroken device, which is also the only kind that can be checked for here, so it is
         // used where it is present and skipped quietly where it isn't.
         if major >= 4, hasShell {
+            var found = false
+            defer {
+                if !found {
+                    log("uicache isn\u{2019}t on this device (it comes with uikittools from Cydia). Without it the "
+                        + "app is installed and listed but the Home screen may not draw its icon until a restart.")
+                }
+            }
             for tool in ["/usr/bin/uicache", "/usr/bin/uikittools-uicache"] {
                 guard let listed = await spawn(argv: ["/bin/ls", tool]),
                     String(decoding: listed, as: UTF8.self).contains(tool)
                 else { continue }
+                found = true
                 progress(0.96, "Rebuilding the Home screen\u{2019}s app list\u{2026}")
                 let r = await run([tool], timeout: 240)
                 log(r?.status == 0

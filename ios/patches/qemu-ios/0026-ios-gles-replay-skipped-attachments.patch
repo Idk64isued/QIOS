@@ -1,0 +1,250 @@
+From 2ee483a673eaca880bd089c437c09ee3a55790fc Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 21 Nov 2026 22:12:02 -0700
+Subject: [PATCH] ios: put back the attachments the drawable guess throws away
+
+0025 printed what this host was asked to attach next to what GL held,
+and on 6.1.3 Minecraft it reads:
+
+  asked: glFramebufferRenderbuffer(attach=0x8ce0 obj=1) on fb 1  [SKIPPED]
+  asked: glFramebufferRenderbuffer(attach=0x8d00 obj=2) on fb 1  [SKIPPED]
+  asked: glFramebufferRenderbuffer(attach=0x8d20 obj=2) on fb 1  [SKIPPED]
+  asked: glFramebufferRenderbuffer(attach=0x8ce0 obj=1) on fb 2  [SKIPPED]
+  ...
+  GL holds: color0=NONE depth=NONE stencil=NONE
+
+Six attachments across two framebuffers, every one of them dropped
+because this host had decided those framebuffers meant the CA drawable,
+and then nothing attached to either. Not the shim, not the dispatch
+table, not AppSync-adjacent: the attachments were asked for here and
+thrown away here.
+
+The decision itself is a guess from one signal -- a colour renderbuffer
+that never passed through glRenderbufferStorage -- and it is often right.
+What made it fatal is that it was unrecoverable: the call was dropped and
+nothing remembered it had been made, so a framebuffer whose role was
+guessed wrong could never be put right. Minecraft's renderbuffer does not
+look sized to this host, so every framebuffer it touched was emptied.
+
+So the skipped attachments are kept per framebuffer, and replayed when
+the guess is withdrawn: when a framebuffer stops meaning the drawable,
+and from the incomplete-framebuffer check, where MISSING_ATTACHMENT on a
+framebuffer being drawn into is proof the guess was wrong -- a real
+drawable presents frames rather than producing nothing. The repair says
+so in the log when it fires, so a wrong guess is now visible and fixed
+instead of silent and permanent.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01UGCtLRD1vYicb9wVRzGR7X
+---
+ hw/arm/gles-host.c | 145 +++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 145 insertions(+)
+
+diff --git a/hw/arm/gles-host.c b/hw/arm/gles-host.c
+index 8b2d6b737a..cac823ae79 100644
+--- a/hw/arm/gles-host.c
++++ b/hw/arm/gles-host.c
+@@ -724,6 +724,21 @@ typedef struct {
+      */
+     GHashTable *rb_sized;       /* renderbuffer name -> given explicit storage */
+     GHashTable *fbo_drawable;   /* framebuffer name  -> is the CA drawable */
++    /*
++     * Attachments this host was asked for and did not make, because the
++     * framebuffer was taken for the CA drawable at the time (GlesPending).
++     *
++     * Deciding that a framebuffer "means the drawable" is a guess from one
++     * signal -- a colour renderbuffer with no GL storage -- and the guess used
++     * to be unrecoverable: the attachment call was dropped on the floor and
++     * nothing remembered it had ever been made. When the guess was wrong the
++     * framebuffer was left with nothing attached and no way back, which is
++     * exactly what Minecraft on 6.1.3 ran into: six attachments in a row
++     * skipped on two framebuffers, then every draw into MISSING_ATTACHMENT.
++     *
++     * Keeping them makes the guess reversible.
++     */
++    GHashTable *fbo_pending;    /* framebuffer name  -> GlesPending * */
+     uint32_t bound_renderbuffer;
+     uint32_t bound_framebuffer;
+     /* Set whenever the render target or its attachments change; the draw path
+@@ -1330,6 +1345,90 @@ static bool gles_guest_names(GLuint *ids, uint32_t n)
+     return ok;
+ }
+ 
++/* One framebuffer's skipped attachments: colour, depth and stencil. */
++typedef struct {
++    struct {
++        bool set, texture;
++        uint32_t obj, textarget, level;
++    } at[3];                    /* 0 colour, 1 depth, 2 stencil */
++} GlesPending;
++
++static int gles_attach_index(uint32_t attach)
++{
++    return attach == GL_COLOR_ATTACHMENT0_EXT ? 0
++         : attach == GL_DEPTH_ATTACHMENT_EXT ? 1
++         : attach == GL_STENCIL_ATTACHMENT_EXT ? 2 : -1;
++}
++
++/* Remember an attachment that was asked for and not made. */
++static void gles_pending_note(uint32_t name, uint32_t attach, bool texture,
++                              uint32_t obj, uint32_t textarget, uint32_t level)
++{
++    int i = gles_attach_index(attach);
++    GlesPending *p;
++
++    if (!name || i < 0) {
++        return;
++    }
++    p = g_hash_table_lookup(gh.fbo_pending, GUINT_TO_POINTER(name));
++    if (!p) {
++        p = g_new0(GlesPending, 1);
++        g_hash_table_insert(gh.fbo_pending, GUINT_TO_POINTER(name), p);
++    }
++    p->at[i].set = true;
++    p->at[i].texture = texture;
++    p->at[i].obj = obj;
++    p->at[i].textarget = textarget;
++    p->at[i].level = level;
++}
++
++static GLuint gles_host_fbo(uint32_t name);
++static bool gles_is_drawable(uint32_t name);
++
++/*
++ * Make good on the attachments that were skipped for this framebuffer.
++ *
++ * Called when it stops meaning the drawable, and from the incomplete-framebuffer
++ * check, which is the one place that can prove the guess was wrong: a framebuffer
++ * being drawn into with nothing attached is not anybody's drawable.
++ */
++static bool gles_replay_pending(uint32_t name)
++{
++    static const GLenum points[3] = {
++        GL_COLOR_ATTACHMENT0_EXT, GL_DEPTH_ATTACHMENT_EXT, GL_STENCIL_ATTACHMENT_EXT
++    };
++    GlesPending *p = name ? g_hash_table_lookup(gh.fbo_pending, GUINT_TO_POINTER(name)) : NULL;
++    GLuint fbo;
++    bool any = false;
++    int i;
++
++    if (!p || gles_is_drawable(name)) {
++        return false;
++    }
++    fbo = gles_host_fbo(name);
++    glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, fbo);
++    for (i = 0; i < 3; i++) {
++        if (!p->at[i].set) {
++            continue;
++        }
++        if (p->at[i].texture) {
++            glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, points[i],
++                                      p->at[i].textarget, p->at[i].obj, p->at[i].level);
++        } else {
++            glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, points[i],
++                                         GL_RENDERBUFFER_EXT, p->at[i].obj);
++        }
++        any = true;
++    }
++    g_hash_table_remove(gh.fbo_pending, GUINT_TO_POINTER(name));
++    if (any) {
++        gh.fb_dirty = true;
++        /* Put the binding back where the guest believes it is. */
++        glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gles_host_fbo(gh.bound_framebuffer));
++    }
++    return any;
++}
++
+ static bool gles_is_drawable(uint32_t name)
+ {
+     return !name || g_hash_table_contains(gh.fbo_drawable,
+@@ -1363,6 +1462,11 @@ static void gles_set_drawable(uint32_t name, bool drawable)
+     if (gh.bound_framebuffer == name) {
+         glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gles_host_fbo(name));
+     }
++    /* It is a real framebuffer again: make good on what was skipped while it
++     * was not. Without this the attachments made during the guess are lost. */
++    if (!drawable) {
++        gles_replay_pending(name);
++    }
+ }
+ 
+ /* Every attachment change, with the role it left the framebuffer in. Which
+@@ -1460,6 +1564,7 @@ static bool gles_host_init(void)
+ 
+     if (!gh.rb_sized) gh.rb_sized = g_hash_table_new(g_direct_hash, g_direct_equal);
+     gh.fbo_drawable = g_hash_table_new(g_direct_hash, g_direct_equal);
++    gh.fbo_pending = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+ 
+     gh.fbo = gles_private_name(glIsFramebufferEXT);
+     glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gh.fbo);
+@@ -2973,6 +3078,43 @@ static void gles_check_fb_complete(void)
+     if (st == GL_FRAMEBUFFER_COMPLETE_EXT) {
+         return;
+     }
++
++    /*
++     * Nothing attached at all (0x8cd7, MISSING_ATTACHMENT) on a framebuffer
++     * the guest is drawing into is the proof that this host's drawable guess
++     * was wrong about it. A framebuffer that meant the CA drawable would be
++     * presenting frames, not producing nothing.
++     *
++     * The attachments the guess threw away are kept now, so put them back and
++     * look again. This is the whole of the iOS 6 black screen: Minecraft's
++     * colour renderbuffer never passed through glRenderbufferStorage in a form
++     * this host recorded, so every framebuffer it was attached to was taken for
++     * the drawable and had its colour, depth and stencil attachments dropped --
++     * six in a row across two framebuffers, in the log that found this.
++     */
++    if (st == 0x8cd7 /* GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT */) {
++        uint32_t name = gh.bound_framebuffer;
++        bool repaired;
++
++        if (gles_is_drawable(name)) {
++            gles_set_drawable(name, false);   /* replays on the way through */
++            repaired = true;
++        } else {
++            repaired = gles_replay_pending(name);
++        }
++        if (repaired) {
++            glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gles_host_fbo(name));
++            st = glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT);
++            if (st == GL_FRAMEBUFFER_COMPLETE_EXT) {
++                if (gles_refuse("fb-repaired:%u", name)) {
++                    fprintf(stderr, "[gles] framebuffer %u was taken for the drawable and had its "
++                            "attachments dropped; they are back and it is complete now\n", name);
++                }
++                return;
++            }
++        }
++    }
++
+     if (gles_refuse("fb-incomplete:0x%x", st)) {
+         size_t i;
+         bool any_attach = gles_seen(677) || gles_seen(679);
+@@ -8792,6 +8934,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
+                          gles_is_drawable(gh.bound_framebuffer));
+         gh.fb_dirty = true;
+         if (gles_is_drawable(gh.bound_framebuffer)) {
++            gles_pending_note(gh.bound_framebuffer, attach, false, rb, 0, 0);
+             /* gh.fbo already carries the color target we present out of and a
+              * matching depth buffer; re-attaching over either breaks the
+              * present path. */
+@@ -8825,6 +8968,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
+                          gles_is_drawable(gh.bound_framebuffer));
+         gh.fb_dirty = true;
+         if (gles_is_drawable(gh.bound_framebuffer)) {
++            gles_pending_note(gh.bound_framebuffer, a[1], true, a[3], a[2], a[4]);
+             return 0;
+         }
+         glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, a[1], a[2], a[3], a[4]);
+@@ -9140,6 +9284,7 @@ static void gles_context_free(GLESHost *state)
+     g_free(state->ibuf); g_free(state->txbuf); g_free(state->zerobuf);
+     g_free(state->decbuf); g_free(state->readback);
+     if (state->fbo_drawable) g_hash_table_destroy(state->fbo_drawable);
++    if (state->fbo_pending) g_hash_table_destroy(state->fbo_pending);
+     if (state->glsl) g_hash_table_destroy(state->glsl);
+     if (state->uloc) g_hash_table_destroy(state->uloc);
+     if (state->cgl) {
+-- 
+2.43.0
+

@@ -343,6 +343,14 @@ can't download alongside yet.
   the aliasing skipped the call, and printed next to `glGetFramebufferAttachmentParameteriv` for colour, depth and
   stencil. `gles_trace_attach` printed half of this already, behind `IT_GLES_VERBOSE`, which nobody debugging a
   black screen on a phone has set.
+- `patches/qemu-ios/0026`: puts back the attachments the drawable guess throws away. 0025 showed six attachment
+  calls skipped across two framebuffers with `GL holds: color0=NONE depth=NONE stencil=NONE` — the iOS 6 black
+  screen, start to finish. A framebuffer is taken for the CA drawable on one signal (a colour renderbuffer that
+  never passed through `glRenderbufferStorage`) and its attachment calls are then skipped, because `gh.fbo` already
+  carries the present path's targets. The guess is usually right; what made it fatal is that it was unrecoverable,
+  since the skipped call was not remembered. They are kept per framebuffer now (`gh.fbo_pending`) and replayed when
+  the guess is withdrawn — on the flip back to offscreen, and from `gles_check_fb_complete`, where
+  `MISSING_ATTACHMENT` on a framebuffer being drawn into proves it was never the drawable.
 - The screen is drawn through Metal (`MetalPresenter`): one copy of each frame into a shared texture and a blit,
   instead of a CGImage per frame that Core Animation copied and converted again.
 - The profiler samples 10 times a second (it was 50; every sample stops the virtual CPU for a moment).

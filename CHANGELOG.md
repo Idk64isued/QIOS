@@ -3,6 +3,38 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 65 — The Attachments It Threw Away
+
+**Fixed**
+- **The iOS 6 black screen: this host was throwing the games' framebuffer attachments away.** Update 64's forensics
+  printed what was asked for beside what GL held, and on Minecraft it reads:
+
+      asked: glFramebufferRenderbuffer(attach=0x8ce0 obj=1) on fb 1  [SKIPPED: this fb meant the drawable]
+      asked: glFramebufferRenderbuffer(attach=0x8d00 obj=2) on fb 1  [SKIPPED: this fb meant the drawable]
+      ... six of them, across two framebuffers ...
+      GL holds: color0=NONE depth=NONE stencil=NONE
+
+  Every attachment asked for, every one dropped, nothing attached to either framebuffer. Not the shim, not the
+  dispatch table, not AppSync: the calls arrived here and this host discarded them.
+  It discards them on purpose, when it decides a framebuffer "means the CA drawable" — a guess from a single
+  signal, a colour renderbuffer that never passed through `glRenderbufferStorage`. The guess is often right. What
+  made it fatal is that it was **unrecoverable**: the call was dropped and nothing remembered it had been made, so a
+  framebuffer whose role was guessed wrong could never be put right again. Minecraft's colour renderbuffer doesn't
+  look sized to this host, so every framebuffer it touched was emptied and every draw went nowhere — at full speed,
+  with a perfectly healthy call stream, which is why this took so long to find.
+  The skipped attachments are now kept per framebuffer and put back when the guess is withdrawn: when a framebuffer
+  stops meaning the drawable, and from the incomplete-framebuffer check, where `MISSING_ATTACHMENT` on a framebuffer
+  being drawn into is proof the guess was wrong — a real drawable presents frames rather than producing nothing.
+  When the repair fires it says so, so a wrong guess is visible and fixed instead of silent and permanent.
+
+**Changed**
+- The `__RESTRICT` theory from update 64 is **also** ruled out: `installd: carries no dyld restriction marker`. The
+  check did its job, changed nothing, and killed a third explanation cleanly. installd's refusal remains unexplained
+  and now needs its actual error text rather than its return code.
+- The log says when `uicache` isn't on the device (it comes with uikittools from Cydia), which is why a hand-installed
+  app can be installed and listed and still not draw its icon until a restart. That is the remaining half of
+  "installs don't work" on iOS 6.
+
 ## Update 64 — It Was Never AppSync
 
 Update 63's two diagnostics both came back, and both overturned an assumption this project had been carrying.
