@@ -12,6 +12,8 @@ import ZIPFoundation
 
 enum Reports {
     static var folder: URL { Library.documents.appendingPathComponent("Reports", isDirectory: true) }
+    /// Where a graphics capture writes its frames and render targets (Settings \u{25B8} Graphics capture).
+    static var captureFolder: URL { folder.appendingPathComponent("GraphicsCapture", isDirectory: true) }
     static let keep = 10
 
     /// The log the last session wrote, kept before this session's replaces it. Called before LTMLog.start().
@@ -108,6 +110,37 @@ enum Reports {
         return header(context) + "\n\nLog (the lines that matter):\n" + importantLines(log).joined(separator: "\n")
     }
 
+    /// A binary PPM (P6, RGB) or PGM (P5, grey) as the GL host writes them -- "P6\nW H\n255\n" then the pixels --
+    /// turned into a PNG. Nil for anything else.
+    static func netpbmToPNG(_ url: URL) -> Data? {
+        guard let data = try? Data(contentsOf: url), data.count > 16 else { return nil }
+        // The header is three newline-terminated lines.
+        var fields: [String] = []
+        var start = data.startIndex, i = data.startIndex
+        while fields.count < 3, i < data.endIndex {
+            if data[i] == 0x0A {
+                fields.append(String(decoding: data[start..<i], as: UTF8.self))
+                start = data.index(after: i)
+            }
+            i = data.index(after: i)
+        }
+        guard fields.count == 3, fields[2] == "255" else { return nil }
+        let size = fields[1].split(separator: " ").compactMap { Int($0) }
+        guard size.count == 2, size[0] > 0, size[1] > 0 else { return nil }
+        let grey = fields[0] == "P5"
+        guard grey || fields[0] == "P6" else { return nil }
+        let channels = grey ? 1 : 3
+        let row = size[0] * channels
+        guard data.count - start >= row * size[1],
+            let provider = CGDataProvider(data: data.subdata(in: start..<(start + row * size[1])) as CFData),
+            let image = CGImage(width: size[0], height: size[1], bitsPerComponent: 8, bitsPerPixel: 8 * channels,
+                bytesPerRow: row, space: grey ? CGColorSpaceCreateDeviceGray() : CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue), provider: provider,
+                decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+        else { return nil }
+        return UIImage(cgImage: image).pngData()
+    }
+
     /// The zip, in the temporary folder, and a copy of its report.txt in Reports.
     static func bundle(_ context: Context) throws -> URL {
         let fm = FileManager.default
@@ -130,6 +163,16 @@ enum Reports {
         }
         if let data = try? JSONEncoder().encode(Compatibility.all()) {
             try? data.write(to: work.appendingPathComponent("compatibility.json"))
+        }
+        // A graphics capture's frames and render targets, as PNGs (the raw files are several MB each).
+        if let files = try? fm.contentsOfDirectory(at: captureFolder, includingPropertiesForKeys: nil), !files.isEmpty {
+            let out = work.appendingPathComponent("graphics-capture", isDirectory: true)
+            try? fm.createDirectory(at: out, withIntermediateDirectories: true)
+            for file in files where ["ppm", "pgm"].contains(file.pathExtension) {
+                if let png = Self.netpbmToPNG(file) {
+                    try? png.write(to: out.appendingPathComponent(file.deletingPathExtension().lastPathComponent + ".png"))
+                }
+            }
         }
         let zip = fm.temporaryDirectory.appendingPathComponent(name + ".zip")
         try? fm.removeItem(at: zip)

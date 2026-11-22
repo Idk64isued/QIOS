@@ -170,6 +170,7 @@ struct SixHomeSettings: View {
     @AppStorage("bezel") private var bezel = true
     @AppStorage("rect2d") private var rect2d = true
     @AppStorage("fastGL") private var fastGL = false
+    @AppStorage("glCapture") private var glCapture = false
     @AppStorage("diag") private var diag = true
     @AppStorage("enableUSB") private var enableUSB = false
     @AppStorage("codeCacheMB") private var codeCacheMB = 512
@@ -196,12 +197,14 @@ struct SixHomeSettings: View {
                        title: "All Settings", subtitle: "Graphics, network, sound, the keyboard\u{2026}",
                        action: actions.allSettings)
             }
-            SixSection(header: "Display & Graphics") {
+            SixSection(header: "Display & Graphics", footer: "Graphics Capture records what a game draws, every ten seconds, into the next report you share. It starts with the next boot and slows games down; turn it off when you\u{2019}re done.") {
                 SixToggleRow(title: "Show the Device", subtitle: "The device around its screen.", isOn: $bezel)
                 SixSeparator()
                 SixToggleRow(title: "Rectangle Textures \u{2192} 2D", isOn: $rect2d)
                 SixSeparator()
                 SixToggleRow(title: "Skip GL Error Checks", isOn: $fastGL)
+                SixSeparator()
+                SixToggleRow(title: "Graphics Capture", isOn: $glCapture)
             }
             SixSection(header: "Code Cache", footer: "More holds more of a device\u{2019}s translated code, at the cost of memory.") {
                 SixSegments(options: [(256, "256 MB"), (512, "512 MB"), (1024, "1 GB")], selection: $codeCacheMB)

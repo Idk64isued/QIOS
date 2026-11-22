@@ -3,6 +3,22 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 76 — Say Cheese
+
+Stacks on 75. App-side plus emulator patch 0028, so the emulator libraries rebuild.
+
+**Added**
+- **Settings ▸ Graphics Capture.** Where's My Water draws its level at 60 fps with the dirt and water missing, and
+  the log can only get so far: 420 of every 1440 draws go into offscreen render targets, every one of them complete,
+  and nothing says whether the dirt was drawn into its target and lost when composited, or never drawn into it at
+  all. The screen looks the same either way, and guessing between the two is how a fix gets wasted. With the switch
+  on (it takes effect at the next boot), every ten seconds one frame's draws are traced and that frame is saved
+  together with **every offscreen render target read back at the same instant**, colour and alpha separately. Each
+  traced draw also logs where it went and everything that can make it vanish once its vertices are right: what
+  units 0 and 1 sample and how they combine, the alpha test, the stencil test and the colour mask. The newest four
+  captures are kept and go into the next report you share, as PNGs in `graphics-capture/`. It slows games down, so
+  turn it off afterwards. Nothing changes with it off.
+
 ## Update 75 — Make It or Break It
 
 Stacks on 74 (push this one; it carries 74 too). App-side only; builds from cache.

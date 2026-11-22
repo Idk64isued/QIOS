@@ -185,6 +185,7 @@ struct RootView: View {
     @State private var shareItem: ShareItem?
     @State private var logNote = ""
     @AppStorage("fastGL") private var fastGL = false
+    @AppStorage("glCapture") private var glCapture = false
     @AppStorage("rect2d") private var rect2d = true
     @AppStorage("diag") private var diag = true
     @AppStorage("bezel") private var bezel = true
@@ -625,6 +626,8 @@ struct RootView: View {
                 settingToggle("Rectangle textures \u{2192} 2D", icon: "rectangle.on.rectangle", isOn: $rect2d)
                 Divider().overlay(Theme.ink.opacity(0.04))
                 settingToggle("Skip GL error checks", icon: "bolt.trianglebadge.exclamationmark", isOn: $fastGL)
+                Divider().overlay(Theme.ink.opacity(0.04))
+                settingToggle("Graphics capture (next boot)", icon: "camera.metering.matrix", isOn: $glCapture)
                 Divider().overlay(Theme.ink.opacity(0.04))
                 settingToggle("Diagnostics in log", icon: "stethoscope", isOn: $diag)
                 Divider().overlay(Theme.ink.opacity(0.04))

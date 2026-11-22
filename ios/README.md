@@ -407,6 +407,13 @@ can't download alongside yet.
   a new size, so `gles_drawable_storage` attaches at the new size instead of giving up on the present. That last
   one also closes a silent return: readback presents through `gles_present_to_panel`, which needs `nms->lcd_state`
   and so returned with nothing in the log on every board but the iPod touch. Both of its returns say why now.
+- `patches/qemu-ios/0028`: graphics capture. With `IT_GLES_VERBOSE=2` and `IT_GLES_DUMP_DIR` (Settings ›
+  Graphics capture) each traced frame is written with every offscreen render target the guest has drawn into, read
+  back at the same instant — colour as `fbN-S.ppm`, alpha as `fbN-S-alpha.pgm`, sized by the viewport the guest last
+  drew it with — and each traced draw also logs its framebuffer, units 0–1 (texture and env mode), alpha test,
+  stencil test and colour mask. Four slots, reused. Written for Where's My Water, whose dirt and water go through
+  offscreen targets and come out missing with every one of them complete. The shim's per-frame lines move to
+  `IT_GLES_VERBOSE=3`.
 - The screen is drawn through Metal (`MetalPresenter`): one copy of each frame into a shared texture and a blit,
   instead of a CGImage per frame that Core Animation copied and converted again.
 - The profiler samples 10 times a second (it was 50; every sample stops the virtual CPU for a moment).

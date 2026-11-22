@@ -141,6 +141,22 @@ final class Emulator: ObservableObject {
             LTMLog.note("args \(argv.joined(separator: " "))")
             // Optional: skip the renderer's per-call GL error checks (each one makes the GPU driver catch up).
             if UserDefaults.standard.bool(forKey: "fastGL") { setenv("IT_GLES_STRICT", "0", 1) }
+            // Graphics capture: one frame of draws traced every ten seconds, with the frame and every offscreen render
+            // target written beside it (four slots, reused), for the report to carry. The environment outlives a boot
+            // in this process, so a capture switched off has to be taken back out, not just left unset.
+            if UserDefaults.standard.bool(forKey: "glCapture") {
+                let capture = Reports.captureFolder
+                try? FileManager.default.removeItem(at: capture)
+                try? FileManager.default.createDirectory(at: capture, withIntermediateDirectories: true)
+                setenv("IT_GLES_VERBOSE", "2", 1)
+                setenv("IT_GLES_TRACE_EVERY", "600", 1)
+                setenv("IT_GLES_DUMP_DIR", capture.path, 1)
+                LTMLog.note("graphics capture on: a traced frame and its render targets every 600 frames")
+            } else {
+                unsetenv("IT_GLES_VERBOSE")
+                unsetenv("IT_GLES_TRACE_EVERY")
+                unsetenv("IT_GLES_DUMP_DIR")
+            }
             // The graphics fix: rectangle textures (what the iPod touch 2G composites with) drawn as plain 2D textures.
             setenv("IT_GLES_RECT2D", (UserDefaults.standard.object(forKey: "rect2d") as? Bool ?? true) ? "1" : "0", 1)
             try? FileManager.default.createDirectory(at: directory.appendingPathComponent("logs"), withIntermediateDirectories: true)

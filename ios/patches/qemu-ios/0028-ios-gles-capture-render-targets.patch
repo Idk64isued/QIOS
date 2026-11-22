@@ -1,0 +1,272 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 22 Nov 2026 16:10:00 -0700
+Subject: [PATCH] ios: graphics capture -- the render targets beside the frame
+
+Where's My Water draws its level at 60 fps with its dirt and water
+missing, and its log says why only up to a point: 420 of every 1440
+draws go into offscreen framebuffers, all of them complete, and none of
+the existing lines can say whether the dirt was drawn into its target
+and lost when composited, or never drawn into it at all. The screen
+looks the same either way.
+
+A capture (IT_GLES_VERBOSE=2, IT_GLES_DUMP_DIR) already traced one
+frame of draws every IT_GLES_TRACE_EVERY presents and wrote that frame
+out. Now it also:
+
+  * reads back every offscreen render target the guest has drawn into,
+    at the same instant, colour and alpha separately (a mask carries
+    everything in its alpha), with its mean RGBA in the log;
+  * adds, per traced draw, the framebuffer it went to, what units 0
+    and 1 sample and how they combine, the alpha test, the stencil
+    test and the colour mask -- everything that can make a correctly
+    placed draw vanish;
+  * writes into four reused slots, so a capture left on keeps its
+    newest moments instead of filling the phone;
+  * leaves the shim's per-frame chatter at IT_GLES_VERBOSE=3, where it
+    no longer buries the trace.
+
+Nothing changes unless a capture is switched on.
+---
+diff --git a/hw/arm/gles-host.c b/hw/arm/gles-host.c
+index 643fc00..d8a5557 100644
+--- a/hw/arm/gles-host.c
++++ b/hw/arm/gles-host.c
+@@ -628,6 +628,9 @@ typedef struct {
+     GHashTable *uloc;           /* guest program id -> uniform location map */
+ } GLESGroup;
+ 
++/* Guest framebuffer names a capture tracks the viewport of (names are small integers, handed out in order). */
++#define GLES_CAPTURE_FBS 64
++
+ typedef struct {
+     GLESGroup *group;
+     GHashTable *surfaces, *pvrtc;
+@@ -847,6 +850,16 @@ typedef struct {
+      */
+     bool dump_pending;
+ 
++    /*
++     * The viewport each offscreen framebuffer was last drawn with, by guest name. A capture reads every
++     * render target back beside the frame, and ES 1.1 has no way to ask a texture how big it is; the guest
++     * sets its viewport to the target before drawing into it, so that is the size worth reading.
++     * capture_slot rotates the files a capture writes, so a long session keeps its newest few.
++     */
++    uint32_t fb_viewport[GLES_CAPTURE_FBS][4];
++    unsigned capture_slot;
++    unsigned capture_targets;   /* 1 + the slot whose render targets are still to be read, or 0 */
++
+     /*
+      * GL_UNPACK_ALIGNMENT as the guest last set it. Zero means "never set",
+      * which is treated as ES 1.1's default of 4 -- not 1. Getting that default
+@@ -2544,8 +2557,13 @@ static void gles_guest_log(const char *text)
+     static GHashTable *seen;
+     static int verbose = -1;
+ 
++    /*
++     * Everything only at 3 and up. A capture (IT_GLES_VERBOSE=2) wants the draw trace and the state dumps,
++     * and the shim's two lines a frame would bury them.
++     */
+     if (verbose < 0) {
+-        verbose = getenv("IT_GLES_VERBOSE") != NULL;
++        const char *v = getenv("IT_GLES_VERBOSE");
++        verbose = v && atoi(v) >= 3;
+     }
+     if (verbose) {
+         fputs(text, stderr);
+@@ -3268,12 +3286,23 @@ static void gles_check_fb_complete(void)
+  * them for the clear and restore them afterwards, so guest masks cannot
+  * preserve stale depth or stencil into the next frame.
+  */
++static void gles_dump_render_targets(const char *dir, unsigned slot);
++
+ static void gles_frame_end(void)
+ {
+     GLboolean depth_mask = GL_TRUE;
+     GLint stencil_mask;
+     GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+ 
++    if (gh.capture_targets) {
++        const char *dir = getenv("IT_GLES_DUMP_DIR");
++
++        if (dir) {
++            gles_dump_render_targets(dir, gh.capture_targets - 1);
++        }
++        gh.capture_targets = 0;
++    }
++
+     glGetBooleanv(GL_DEPTH_WRITEMASK, &depth_mask);
+     glGetIntegerv(GL_STENCIL_WRITEMASK, &stencil_mask);
+     glStencilMask(~0u);
+@@ -3529,6 +3558,47 @@ static void gles_trace_draw(const char *what, uint32_t mode, uint32_t count)
+                 "m[11]=%.2f m[14]=%.3f viewport-ok\n",
+                 pr[0], pr[5], pr[10], pr[11], pr[14]);
+     }
++    /*
++     * Where the draw goes and everything that can make it vanish after the vertices are right: the
++     * framebuffer, what each of the first two units samples and how it combines, the alpha test, the
++     * stencil test and the colour mask. Where's My Water draws its dirt and water into offscreen targets
++     * and composites them, and a layer that is drawn and then masked away looks identical, on screen,
++     * to one that was never drawn -- only this says which.
++     */
++    if (gles_fixed_host()) {
++        GLint active = 0, unit_tex[2] = { 0, 0 }, unit_env[2] = { 0, 0 }, unit_on[2] = { 0, 0 };
++        GLint afunc = 0, sfunc = 0, sref = 0, smask = 0, sfail = 0, szfail = 0, szpass = 0;
++        GLfloat aref = 0;
++        GLboolean cmask[4] = { 1, 1, 1, 1 };
++        unsigned u;
++
++        glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
++        for (u = 0; u < 2; u++) {
++            glActiveTexture(GL_TEXTURE0 + u);
++            unit_on[u] = glIsEnabled(GL_TEXTURE_2D);
++            glGetIntegerv(GL_TEXTURE_BINDING_2D, &unit_tex[u]);
++            glGetTexEnviv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, &unit_env[u]);
++        }
++        glActiveTexture((GLenum)active);
++        glGetIntegerv(GL_ALPHA_TEST_FUNC, &afunc);
++        glGetFloatv(GL_ALPHA_TEST_REF, &aref);
++        glGetIntegerv(GL_STENCIL_FUNC, &sfunc);
++        glGetIntegerv(GL_STENCIL_REF, &sref);
++        glGetIntegerv(GL_STENCIL_VALUE_MASK, &smask);
++        glGetIntegerv(GL_STENCIL_FAIL, &sfail);
++        glGetIntegerv(GL_STENCIL_PASS_DEPTH_FAIL, &szfail);
++        glGetIntegerv(GL_STENCIL_PASS_DEPTH_PASS, &szpass);
++        glGetBooleanv(GL_COLOR_WRITEMASK, cmask);
++        fprintf(stderr, "[gles]     fb=%u(%s) unit0=%s tex %d env 0x%x  unit1=%s tex %d env 0x%x  "
++                "alphatest=%d(0x%x %.2f) stencil=%d(0x%x ref %d mask 0x%x ops 0x%x/0x%x/0x%x) "
++                "colormask=%d%d%d%d scissor=%d\n",
++                gh.bound_framebuffer, gles_is_drawable(gh.bound_framebuffer) ? "drawable" : "offscreen",
++                unit_on[0] ? "on" : "off", unit_tex[0], unit_env[0],
++                unit_on[1] ? "on" : "off", unit_tex[1], unit_env[1],
++                glIsEnabled(GL_ALPHA_TEST), afunc, aref,
++                glIsEnabled(GL_STENCIL_TEST), sfunc, sref, smask, sfail, szfail, szpass,
++                cmask[0], cmask[1], cmask[2], cmask[3], glIsEnabled(GL_SCISSOR_TEST));
++    }
+     gles_trace_vertices();
+ }
+ 
+@@ -3935,6 +4005,86 @@ static void gles_present_to_panel(void)
+ }
+ 
+ 
++/*
++ * Every offscreen render target, read back at the same instant as the frame.
++ *
++ * The frame says what reached the screen; these say what the app drew before compositing. A layer missing
++ * from the frame and present here was lost in the compositing (its texture sampled wrong, blended or
++ * masked away); missing here too, it was never drawn into its target. The alpha goes in a file of its own
++ * because a target used as a mask carries everything in it, and a PPM would throw it away.
++ */
++static void gles_dump_render_targets(const char *dir, unsigned slot)
++{
++    uint32_t name;
++    unsigned written = 0;
++    GLint pack = 4;
++
++    glGetIntegerv(GL_PACK_ALIGNMENT, &pack);
++    for (name = 1; name < GLES_CAPTURE_FBS; name++) {
++        const uint32_t *vp = gh.fb_viewport[name];
++        uint32_t w = vp[2], h = vp[3], x, y;
++        g_autofree uint8_t *px = NULL;
++        char path[1024];
++        GLenum st;
++        FILE *f, *fa;
++
++        if (!w || !h || w > 4096 || h > 4096 || gles_is_drawable(name) || !glIsFramebufferEXT(name)) {
++            continue;
++        }
++        glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, name);
++        st = glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT);
++        if (st != GL_FRAMEBUFFER_COMPLETE_EXT) {
++            fprintf(stderr, "[gles] capture: framebuffer %u is not complete (0x%x); nothing to read\n", name, st);
++            continue;
++        }
++        px = g_malloc((size_t)w * h * 4);
++        while (glGetError() != GL_NO_ERROR) {
++        }
++        glPixelStorei(GL_PACK_ALIGNMENT, 4);
++        glReadPixels((GLint)vp[0], (GLint)vp[1], (GLsizei)w, (GLsizei)h, GL_RGBA, GL_UNSIGNED_BYTE, px);
++        if (glGetError() != GL_NO_ERROR) {
++            fprintf(stderr, "[gles] capture: framebuffer %u could not be read back\n", name);
++            continue;
++        }
++        snprintf(path, sizeof(path), "%s/fb%u-%u.ppm", dir, name, slot);
++        f = fopen(path, "wb");
++        snprintf(path, sizeof(path), "%s/fb%u-%u-alpha.pgm", dir, name, slot);
++        fa = fopen(path, "wb");
++        if (f && fa) {
++            unsigned long long sum[4] = { 0, 0, 0, 0 };
++
++            fprintf(f, "P6\n%u %u\n255\n", w, h);
++            fprintf(fa, "P5\n%u %u\n255\n", w, h);
++            for (y = 0; y < h; y++) {
++                const uint8_t *row = px + (size_t)(h - 1 - y) * w * 4;   /* GL rows run bottom-up */
++
++                for (x = 0; x < w; x++) {
++                    fwrite(row + x * 4, 1, 3, f);
++                    fputc(row[x * 4 + 3], fa);
++                    sum[0] += row[x * 4]; sum[1] += row[x * 4 + 1];
++                    sum[2] += row[x * 4 + 2]; sum[3] += row[x * 4 + 3];
++                }
++            }
++            written++;
++            fprintf(stderr, "[gles] capture: framebuffer %u (%ux%u at %u,%u) mean rgba=%llu,%llu,%llu,%llu "
++                    "-> fb%u-%u.ppm\n", name, w, h, vp[0], vp[1],
++                    sum[0] / ((unsigned long long)w * h), sum[1] / ((unsigned long long)w * h),
++                    sum[2] / ((unsigned long long)w * h), sum[3] / ((unsigned long long)w * h), name, slot);
++        }
++        if (f) {
++            fclose(f);
++        }
++        if (fa) {
++            fclose(fa);
++        }
++    }
++    glPixelStorei(GL_PACK_ALIGNMENT, pack);
++    glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gles_host_fbo(gh.bound_framebuffer));
++    if (!written) {
++        fprintf(stderr, "[gles] capture: no offscreen render target has been drawn into\n");
++    }
++}
++
+ /*
+  * Write the frame we just read back as a PPM, when its draws were traced.
+  *
+@@ -3949,12 +4099,16 @@ static void gles_dump_frame(const uint8_t *frame, size_t stride,
+     char path[1024];
+     FILE *f;
+     uint32_t x, y;
++    unsigned slot;
+ 
+     if (!dir || !gh.dump_pending) {
+         return;
+     }
+     gh.dump_pending = false;
+-    snprintf(path, sizeof(path), "%s/frame-%06" PRIu64 ".ppm", dir, gh.presents);
++    /* Four slots, reused in turn: a capture left on for a whole session keeps its newest four moments
++     * rather than filling the phone. The log line below says which frame each slot holds. */
++    slot = gh.capture_slot++ % 4;
++    snprintf(path, sizeof(path), "%s/frame-%u.ppm", dir, slot);
+     f = fopen(path, "wb");
+     if (!f) {
+         return;
+@@ -3982,6 +4136,8 @@ static void gles_dump_frame(const uint8_t *frame, size_t stride,
+     fclose(f);
+     fprintf(stderr, "[gles] wrote traced frame %" PRIu64 " to %s\n",
+             gh.presents, path);
++    /* The render targets are read once the frame's surface is unlocked again (gles_frame_end). */
++    gh.capture_targets = slot + 1;
+ 
+     /*
+      * And the PANEL, at the same instant.
+@@ -7262,6 +7418,9 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
+ 
+     case GLES_SLOT_VIEWPORT:                    /* glViewport(x,y,w,h) */
+         glViewport(a[0], a[1], a[2], a[3]);
++        if (gh.bound_framebuffer < GLES_CAPTURE_FBS) {
++            memcpy(gh.fb_viewport[gh.bound_framebuffer], a, sizeof(gh.fb_viewport[0]));
++        }
+         return 0;
+ 
+     case GLES_SLOT_COLOR4F:                     /* glColor4f(r,g,b,a) */
