@@ -9,9 +9,18 @@
 @
 @ Prints one line, "lt-install: N", N being MobileInstallationInstall's result (0 is success) or, when it was never
 @ reached, the step that failed as a negative number:
-@     -1 no IPA argument   -2 CoreFoundation would not load   -3 MobileInstallation would not load
+@     -2 CoreFoundation would not load   -3 MobileInstallation would not load
 @     -4 a CoreFoundation function is missing   -5 MobileInstallationInstall is missing   -6 a CFString failed
-@ and exits 0 only on success.
+@     -7 no path on the command line and none in the file either
+@ It exits 0 only on success.
+@
+@ -1 therefore means one thing only: installd was reached and refused. -7 is deliberately not -1: for five updates
+@ lt-install printed -1 both for a refusal and for a missing argument, and the app read every one of them as
+@ installd's refusal, so an argument that never arrived would have looked exactly like a device without AppSync.
+@
+@ It no longer depends on the argument arriving. If argv is empty it prints "argv did not arrive: ..." and reads the
+@ path from /var/mobile/Media/PublicStaging/lt-install.path, which the app writes next to the .ipa before each run.
+@ So the install works either way, and the note says which way it went.
 @
 @ Unlike lt-mkdirs and lt-unpack this one is dynamically linked: dyld loads it (LC_LOAD_DYLINKER), binds two pointers
 @ in __DATA to libSystem's dlopen and dlsym (LC_DYLD_INFO_ONLY), and enters at `start` with sp at argc, as the kernel
@@ -36,10 +45,26 @@ start:
     add     r5, sp, #4              @ argv
     bic     sp, sp, #7              @ calls want an 8-byte aligned stack
     mov     r11, #0x2000            @ __DATA
-    mvn     r8, #0                  @ -1: no IPA
+    mov     r6, #0                  @ the path, once there is one
     cmp     r4, #2
-    blt     Lreport
+    blt     Lnoargv
     ldr     r6, [r5, #4]            @ argv[1]
+    cmp     r6, #0
+    bne     Lhavepath
+Lnoargv:
+    @ Nothing came in on the command line. Rather than give up, say so and read the path out of the file the app
+    @ writes beside the .ipa for exactly this case: the install then works whether or not argv arrived, and the
+    @ note on stdout says which of the two it was. The app reads that note back into its log.
+    adr     r1, Lnote
+    mov     r2, #57                 @ Lnote's length; test.py checks the line byte for byte
+    mov     r0, #1                  @ stdout
+    mov     r12, #4                 @ SYS_write
+    svc     #0x80
+    bl      Lreadpath
+    cmp     r6, #0
+    mvneq   r8, #6                  @ -7: no path on the command line and none in the file either
+    beq     Lreport
+Lhavepath:
 
     @ CoreFoundation and MobileInstallation
     adr     r0, Lcf
@@ -161,6 +186,47 @@ Lreport:
     svc     #0x80
     b       .
 
+@ Reads the path the app leaves at Lpathfile into __DATA+64 (1 KiB of scratch, well inside the page) and cuts it at
+@ the first space or control byte, so a trailing newline is not taken for part of the name. r6 = the path, or 0 if
+@ there is nothing usable there. Clobbers r0-r3 and r12.
+Lreadpath:
+    push    {r4, r5, lr}
+    adr     r0, Lpathfile
+    mov     r1, #0                  @ O_RDONLY
+    mov     r2, #0
+    mov     r12, #5                 @ SYS_open
+    svc     #0x80
+    bcs     2f
+    mov     r4, r0                  @ the fd
+    add     r5, r11, #64            @ the buffer
+    mov     r1, r5
+    mov     r2, #1020               @ 1020, not 1024: the buffer is 1 KiB, so the terminator below always fits,
+    mov     r12, #3                 @ and 1023 is not an ARMv6 immediate, so there is nothing to clamp afterwards
+    svc     #0x80                   @ SYS_read
+    mov     r3, r0                  @ how much came back (r0 was the fd going in)
+    mov     r0, r4
+    mov     r12, #6                 @ SYS_close
+    svc     #0x80
+    cmp     r3, #1
+    blt     2f
+    mov     r2, #0
+1:  ldrb    r0, [r5, r2]
+    cmp     r0, #32                 @ a space, a newline or a NUL ends the path
+    ble     3f
+    add     r2, r2, #1
+    cmp     r2, r3
+    blt     1b
+3:  mov     r0, #0
+    strb    r0, [r5, r2]
+    cmp     r2, #0
+    beq     2f                      @ the file held nothing but a newline
+    mov     r6, r5
+    pop     {r4, r5, lr}
+    bx      lr
+2:  mov     r6, #0
+    pop     {r4, r5, lr}
+    bx      lr
+
 @ r0 handle, r1 name -> r0 = dlsym(handle, name); a missing one ends in Lreport with r8's step.
 Lsym:
     push    {r4, lr}
@@ -189,6 +255,11 @@ Lcfstr:
 Lutf8:  .word 0x08000100           @ kCFStringEncodingUTF8
 Ltenth: .word 0xCCCCCCCD
 Lhead:  .ascii "lt-install: "
+    .align 2
+Lnote:  .ascii "argv did not arrive: read the path from its file instead\n"
+    .align 2
+Lpathfile:
+    .asciz "/var/mobile/Media/PublicStaging/lt-install.path"
     .align 2
 Lcf:    .asciz "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
     .align 2

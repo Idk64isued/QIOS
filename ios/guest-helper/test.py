@@ -11,7 +11,8 @@ import sys
 import os
 
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM, UC_HOOK_INTR, UC_HOOK_CODE, UcError
-from unicorn.arm_const import UC_ARM_REG_SP, UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R12, \
+from unicorn.arm_const import UC_ARM_REG_CPSR, \
+    UC_ARM_REG_SP, UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R12, \
     UC_ARM_REG_PC, UC_ARM_REG_R3
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -109,7 +110,6 @@ def pack(items):
 
 
 def run_unpack(args, archive, short_reads=False, fail_open=None):
-    from unicorn.arm_const import UC_ARM_REG_CPSR
     uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
     uc.mem_map(0x1000, 0x1000)
     uc.mem_write(0x1000, unpack_blob)
@@ -300,7 +300,7 @@ def binds(blob, segments):
     return out
 
 
-def run_install(args, mi_result=0, missing=()):
+def run_install(args, mi_result=0, missing=(), path_file=None):
     flags, cmds = load_commands(install_blob)
     segments, entry, dylinker, dylibs = [], None, None, []
     for cmd, c in cmds:
@@ -333,7 +333,8 @@ def run_install(args, mi_result=0, missing=()):
         assert ordinal == 1, "every bind is from libSystem"
         uc.mem_write(addr, struct.pack("<I", at[symbol.lstrip("_")]))
 
-    state = {"exit": None, "out": b"", "opened": [], "looked": [], "strings": {}, "dict": None, "install": None}
+    state = {"exit": None, "out": b"", "opened": [], "looked": [], "strings": {}, "dict": None, "install": None,
+             "read_path_from": None}
 
     def cstr(addr):
         out = b""
@@ -379,6 +380,14 @@ def run_install(args, mi_result=0, missing=()):
 
     uc.hook_add(UC_HOOK_CODE, fake, begin=FAKES, end=FAKES + 0x1000)
 
+    PATH_FILE = "/var/mobile/Media/PublicStaging/lt-install.path"
+    fd = {"open": None, "at": 0}
+
+    def ret(value, error=False):
+        uc.reg_write(UC_ARM_REG_R0, value)
+        cpsr = uc.reg_read(UC_ARM_REG_CPSR)
+        uc.reg_write(UC_ARM_REG_CPSR, cpsr | (1 << 29) if error else cpsr & ~(1 << 29))
+
     def svc(uc, intno, _):
         num = uc.reg_read(UC_ARM_REG_R12)
         if num == 4:
@@ -388,6 +397,25 @@ def run_install(args, mi_result=0, missing=()):
         elif num == 1:
             state["exit"] = reg(UC_ARM_REG_R0)
             uc.emu_stop()
+        elif num == 5:                                    # open, for the path file only
+            name = cstr(reg(UC_ARM_REG_R0))
+            state["read_path_from"] = name
+            assert name == PATH_FILE, f"lt-install opened {name}, not its path file"
+            if path_file is None:
+                return ret(2, True)                       # ENOENT, the way the kernel reports it
+            fd["open"], fd["at"] = 7, 0
+            return ret(7)
+        elif num == 3:                                    # read
+            assert reg(UC_ARM_REG_R0) == fd["open"], "lt-install read a file it had not opened"
+            want = reg(UC_ARM_REG_R2)
+            blob = path_file.encode() if isinstance(path_file, str) else path_file
+            chunk = blob[fd["at"]:fd["at"] + want]
+            uc.mem_write(reg(UC_ARM_REG_R1), chunk)
+            fd["at"] += len(chunk)
+            return ret(len(chunk))
+        elif num == 6:                                    # close
+            fd["open"] = None
+            return ret(0)
         else:
             raise AssertionError(f"lt-install made system call {num}")
 
@@ -396,6 +424,9 @@ def run_install(args, mi_result=0, missing=()):
     uc.mem_map(stack - 0x10000, 0x30000)
     ptrs, at_s = [], strings
     for a in args:
+        if a is None:                                     # a null argv entry, which dyld should never hand us
+            ptrs.append(0)
+            continue
         uc.mem_write(at_s, a.encode() + b"\0")
         ptrs.append(at_s)
         at_s += len(a) + 1
@@ -425,15 +456,46 @@ good &= check_install(
     and st["install"] == (IPA, 0x9000, 0, IPA, 0), st)
 st = run_install(["/usr/local/bin/lt-install", IPA], mi_result=-1)
 good &= check_install("a refusal is reported with its code and exit 1",
-                      st["exit"] == 1 and st["out"] == b"lt-install: -1\n", st)
+                      st["exit"] == 1 and st["out"] == b"lt-install: -1\n"
+                      and st["install"] is not None, st)
 st = run_install(["/usr/local/bin/lt-install", IPA], mi_result=0xE8008015)
 good &= check_install("a big error code prints in full",
                       st["exit"] == 1 and st["out"] == f"lt-install: {0xE8008015 - (1 << 32)}\n".encode(), st)
 st = run_install(["/usr/local/bin/lt-install", IPA], mi_result=123456)
 good &= check_install("a positive code prints in full",
                       st["exit"] == 1 and st["out"] == b"lt-install: 123456\n", st)
+NOTE = b"argv did not arrive: read the path from its file instead\n"
+# No argv and no file: -7, which is deliberately not -1. For five updates lt-install printed -1 for this and for
+# installd's refusal both, and the app read every one as a refusal.
 st = run_install(["/usr/local/bin/lt-install"])
-good &= check_install("no IPA argument (-1)", st["exit"] == 1 and st["out"] == b"lt-install: -1\n", st)
+good &= check_install("no path anywhere is -7, not -1, and installd is never called",
+                      st["exit"] == 1 and st["out"] == NOTE + b"lt-install: -7\n"
+                      and st["opened"] == [] and st["install"] is None, st)
+st = run_install(["/usr/local/bin/lt-install", None])
+good &= check_install("a null argv[1] falls back the same way",
+                      st["exit"] == 1 and st["out"] == NOTE + b"lt-install: -7\n"
+                      and st["install"] is None, st)
+# No argv but the file is there: it installs anyway, and says which way it went.
+st = run_install(["/usr/local/bin/lt-install"], path_file=IPA + "\n")
+good &= check_install("with no argv it reads the path from the file and installs",
+                      st["exit"] == 0 and st["out"] == NOTE + b"lt-install: 0\n"
+                      and st["read_path_from"] == "/var/mobile/Media/PublicStaging/lt-install.path"
+                      and st["install"] is not None and st["install"][0] == IPA, st)
+st = run_install(["/usr/local/bin/lt-install"], path_file=IPA)
+good &= check_install("the file needs no trailing newline",
+                      st["exit"] == 0 and st["install"] is not None and st["install"][0] == IPA, st)
+st = run_install(["/usr/local/bin/lt-install"], path_file="\n")
+good &= check_install("a file holding only a newline is -7",
+                      st["exit"] == 1 and st["out"] == NOTE + b"lt-install: -7\n"
+                      and st["install"] is None, st)
+st = run_install(["/usr/local/bin/lt-install"], path_file="x" * 4000)
+good &= check_install("an absurdly long file is cut at the buffer, not run past it",
+                      st["install"] is not None and st["install"][0] == "x" * 1020, st)
+# And with argv present the file is never touched, so the working path is unchanged.
+st = run_install(["/usr/local/bin/lt-install", IPA], path_file="/wrong.ipa\n")
+good &= check_install("argv wins over the file, which is not even opened",
+                      st["exit"] == 0 and st["out"] == b"lt-install: 0\n"
+                      and st["read_path_from"] is None and st["install"][0] == IPA, st)
 st = run_install(["/usr/local/bin/lt-install", IPA], missing=("MobileInstallationInstall",))
 good &= check_install("MobileInstallationInstall missing (-5)",
                       st["exit"] == 1 and st["out"] == b"lt-install: -5\n" and st["install"] is None, st)

@@ -16,6 +16,7 @@ resource.
 """
 import base64
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -190,6 +191,24 @@ def embedded(path):
     return base64.b64decode("".join(re.findall(r'"([A-Za-z0-9+/=]+)"', current.split("data = Data(")[1])))
 
 
+def check_path_file():
+    """lt-install.S and GuestInstaller.swift both spell out the file lt-install reads when argv is empty. One is
+    assembly and one is Swift, so nothing but this makes them agree, and disagreeing would put the install back
+    where update 69 found it: lt-install reporting a failure the app reads as installd's refusal."""
+    with open(os.path.join(HERE, "lt-install.S"), encoding="utf-8") as f:
+        asm = re.findall(r'\.asciz\s+"(/var/mobile/[^"]*lt-install\.path)"', f.read())
+    with open(os.path.join(SOURCES, "GuestInstaller.swift"), encoding="utf-8") as f:
+        swift = f.read()
+    staging = re.search(r'installStaging\s*=\s*"([^"]+)"', swift)
+    tail = re.search(r'installPathFile\s*=\s*installStaging\s*\+\s*"([^"]+)"', swift)
+    if len(asm) != 1 or not staging or not tail:
+        return "lt-install's path file could not be found in both lt-install.S and GuestInstaller.swift"
+    if asm[0] != staging.group(1) + tail.group(1):
+        return f"lt-install.S reads {asm[0]} but the app writes {staging.group(1) + tail.group(1)}"
+    print(f"guest helper: lt-install.S and the app agree on {asm[0]}")
+    return None
+
+
 def main():
     stale = []
     for source, swift_name, enum, guest_path, doc in HELPERS:
@@ -219,6 +238,9 @@ def main():
         )
         open(out, "w").write(swift)
         print(f"wrote {os.path.relpath(out)} ({len(blob)} bytes)")
+    if "--check" in sys.argv:
+        if (problem := check_path_file()) is not None:
+            stale.append(problem)
     if stale:
         sys.exit("stale: " + ", ".join(stale) + ": run python3 ios/guest-helper/build.py")
 

@@ -1,0 +1,411 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 22 Nov 2026 02:05:00 -0700
+Subject: [PATCH] ios: make the render target the size the screen actually is
+
+The 6.1.3 log carries the whole bug, in two lines nothing reconciles:
+
+  [gles-angle] frame buffer on an IOSurface (320x480, 1280 bytes a row)
+  [gles] present target -> base=0x07b0f000 960x640 fmt=1111970369
+
+The host renders into 320x480. CoreAnimation presents 960x640. And
+320x480 is not a measurement of anything -- it is the initialiser of
+gles_fb_w/h, which gles_host_init corrected from exactly one machine:
+
+    object_dynamic_cast(OBJECT(qdev_get_machine()), TYPE_IPOD_TOUCH_MACHINE)
+
+So the iPod touch 2G got its real panel, the 3GS kept 320x480 and was
+right by coincidence, and every A4 board -- iPhone 4, iPod touch 4G,
+iPad 1, which is every board that runs iOS 6 -- kept it and was wrong.
+That the one configuration reported as working is iOS 3 on the 3GS is
+not a coincidence either.
+
+What that did to a frame, in order:
+
+  * The app asks its drawable how big it is. glGetRenderbufferParameteriv
+    answers out of gh.drawable_width, so it is told 320x480, and it sizes
+    its viewport to that and draws the whole scene into a quarter of the
+    screen.
+  * The present then crops to the same guess:
+        rw = MIN(width, gh.drawable_width)     MIN(960, 320) = 320
+        rh = MIN(height, gh.drawable_height)   MIN(640, 480) = 480
+    320x480 of pixels into a 960x640 surface.
+
+Rendered correctly, presented into the corner -- which is what Need for
+Speed Shift looks like, and the log agrees frame by frame: ok=1 failed=0,
+nothing refused, nothing dropped. A game that instead checks its
+framebuffer and finds the host's 320x480 attachments under its own
+960x640 renderbuffer is the crash on open.
+
+Three changes, each from a number the guest or the machine already tells
+us rather than from a default:
+
+  * gles_host_init takes the panel's size from the display's own graphic
+    console. Every board registers one and resizes it in its realize
+    (ipod_touch_lcd.c, s5l8930_display.c), both from the panel numbers the
+    panel= override feeds, so it is authoritative before any guest code
+    runs and it needs no machine type. The old cast stays as the fallback.
+    The size is now printed, which no log before this named.
+  * gles_present_to_surface adopts the size CoreAnimation is presenting
+    into, so the copy is exact and is re-adopted on rotation. An app on
+    iOS 6 never sends GLES_OP_DRAWABLE_STORAGE at all, so this is the only
+    place the real size is ever stated. It happens before the size check,
+    which would otherwise refuse the new size the one time it mattered.
+  * gles_angle_iosurface_bind and gles_eagl_iosurface_bind took a width
+    and a height and ignored them once a surface existed -- one frame
+    buffer per process, made at init, never resized -- so a resized
+    drawable either kept the old surface or, on EAGL, was told "bound" and
+    got an attachment of the wrong size. Both remember the size they were
+    made at and rebuild for a new one, and gles_drawable_storage attaches
+    at the new size instead of setting gh.iosurface = false and falling
+    back to readback. It keeps the retreat to readback for the case
+    gles_host_init already handles: a driver that takes an IOSurface and
+    then will not render to it.
+
+The last of those also closes a silent one. Readback presents through
+gles_present_to_panel, which needs nms->lcd_state and so returned, with
+nothing in the log, on every board that is not the iPod touch: a frame
+rendered and then presented nowhere. Both of its returns say why now,
+once each.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01UGCtLRD1vYicb9wVRzGR7X
+---
+--- a/hw/arm/gles-host.c
++++ b/hw/arm/gles-host.c
+@@ -28,6 +28,7 @@
+ #include "qemu/osdep.h"
+ #include "powervr/pvrtc.h"
+ #include "migration/blocker.h"
++#include "ui/console.h"
+ #include "migration/vmstate.h"
+ #include "qapi/error.h"
+ #include "cpu.h"
+@@ -1185,7 +1186,7 @@
+ }
+ static void gles_platform_make_current(void) { CGLSetCurrentContext(gh.cgl); }
+ /* gles-host-angle.c.inc: the attachment on an IOSurface through EGL_ANGLE_iosurface_client_buffer. */
+-static bool gles_platform_attach_iosurface(void) { return gles_angle_iosurface_bind(GLES_FB_WIDTH, GLES_FB_HEIGHT); }
++static bool gles_platform_attach_iosurface(uint32_t w, uint32_t h) { return gles_angle_iosurface_bind(w, h); }
+ static void *gles_platform_frame_lock(size_t *stride) { return gles_angle_iosurface_lock(stride); }
+ static void gles_platform_frame_unlock(void) { gles_angle_iosurface_unlock(); }
+ 
+@@ -1206,9 +1207,9 @@
+  * allows it. The caller has the texture bound; on success this has taken the
+  * place of its glTexImage2D.
+  */
+-static bool gles_platform_attach_iosurface(void)
++static bool gles_platform_attach_iosurface(uint32_t w, uint32_t h)
+ {
+-    return gles_eagl_iosurface_bind(GLES_FB_WIDTH, GLES_FB_HEIGHT,
++    return gles_eagl_iosurface_bind(w, h,
+                                     GL_TEXTURE_2D, GL_RGBA, GL_BGRA,
+                                     GL_UNSIGNED_BYTE);
+ }
+@@ -1280,8 +1281,9 @@
+  * measured. Half-converting it would buy an unmeasured maybe and put the
+  * working host at risk.
+  */
+-static bool gles_platform_attach_iosurface(void)
++static bool gles_platform_attach_iosurface(uint32_t w, uint32_t h)
+ {
++    (void)w; (void)h;
+     return false;
+ }
+ 
+@@ -1544,12 +1546,36 @@
+         return false;
+     }
+ 
+-    IPodTouchMachineState *ipod = (IPodTouchMachineState *)
+-        object_dynamic_cast(OBJECT(qdev_get_machine()), TYPE_IPOD_TOUCH_MACHINE);
+-    if (ipod && ipod->lcd_state) {
+-        gles_fb_w = ipod->lcd_state->pw;
+-        gles_fb_h = ipod->lcd_state->ph;
++    /*
++     * The panel's scan-out size, taken from the display's own console.
++     *
++     * Every board's display registers a graphic console and resizes it in its realize -- ipod_touch_lcd.c and
++     * s5l8930_display.c both do, from the same panel numbers the panel= override feeds -- so the console carries
++     * the authoritative size before any guest code runs, whatever the machine is. This used to be a cast to
++     * TYPE_IPOD_TOUCH_MACHINE and nothing else, which left every other board on the 320x480 initialiser of
++     * gles_fb_w/h: the 3GS right only because its panel happens to be exactly that, and every A4 board -- iPhone
++     * 4, iPod touch 4G, iPad 1 -- rendering into a third of its panel's width. The cast stays as the fallback for
++     * a console that somehow has no size yet, since the iPod touch's lcd_state is the one case we can read
++     * directly.
++     */
++    QemuConsole *con = qemu_console_lookup_by_index(0);
++    int panel_w = con ? qemu_console_get_width(con, 0) : 0;
++    int panel_h = con ? qemu_console_get_height(con, 0) : 0;
++    if (panel_w > 0 && panel_h > 0) {
++        gles_fb_w = panel_w;
++        gles_fb_h = panel_h;
++    } else {
++        IPodTouchMachineState *ipod = (IPodTouchMachineState *)
++            object_dynamic_cast(OBJECT(qdev_get_machine()), TYPE_IPOD_TOUCH_MACHINE);
++        if (ipod && ipod->lcd_state) {
++            gles_fb_w = ipod->lcd_state->pw;
++            gles_fb_h = ipod->lcd_state->ph;
++        }
+     }
++    /* Said out loud, because a frame buffer that is not the panel's size is the whole of update 69 and nothing
++     * in any log before it named this number. */
++    fprintf(stderr, "[gles] frame buffer %ux%u, from %s\n", GLES_FB_WIDTH, GLES_FB_HEIGHT,
++            panel_w > 0 ? "the display's console" : "the machine (no console size yet)");
+     if (!gles_charge_drawable(GLES_FB_WIDTH, GLES_FB_HEIGHT, NULL)) {
+         return false;       /* not failed: a later call may find the memory given back */
+     }
+@@ -1578,7 +1604,7 @@
+      * texture storage is the fallback and stays the readback path. Either way
+      * this is the same attachment to the same FBO and the guest cannot tell.
+      */
+-    gh.iosurface = !gles_no_iosurface && gles_platform_attach_iosurface();
++    gh.iosurface = !gles_no_iosurface && gles_platform_attach_iosurface(GLES_FB_WIDTH, GLES_FB_HEIGHT);
+     if (!gh.iosurface) {
+         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, GLES_FB_WIDTH, GLES_FB_HEIGHT,
+                      0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+@@ -3797,10 +3823,29 @@
+     /* Direct panel presentation has no CA transform. A resized drawable must
+      * use its CA surface; reading it as a portrait panel would overrun or crop. */
+     if (gh.drawable_width != GLES_FB_WIDTH ||
+-        gh.drawable_height != GLES_FB_HEIGHT) return;
++        gh.drawable_height != GLES_FB_HEIGHT) {
++        if (gles_refuse("present-panel:resized:%ux%u-vs-%ux%u",
++                        gh.drawable_width, gh.drawable_height,
++                        (unsigned)GLES_FB_WIDTH, (unsigned)GLES_FB_HEIGHT)) {
++            fprintf(stderr, "[gles] the drawable is %ux%u and the panel %ux%u, so there is no direct present; "
++                    "the frame reaches the screen through its CA surface or not at all\n",
++                    gh.drawable_width, gh.drawable_height,
++                    (unsigned)GLES_FB_WIDTH, (unsigned)GLES_FB_HEIGHT);
++        }
++        return;
++    }
+ 
+     nms = (IPodTouchMachineState *)object_dynamic_cast(OBJECT(qdev_get_machine()), TYPE_IPOD_TOUCH_MACHINE);
+     if (!nms || !nms->lcd_state) {
++        /*
++         * Every board but the iPod touch lands here, and used to land here in silence. This is the only direct
++         * panel present there is, so on an A4 device a frame that is not carried by a CA surface is simply lost --
++         * which is what a black screen on an iPhone 4 looked like from the outside, with nothing in the log.
++         */
++        if (gles_refuse("present-panel:no-ipod-lcd")) {
++            fprintf(stderr, "[gles] this board has no direct panel present; frames reach the screen only "
++                    "through their CA surface (gh.iosurface is %s)\n", gh.iosurface ? "on" : "OFF");
++        }
+         return;
+     }
+     fb = nms->lcd_state->w1_framebuffer_base;
+@@ -3925,6 +3970,13 @@
+         g_autofree uint8_t *panel = NULL;
+ 
+         if (!nms || !nms->lcd_state) {
++            /* The pair is the point of this dump, and on every board but the iPod touch the panel half of it was
++             * quietly missing -- so a dump taken to settle "is this the layer or the compositor" answered only
++             * half the question, on the boards most likely to be asked about. */
++            if (gles_refuse("dump:no-ipod-lcd")) {
++                fprintf(stderr, "[gles] frame dumps on this board carry the GL frame only; the panel is read "
++                        "through the iPod touch's LCD state, which this machine does not have\n");
++            }
+             return;
+         }
+         fb = nms->lcd_state->scanout_base ? nms->lcd_state->scanout_base
+@@ -4295,6 +4347,8 @@
+  * nowhere, and silently returning 0 would make a black screen look like a
+  * successful present.
+  */
++static int64_t gles_drawable_storage(uint32_t width, uint32_t height);
++
+ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride,
+                                    uint32_t width, uint32_t height,
+                                    uint32_t format)
+@@ -4322,6 +4376,38 @@
+         gles_refuse("present:%s", gles_fourcc(format, fourcc));
+         return -1;
+     }
++    /*
++     * The render target follows the surface CoreAnimation is presenting into.
++     *
++     * This is the size that matters, and it is the one the guest hands us on every present. Nothing else here
++     * knows it: an app on iOS 6 never calls GLES_OP_DRAWABLE_STORAGE at all, so the render target kept whatever
++     * gles_host_init guessed -- 320x480 on every board but the iPod touch -- and the copy below cropped to it:
++     *
++     *     rw = MIN(width, gh.drawable_width)     MIN(960, 320) = 320
++     *     rh = MIN(height, gh.drawable_height)   MIN(640, 480) = 480
++     *
++     * 320x480 of pixels into a 960x640 CA surface, which is the frame in the corner of the screen. Worse, the app
++     * had already been told 320x480: glGetRenderbufferParameteriv answers out of gh.drawable_width, so it sized
++     * its own viewport to the guess and drew the whole scene into a quarter of the screen. Rendered correctly,
++     * presented into a corner.
++     *
++     * Adopting the target's size makes the crop exact, and it is re-adopted on rotation, where the landscape and
++     * portrait layers differ. It happens before the check below, which would otherwise refuse the new size the
++     * one time it mattered -- the first present after a turn.
++     */
++    if (width != gh.drawable_width || height != gh.drawable_height) {
++        uint32_t was_w = gh.drawable_width, was_h = gh.drawable_height;
++
++        if (gles_drawable_storage(width, height) < 0) {
++            if (gles_refuse("present:adopt:%ux%u", width, height)) {
++                fprintf(stderr, "[gles] present-surface: could not make the render target %ux%u; "
++                        "the frame is cropped to %ux%u\n", width, height, was_w, was_h);
++            }
++        } else {
++            fprintf(stderr, "[gles] render target now %ux%u, the size CoreAnimation is presenting into "
++                    "(was %ux%u)\n", gh.drawable_width, gh.drawable_height, was_w, was_h);
++        }
++    }
+     if (gh.drawable_announced ?
+         (width != gh.drawable_width || height != gh.drawable_height) :
+         (width > GLES_FB_WIDTH * 4 || height > GLES_FB_HEIGHT * 4)) {
+@@ -4985,8 +5071,18 @@
+     glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT, &framebuffer);
+     color = gles_private_name(glIsTexture);
+     glBindTexture(GL_TEXTURE_2D, color);
+-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height,
+-                 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
++    /*
++     * An IOSurface for the resized frame buffer, exactly as gles_host_init makes the first one. Without this the
++     * resize dropped to the readback path, and on every board but the iPod touch the readback path presents
++     * nothing at all: gles_present_to_panel only knows TYPE_IPOD_TOUCH_MACHINE and returns on anything else. So
++     * on an A4 device the first drawable the guest declared turned the screen black, and since gles_fb_w/h sit at
++     * 320x480 there unless the iPod touch machine corrects them, the guest's first drawable always was a resize.
++     */
++    bool surfaced = !gles_no_iosurface && gles_platform_attach_iosurface(width, height);
++    if (!surfaced) {
++        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height,
++                     0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
++    }
+     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+     depth = gles_private_name(glIsRenderbufferEXT);
+@@ -5002,6 +5098,20 @@
+                                  GL_RENDERBUFFER_EXT, depth);
+     status = glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT);
+     error = glGetError();
++    if (surfaced && status != GL_FRAMEBUFFER_COMPLETE_EXT) {
++        /* The same retreat gles_host_init makes: an IOSurface the driver accepts and cannot render to costs the
++         * fast present, not the frame buffer. */
++        fprintf(stderr, "[gles] FBO incomplete with a resized IOSurface colour attachment; "
++                "presenting %ux%u by readback\n", width, height);
++        surfaced = false;
++        glBindTexture(GL_TEXTURE_2D, color);
++        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height,
++                     0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
++        glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT,
++                                  GL_TEXTURE_2D, color, 0);
++        status = glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT);
++        error = glGetError();
++    }
+     if (error == GL_NO_ERROR && status != GL_FRAMEBUFFER_COMPLETE_EXT)
+         error = GL_OUT_OF_MEMORY;
+     if (error != GL_NO_ERROR) gles_refuse("drawable:storage:0x%x", error);
+@@ -5017,9 +5127,9 @@
+         gh.readback = readback;
+         gh.readback_size = (size_t)width * height * 4;
+         gh.drawable_width = width; gh.drawable_height = height;
+-        /* The portable readback path handles resized layers on both hosts.
+-         * The platform's original IOSurface remains owned by its context. */
+-        gh.iosurface = false;
++        /* The resized frame buffer keeps the IOSurface present when the host gave us one at the new size, and
++         * falls back to readback only when it did not. */
++        gh.iosurface = surfaced;
+         gh.fb_dirty = true;
+         gh.depth_cleared_this_frame = false;
+     } else {
+--- a/hw/arm/gles-host-eagl.c
++++ b/hw/arm/gles-host-eagl.c
+@@ -182,6 +182,8 @@
+  * wait for commands the driver has actually been given.
+  */
+ static IOSurfaceRef gles_surf;
++/* The size gles_surf was made at, so a bind can tell a re-bind from a resize. */
++static uint32_t gles_surf_w, gles_surf_h;
+ 
+ static void gles_dict_set_int(CFMutableDictionaryRef d, CFStringRef key, int v)
+ {
+@@ -205,10 +207,22 @@
+     if (!gles_ctx) {
+         return false;
+     }
+-    if (gles_surf) {
+-        /* Bound once, for the life of the process, like the context. */
++    if (gles_surf && width == gles_surf_w && height == gles_surf_h) {
++        /* Bound once at this size, for the life of the process, like the context. */
+         return true;
+     }
++    if (gles_surf) {
++        /*
++         * A different size. This used to return true and keep the old surface, which left the caller with a frame
++         * buffer whose colour attachment was the wrong size: an incomplete FBO, and then no present at all on any
++         * board whose panel is not the 320x480 gles_fb_w/h default. Drop it and make the new one below.
++         */
++        fprintf(stderr, "[gles] frame buffer %ux%u -> %ux%u: rebuilding its IOSurface\n",
++                gles_surf_w, gles_surf_h, width, height);
++        CFRelease(gles_surf);
++        gles_surf = NULL;
++        gles_surf_w = gles_surf_h = 0;
++    }
+ 
+     /*
+      * texImageIOSurface: has been deprecated since iOS 12 and the whole
+@@ -259,6 +273,8 @@
+         return false;
+     }
+ 
++    gles_surf_w = width;
++    gles_surf_h = height;
+     return true;
+ }
+ 
+--- a/hw/arm/gles-host-angle.c.inc
++++ b/hw/arm/gles-host-angle.c.inc
+@@ -245,14 +245,38 @@
+     }
+ }
+ 
++/* The size the live IOSurface was made at, so a bind can tell a re-bind from a resize. */
++static uint32_t angle_surf_w, angle_surf_h;
++
+ static bool gles_angle_iosurface_bind(uint32_t w, uint32_t h)
+ {
+     if (angle_display == EGL_NO_DISPLAY) return false;
+-    if (angle_surf_pbuffer != EGL_NO_SURFACE) {
+-        /* Already made (one frame buffer per process, like EAGL's): behind whichever texture is bound now. */
++    if (angle_surf_pbuffer != EGL_NO_SURFACE && w == angle_surf_w && h == angle_surf_h) {
++        /* Already made at this size (one frame buffer per process, like EAGL's): behind whichever texture is
++         * bound now. */
+         eglReleaseTexImage(angle_display, angle_surf_pbuffer, EGL_BACK_BUFFER);
+         return eglBindTexImage(angle_display, angle_surf_pbuffer, EGL_BACK_BUFFER);
+     }
++    if (angle_surf_pbuffer != EGL_NO_SURFACE) {
++        /*
++         * A different size. This used to re-bind the surface it already had and ignore w and h, which is how every
++         * A4 device ended up presenting a 320x480 frame buffer: gles_host_init sizes the first surface from
++         * gles_fb_w/h, which only the iPod touch machine ever corrects, and nothing afterwards could grow it. The
++         * guest's own CoreAnimation surface on an iPhone 4 in landscape is 960x640 with a 3840-byte row, against
++         * this 320x480 one with a 1280-byte row, which is the corner-of-the-screen frame and the black screen both.
++         * So a changed size tears the surface down and builds the new one below.
++         */
++        fprintf(stderr, "[gles-angle] frame buffer %ux%u -> %ux%u: rebuilding its IOSurface\n",
++                angle_surf_w, angle_surf_h, w, h);
++        eglReleaseTexImage(angle_display, angle_surf_pbuffer, EGL_BACK_BUFFER);
++        eglDestroySurface(angle_display, angle_surf_pbuffer);
++        angle_surf_pbuffer = EGL_NO_SURFACE;
++        if (angle_surf) {
++            CFRelease(angle_surf);
++            angle_surf = NULL;
++        }
++        angle_surf_w = angle_surf_h = 0;
++    }
+     const char *ext = eglQueryString(angle_display, EGL_EXTENSIONS);
+     if (!ext || !strstr(ext, "EGL_ANGLE_iosurface_client_buffer")) {
+         fprintf(stderr, "[gles-angle] no EGL_ANGLE_iosurface_client_buffer; presenting by readback\n");
+@@ -306,6 +330,8 @@
+         angle_surf = NULL;
+         return false;
+     }
++    angle_surf_w = w;
++    angle_surf_h = h;
+     fprintf(stderr, "[gles-angle] frame buffer on an IOSurface (%ux%u, %zu bytes a row)\n",
+             w, h, IOSurfaceGetBytesPerRow(angle_surf));
+     return true;

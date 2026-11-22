@@ -200,7 +200,8 @@ leave a device unbootable.
 `ideviceinstaller`) and how iTunes did: `installd` unpacks the app, places it, registers it and tells SpringBoard, which
 draws its icon like any other app's. Preparation bakes AppSync into installd (every iOS 4-capable recipe has
 `appsync: true`), so a decrypted, unsigned app is accepted. Without USB the app reaches installd from inside the guest:
-the .ipa is copied to `/var/mobile/Media/LightTouch/install/` and `lt-install` (ios/guest-helper) calls
+the .ipa is copied to `/var/mobile/Media/PublicStaging/` (the folder installation_proxy itself stages into) and
+`lt-install` (ios/guest-helper) calls
 `MobileInstallationInstall(path, {ApplicationType: User}, NULL, path)`, the call jailbreak-era `ipainstaller` made.
 `lt-install` is the one guest helper that dyld loads: `build.py` lays it out with `LC_LOAD_DYLINKER`, binds libSystem's
 `dlopen` and `dlsym` into its `__DATA`, and it looks up everything else (CoreFoundation, MobileInstallation) itself.
@@ -208,6 +209,16 @@ the .ipa is copied to `/var/mobile/Media/LightTouch/install/` and `lt-install` (
 libraries, and checks the call, its arguments, the stack alignment and the result line. The log says
 `installd installed <app> ...` on success, or why not (`lt-install: N`), and the install then falls back to the
 hand-written path below, so a device prepared without AppSync still gets the app.
+
+`lt-install: -1` means one thing only: installd was reached and refused. It used to mean two, because
+MobileInstallationInstall returns -1 for a refusal and `lt-install` printed -1 for a missing argument as well, so
+five updates read "installd turned it down" off a line that may have meant "lt-install was handed no path". A
+missing path is `-7` now, and `lt-install` no longer depends on the path arriving on the command line: it takes
+argv when there is one and otherwise reads `/var/mobile/Media/PublicStaging/lt-install.path`, which the app writes
+beside the .ipa before each run, printing `argv did not arrive: ...` when it has to. Whether argv survives dyld's
+hand-off into a dynamically linked program with an `LC_UNIXTHREAD` entry is the one step in this path nobody had
+measured; now the install works either way and the log says which way it went. `build.py --check` fails if the
+assembly and the app disagree about that file's name.
 
 **iPhone OS 1 to 3, and the fallback: written in by hand.** Apps install through the guest agent, which runs as root
 inside the device. A stock image has no tool to make a folder, so the app puts one in: `lt-mkdirs`, a 456-byte static
@@ -351,6 +362,23 @@ can't download alongside yet.
   since the skipped call was not remembered. They are kept per framebuffer now (`gh.fbo_pending`) and replayed when
   the guess is withdrawn — on the flip back to offscreen, and from `gles_check_fb_complete`, where
   `MISSING_ATTACHMENT` on a framebuffer being drawn into proves it was never the drawable.
+- `patches/qemu-ios/0027`: makes the render target the size the screen actually is. The 6.1.3 log carries the whole
+  bug in two lines nothing reconciles: `[gles-angle] frame buffer on an IOSurface (320x480, 1280 bytes a row)` and
+  `[gles] present target -> base=0x07b0f000 960x640`. 320x480 is the initialiser of `gles_fb_w/h`, and
+  `gles_host_init` corrected it from one machine type only (`TYPE_IPOD_TOUCH_MACHINE`) — so the 3GS is right by
+  coincidence and every A4 board, which is every board that runs iOS 6, renders into a third of its panel's width.
+  The app is told that size too: `glGetRenderbufferParameteriv` answers out of `gh.drawable_width`, so it sized its
+  viewport to the guess and drew the whole scene into a quarter of the screen, and the present then cropped to the
+  same guess (`rw = MIN(960, 320)`, `rh = MIN(640, 480)`). Rendered correctly, presented into the corner, with
+  `ok=1 failed=0` in the log and nothing refused. Three changes, each from a number something already tells us:
+  `gles_host_init` takes the panel's size from the display's own graphic console (every board registers one and
+  resizes it in realize, so it is authoritative before any guest code runs and needs no machine type, with the old
+  cast as the fallback); `gles_present_to_surface` adopts the size CoreAnimation is presenting into, which is the
+  only place an iOS 6 app ever states it, re-adopted on rotation and done before the check that would refuse it;
+  and both IOSurface binds, which took a width and height and ignored them once a surface existed, now rebuild for
+  a new size, so `gles_drawable_storage` attaches at the new size instead of giving up on the present. That last
+  one also closes a silent return: readback presents through `gles_present_to_panel`, which needs `nms->lcd_state`
+  and so returned with nothing in the log on every board but the iPod touch. Both of its returns say why now.
 - The screen is drawn through Metal (`MetalPresenter`): one copy of each frame into a shared texture and a blit,
   instead of a CGImage per frame that Core Animation copied and converted again.
 - The profiler samples 10 times a second (it was 50; every sample stops the virtual CPU for a moment).

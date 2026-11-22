@@ -35,6 +35,10 @@ final class GuestAgent: ObservableObject {
     /// installd's dyld restriction marker has been looked at this boot (GuestInstallD), so a second refusal
     /// doesn't read and rewrite the same binary again.
     var installdRestrictionTried = false
+    /// lt-install failed before it ever called installd this boot (a code in the -2…-8 range: a framework that
+    /// wouldn't load, or no path in argv). installd is not the thing that said no, so none of the things that are
+    /// worth doing about a refusal \u{2014} rewriting its dyld marker, probing AppSync \u{2014} are worth doing here.
+    var installdNeverReached = false
     /// installd's stderr has been pointed somewhere readable this boot (GuestInstallD).
     var installdLoggingReady = false
     /// The end of the queue of installs and imports: each waits for the one before it (one at a time, so two never
@@ -123,13 +127,9 @@ final class GuestAgent: ObservableObject {
         // read the status line as the version, so no op was ever found and every device looked like it had no spawn.
         let lines = (String(data: reply.body, encoding: .utf8) ?? "").components(separatedBy: "\n")
         if let first = lines.first, first.hasPrefix("it_agent") {
+            let announced = version != first
             version = first
-            log("Agent: \(first)")
-            // A fresh agent means a fresh boot, and /tmp went with it: whatever was copied there is gone.
-            toolsInPlace.removeAll()
-            installdRefuses = false
-            installdRestrictionTried = false
-            installdLoggingReady = false
+            if announced { log("Agent: \(first)") }
         }
         if let opsLine = lines.first(where: { $0.hasPrefix("ops ") }) {
             ops = opsLine.dropFirst(4).components(separatedBy: " ").filter { !$0.isEmpty }
@@ -137,6 +137,44 @@ final class GuestAgent: ObservableObject {
         } else if version.hasPrefix("it_agent v1") {
             log("This guest has the first agent, which can only paste. Rebuild the device for app installs.")
         }
+
+        await claimBootIfFresh()
+    }
+
+    /// A file in the guest's /tmp, which a reboot clears.
+    private static let bootMarker = "/tmp/.ltm-boot"
+    /// Whether this session has decided, without being able to ask /tmp, that it has seen the agent.
+    private var assumedBoot = false
+
+    /// Notices a fresh guest boot and forgets everything that was only true of the last one.
+    ///
+    /// This used to fire on every ping that carried a version line, which was right only because probe() was
+    /// called once and then never again: the boot-time repairs got exactly one chance, and a guest that rebooted
+    /// (or a SpringBoard restart that took the agent with it) never got them back. probe() now keeps running for
+    /// the life of the session, so "a fresh agent said hello" is no longer the same thing as "a fresh boot" --
+    /// and clearing installdRefuses on a mere reconnect would make the next install pay for a refusal twice.
+    /// /tmp answers it properly: a reboot empties it, so the marker's absence is a new boot and nothing else.
+    private func claimBootIfFresh() async {
+        guard ops.contains("get"), ops.contains("put") || ops.contains("putpart") else {
+            // An agent too old to write files; fall back to once per session, which is what this was before.
+            if assumedBoot { return }
+            assumedBoot = true
+            forgetLastBoot()
+            return
+        }
+        if await getFile(Self.bootMarker) != nil { return }
+        forgetLastBoot()
+        _ = await putData(Data("light touch\n".utf8), guestPath: Self.bootMarker)
+    }
+
+    /// /tmp went with the reboot, so whatever was copied there is gone, and every "this device already said no
+    /// once this boot" marker belongs to a boot that is over.
+    private func forgetLastBoot() {
+        toolsInPlace.removeAll()
+        installdRefuses = false
+        installdRestrictionTried = false
+        installdNeverReached = false
+        installdLoggingReady = false
     }
 
     /// Guest tools already copied into the running device, by name. Cleared when a fresh agent says hello.

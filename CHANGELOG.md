@@ -3,6 +3,116 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 69 — Three Times The Width
+
+Stacks on 68. Rebuilds the emulator (patch 0027) and the guest helper.
+
+Two measurements, not two theories. Both came out of reading the paths end to end rather than trying the next idea.
+
+**Fixed**
+- **Every A4 device was rendering into a frame buffer a third of its panel's width.** The log has carried the whole
+  thing all along, in two lines nothing reconciles: `[gles-angle] frame buffer on an IOSurface (320x480, 1280 bytes
+  a row)` and `[gles] present target -> base=0x07b0f000 960x640`. 320x480 isn't a measurement of anything — it's
+  the initialiser of the frame buffer's size, and the emulator corrected it from exactly one machine type, the iPod
+  touch 2G. So the 3GS keeps 320x480 and is right by coincidence, and the iPhone 4, iPod touch 4G and iPad 1 —
+  every board that runs iOS 6 — kept it and were wrong. **That the one setup you said works is iOS 3 on the 3GS is
+  not a coincidence.**
+  What that did to a frame, in order: the app asks its drawable how big it is, is told 320x480, and sizes its
+  viewport to that — so it draws the whole scene into a quarter of the screen. Then the present crops to the same
+  guess, `MIN(960, 320)` by `MIN(640, 480)`, and copies 320x480 of pixels into a 960x640 surface. Rendered
+  correctly, presented into the corner. The log agrees frame by frame: `ok=1 failed=0`, nothing refused, nothing
+  dropped — which is exactly why five rounds of looking for something that failed found nothing. **Nothing failed.**
+  That is Need for Speed Shift's corner window; and a game that instead checks its framebuffer and finds 320x480
+  attachments under its own 960x640 renderbuffer is the crash on open.
+  The size now comes from three places that already knew it instead of from a default: the panel's size from the
+  display's own console (every board has one, so no machine type is involved), the render target from the surface
+  CoreAnimation is actually presenting into — the only place an iOS 6 app ever states it, and re-adopted when you
+  rotate — and the IOSurface itself, which until now took a width and height and ignored them once it existed, so
+  it could never grow.
+- **`lt-install: -1` now means one thing.** It meant two: `MobileInstallationInstall` returns -1 for a refusal, and
+  `lt-install` printed -1 for a missing argument as well. The app mapped -1 to "installd turned it down", so five
+  updates were spent on installd, AppSync, dyld's restriction marker and the staging path for a failure that may
+  never have reached installd at all — which would also explain the one-second refusal, the empty installd log, and
+  why each of those three suspects came back innocent. A missing path is `-7` now, a null one `-8`, and the test
+  suite asserts that neither can be mistaken for a refusal and that neither calls installd.
+
+- **The boot-time repairs now survive a reboot, and say so when they can't run.** They used to get exactly one
+  chance: the app waited up to five minutes for the guest's agent, ran the web-proxy fix and the GL front-end
+  revert on the first answer, and then stopped watching for good. So a guest that rebooted — or a SpringBoard
+  restart that took the agent with it — came back with preparation's dead web proxy and nothing left to put it
+  right, and the internet went slow again with no way to tell why. And if the agent simply took longer than five
+  minutes, the whole thing gave up **without a word**, which looks identical to an agent that is broken.
+  The app keeps watching for the life of the session now, and says so if the five minutes pass. Both repairs read
+  the guest's own files before changing anything, so a pass with nothing to do costs one read and stays quiet.
+- **"A fresh agent said hello" is no longer mistaken for "a fresh boot."** That distinction didn't exist before,
+  because the agent was only ever asked once. Now that it's asked repeatedly, clearing the once-per-boot markers on
+  every reconnect would have made each install pay for a refusal twice over. The guest's `/tmp` settles it: a
+  reboot empties it, so a marker's absence is a new boot and nothing else.
+
+**Added**
+- **The install no longer depends on argv arriving.** `lt-install` is the one guest helper dyld loads, and whether
+  argv survives dyld's hand-off into a dynamically linked program with an `LC_UNIXTHREAD` entry is the single step
+  in this path nobody had measured. Rather than measure it and come back, `lt-install` now takes the path from the
+  command line when there is one and reads it from a file the app writes beside the .ipa when there isn't, printing
+  `argv did not arrive: ...` when it falls back. The install works either way and the log says which way it went.
+  `build.py --check` fails if the assembly and the app ever disagree about that file's name, since two places that
+  must agree is how this class of bug starts.
+- **Two silent black screens now say why.** Both returns in the panel present — a drawable that doesn't match the
+  panel, and a board with no direct panel present — were reachable with nothing whatsoever in the log. They each
+  explain themselves once now.
+
+## Update 68 — Shaped Like Theirs
+
+App-side only; builds from cache. Stacks on 67's staging change.
+
+**Fixed**
+- **The app-list entry is now shaped the way this iOS shapes its own.** Until now the app's entire `Info.plist` went
+  into the entry: **47 keys against the 19 iOS writes**, carrying things no app list has any use for —
+  `BuildMachineOSBuild`, `CFBundleSignature`, `CFBundleDocumentTypes`, `CFBundleDevelopmentRegion`.
+  The app was always *listed* — reading the cache back found it every time — and the Home screen stayed empty even
+  after `uicache` ran, which is the tool whose entire job is to make SpringBoard look again. An entry that is found
+  and drawn by nothing is an entry SpringBoard is reading and rejecting.
+  So the shape is no longer guessed. The install takes a template from an entry **iOS wrote itself on that device**
+  — a User one if installd has ever placed an app, otherwise the richest System one — keeps the keys that template
+  has, adds the handful SpringBoard needs to name and draw a third-party app (the `CFBundleIcons` family, which a
+  System entry has no use for and a User one cannot do without), adds the four only an installer can know, and drops
+  everything else. With no template at all nothing is dropped, because a guess at the shape is worse than the shape
+  we already had.
+  The log prints the template's full key list, so if this still isn't right the next attempt starts from the real
+  thing rather than another inference.
+
+**Added**
+- **Whether SpringBoard actually placed the app.** `IconState.plist` is SpringBoard's own record of which icons sit
+  on which page, and nothing else writes it. An app that reaches the installation cache and never reaches IconState
+  is one SpringBoard read and declined to place — which is a completely different fault from one it never heard
+  about, and the Home screen looks identical either way. The install now says which.
+
+## Update 67 — The Wrong Doorstep
+
+App-side only; builds from cache.
+
+**Changed**
+- **An .ipa now waits for installd in PublicStaging, where iOS's own installer expects packages**, instead of in a
+  folder of ours under `/var/mobile/Media`. Same volume, same owner, and installd refused every single time.
+  What made the path suspicious was 66's timing, not a theory: the refusal came **one second** after lt-install
+  started, on a 21 MB package. Nothing unzips 21 MB in a second on an emulated A4 — installd was turning the file
+  down *before looking inside it*, which is the shape of a path check, not a signature check. Every tool that has
+  ever driven this API (ideviceinstaller, iTunes) stages into `PublicStaging` first.
+- **And it asks twice.** installd is handed an absolute path here, but the API has always been driven through
+  `installation_proxy`, which passes a path relative to `/var/mobile/Media` — `PublicStaging/foo.ipa`. A path check
+  that only accepts the relative form would look exactly like what we have been seeing. A refusal costs about a
+  second, so both spellings are tried and the log says which one installd took, rather than another round of
+  picking one and hoping.
+- The empty installd log is now explained rather than just reported: installd reports through ASL, not stderr, so a
+  redirect that catches nothing rules out the redirect, not installd. That avenue is closed; the path is the live one.
+
+**Known, from update 66's own evidence**
+- The hand-written app-list entry carries **47 keys where iOS writes 19** — our whole `Info.plist` goes in, including
+  `BuildMachineOSBuild` and `CFBundleSignature`, while `CodeInfoIdentifier`, `Entitlements` and
+  `UIRequiredDeviceCapabilities` are absent. Left alone for now, because the app *is* listed and `uicache` now runs:
+  if an icon appears and the app refuses to launch, those missing keys are the next suspect and this is the note
+  that says so.
+
 ## Update 66 — Make It Say Why
 
 App-side only: no emulator change, so this builds from cache.

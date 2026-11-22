@@ -28,6 +28,8 @@ extension GuestAgent {
     }
 
     static let installationCache = "/var/mobile/Library/Caches/com.apple.mobile.installation.plist"
+    /// SpringBoard's own record of which icons sit on which page. Only SpringBoard writes it.
+    static let iconState = "/var/mobile/Library/SpringBoard/IconState.plist"
 
     /// Unpacks `ipa` here, copies its app into the guest, registers it and restarts SpringBoard.
     func installApp(ipa: URL, progress: @escaping (Double, String) -> Void) async throws -> InstalledApp {
@@ -129,7 +131,7 @@ extension GuestAgent {
             // installd's job, which rules out the explanation this code carried for four updates and points at
             // dyld dropping the insertion instead. If that is what happened, it is fixable here and now, so the
             // marker is renamed and installd gets one more chance before the app is copied in by hand.
-            if installdRefuses, !installdRestrictionTried {
+            if installdRefuses, !installdRestrictionTried, !installdNeverReached {
                 installdRestrictionTried = true
                 if await fixInstalldRestriction() {
                     installdRefuses = false
@@ -451,6 +453,17 @@ extension GuestAgent {
                 // jailbreak there is no uicache to fall back on. If SpringBoard is rejecting the entry we wrote,
                 // the entries iOS wrote itself say what it wants.
                 if major >= 4 { await compareInstallationEntry(bundleID: bundleID) }
+                // And whether SpringBoard put it anywhere. IconState is SpringBoard's own record of what sits on
+                // which page; it writes it, nothing else does. An app that is in the installation cache and never
+                // reaches IconState is one SpringBoard read and declined to place — which is a different problem
+                // from one it never heard about, and the Home screen looks identical either way.
+                if major >= 4, let state = await getFile(Self.iconState) {
+                    let placed = state.range(of: Data(bundleID.utf8)) != nil
+                    log(placed
+                        ? "SpringBoard has \(display) in its icon layout"
+                        : "SpringBoard\u{2019}s icon layout does NOT mention \(display), so it read the app list and "
+                          + "declined to place it \u{2014} the entry is what it is objecting to, not the files")
+                }
             } else {
                 log("\(display) is on the device at \(appPath) but its app list no longer has the entry "
                     + "(iOS rewrote the list). Restart the device; if the icon is still missing, send this log.")
@@ -470,8 +483,19 @@ extension GuestAgent {
         bundleID: String, appPath: String, container: String, work: URL
     ) async throws {
         var cache = cache
-        var info = info
         var user = cache["User"] as? [String: Any] ?? [:]
+
+        // Shape the entry the way THIS iOS shapes its own.
+        //
+        // Until now the app's whole Info.plist went in: 47 keys against the 19 iOS writes, carrying things no app
+        // list has any use for (BuildMachineOSBuild, CFBundleSignature, CFBundleDocumentTypes). The app was listed —
+        // reading the cache back always found it — and the Home screen stayed empty even once uicache had run,
+        // which is the tool whose entire job is to make SpringBoard look again. An entry that is found but drawn by
+        // nothing is an entry SpringBoard is reading and rejecting, and the only shape known to be right is the one
+        // iOS used itself, on this device, for its own apps. So that is the template: the keys an entry iOS wrote
+        // actually has, plus the handful SpringBoard needs to name and draw a third-party app, plus the four only
+        // an installer can know. Everything else is dropped.
+        var info = Self.shapedEntry(info, like: cache, log: { self.log($0) })
         info["Path"] = appPath
         info["Container"] = container
         info["ApplicationType"] = "User"
@@ -493,6 +517,37 @@ extension GuestAgent {
             throw InstallFailure(message: "The app is on the device but could not be registered. \(lastLog)")
         }
         _ = await chown(uid: 501, gid: 501, path: Self.installationCache)
+    }
+
+
+    /// Keys SpringBoard needs for a third-party app whether or not iOS's own entries carry them: its identity, its
+    /// name, and where its icon is. A System app's entry has no CFBundleIcons because system icons come from
+    /// elsewhere, and dropping them from a User entry would trade a missing app for a blank one.
+    static let entryCoreKeys: Set<String> = [
+        "CFBundleIdentifier", "CFBundleExecutable", "CFBundleName", "CFBundleDisplayName",
+        "CFBundleVersion", "CFBundleShortVersionString", "CFBundleIconFile", "CFBundleIconFiles",
+        "CFBundleIcons", "CFBundleSupportedPlatforms", "MinimumOSVersion", "UIDeviceFamily"
+    ]
+
+    /// `info` cut down to the keys an entry on this device actually carries.
+    ///
+    /// The template is an entry iOS wrote itself — a User one if installd has ever placed an app here, otherwise
+    /// the richest System one, which is every device. With no template at all (an empty or unreadable cache)
+    /// nothing is dropped, because a guess at the shape is worse than the shape we have been using.
+    static func shapedEntry(_ info: [String: Any], like cache: [String: Any], log: (String) -> Void) -> [String: Any] {
+        func richest(_ section: Any?) -> [String: Any]? {
+            (section as? [String: Any])?.values.compactMap { $0 as? [String: Any] }
+                .max(by: { $0.keys.count < $1.keys.count })
+        }
+        guard let template = richest(cache["User"]) ?? richest(cache["System"]), template.count >= 6 else {
+            log("App list entry: no entry of iOS's own to copy the shape from; writing the Info.plist as it is")
+            return info
+        }
+        let wanted = Set(template.keys).union(entryCoreKeys)
+        let kept = info.filter { wanted.contains($0.key) }
+        log("App list entry: shaped like iOS's own (\(template.keys.count) keys: "
+            + template.keys.sorted().joined(separator: ", ") + "). Ours: \(info.count) keys in, \(kept.count) kept.")
+        return kept
     }
 
     typealias BundleFile = (local: URL, guest: String, size: Int, executable: Bool)
@@ -576,9 +631,20 @@ extension GuestAgent {
         return true
     }
 
-    /// Where an .ipa waits for installd: on the data volume, owned by mobile, readable by installd whichever user it
-    /// runs as.
-    static let installStaging = "/var/mobile/Media/LightTouch/install"
+    /// Where an .ipa waits for installd.
+    ///
+    /// PublicStaging is iOS's own staging directory — the one AFC exposes and the one every tool that has ever
+    /// driven this API (ideviceinstaller, iTunes) copies a package into before asking for it by name. This used to
+    /// use a folder of our own under /var/mobile/Media, which is the same volume and the same owner, and installd
+    /// refused every time. Update 66's timing is what made that suspicious: the refusal came **one second** after
+    /// lt-install started, on a 21 MB package that cannot even be unzipped in a second on an emulated CPU, so
+    /// installd was turning it down before looking inside it — the shape of a path check, not a signature check.
+    static let installStaging = "/var/mobile/Media/PublicStaging"
+    /// What AFC (and so installation_proxy) calls that folder: paths there are relative to /var/mobile/Media.
+    static let mediaRoot = "/var/mobile/Media/"
+    /// Where lt-install looks for the path when argv reaches it empty. lt-install.S has this spelled out as a
+    /// string, so the two must agree: change one and change the other.
+    static let installPathFile = installStaging + "/lt-install.path"
 
     /// Hands the .ipa to installd (lt-install: MobileInstallationInstall). The app's path once installd has listed
     /// it, or nil when this way didn't work, after saying why, so the caller can install it by hand instead.
@@ -587,7 +653,7 @@ extension GuestAgent {
     ) async throws -> String? {
         progress(0.06, "Preparing the device\u{2026}")
         guard (try? await ensureHelper()) != nil,
-            (try? await runHelper(uid: 501, gid: 501, paths: ["/var/mobile/Media/LightTouch", Self.installStaging],
+            (try? await runHelper(uid: 501, gid: 501, paths: [Self.installStaging],
                 what: "make the install folder")) != nil,
             await ensureInstaller()
         else {
@@ -599,7 +665,12 @@ extension GuestAgent {
             let fraction = Double(done) / Double(max(total, 1))
             progress(0.08 + 0.72 * fraction, "Copying \(display)\u{2026} " + String(format: "%.0f%%", fraction * 100))
         }
-        defer { Task { @MainActor in _ = await self.unlink(path: staged) } }
+        defer {
+            Task { @MainActor in
+                _ = await self.unlink(path: staged)
+                _ = await self.unlink(path: Self.installPathFile)
+            }
+        }
         guard sent else {
             log("installd: the .ipa didn\u{2019}t copy in; installing \(display) by hand")
             return nil
@@ -614,10 +685,44 @@ extension GuestAgent {
         await ensureInstalldLogging()
         let logBefore = await installdLogSize()
         let started = Date()
-        let result = await run([GuestInstallBinary.guestPath, staged], timeout: 900)
-        let output = result.map { String(decoding: $0.output, as: UTF8.self) } ?? ""
-        let line = output.split(separator: "\n").last { $0.hasPrefix("lt-install: ") }
-        let code = line.flatMap { Int($0.dropFirst("lt-install: ".count).trimmingCharacters(in: .whitespaces)) }
+        // Two spellings of the same file. installd is handed an absolute path here, but the API has always been
+        // driven through installation_proxy, which passes a path relative to /var/mobile/Media ("PublicStaging/
+        // foo.ipa") — and a path check that only accepts the relative form would look exactly like what update 66
+        // saw. A refusal costs about a second, so both are tried rather than guessed between.
+        // The same path, written where lt-install can read it for itself. lt-install takes the path on the command
+        // line when it has one, and reads this file when it doesn't: whether argv survives dyld's hand-off into a
+        // dynamically linked program with an LC_UNIXTHREAD entry is the one thing in this path nobody has measured,
+        // and a one-line file costs nothing next to a refusal that costs an update. If argv does arrive this file is
+        // never opened; if it doesn't, the install still happens and lt-install prints a line saying so.
+        _ = await putData(Data((staged + "\n").utf8), guestPath: Self.installPathFile, mode: "0644")
+        var result = await run([GuestInstallBinary.guestPath, staged], timeout: 900)
+        var output = result.map { String(decoding: $0.output, as: UTF8.self) } ?? ""
+        func answer(_ text: String) -> Int? {
+            text.split(separator: "\n").last { $0.hasPrefix("lt-install: ") }
+                .flatMap { Int($0.dropFirst("lt-install: ".count).trimmingCharacters(in: .whitespaces)) }
+        }
+        // Codes lt-install prints when it never got as far as installd. Separating them from -1 is the whole point
+        // of update 69: MobileInstallationInstall returns -1 for a refusal, and lt-install used to print -1 for a
+        // missing argument too, so five updates read "installd turned it down" off a line that may have meant
+        // "lt-install was handed no path". Nothing downstream of these codes is worth doing.
+        let neverReachedInstalld: Set<Int> = [-2, -3, -4, -5, -6, -7, -8]
+        if let first = answer(output), first != 0, !neverReachedInstalld.contains(first),
+            staged.hasPrefix(Self.mediaRoot)
+        {
+            let relative = String(staged.dropFirst(Self.mediaRoot.count))
+            log("installd: turned down the absolute path (\(answer(output).map(String.init) ?? "?")); "
+                + "asking again as \(relative), the way installation_proxy does")
+            _ = await putData(Data((relative + "\n").utf8), guestPath: Self.installPathFile, mode: "0644")
+            let again = await run([GuestInstallBinary.guestPath, relative], timeout: 900)
+            let againText = again.map { String(decoding: $0.output, as: UTF8.self) } ?? ""
+            if answer(againText) == 0 {
+                result = again
+                output = againText
+            } else if answer(againText) != nil {
+                log("installd: and turned down the relative path too (\(answer(againText).map(String.init) ?? "?"))")
+            }
+        }
+        let code = answer(output)
         guard let code else {
             log("installd: no answer from lt-install (\(result.map { "status \($0.status)" } ?? "timed out")"
                 + (output.isEmpty ? "" : ": " + output.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -630,6 +735,10 @@ extension GuestAgent {
             case -2, -3: why = "a system framework it needs would not load"
             case -4, -5: why = "this iOS has no MobileInstallationInstall"
             case -6: why = "the path could not be passed on"
+            case -7: why = "lt-install was started with no path at all \u{2014} installd was never called, so every "
+                + "earlier refusal that read as installd\u{2019}s may have been this instead. argv is not reaching "
+                + "the program through dyld\u{2019}s hand-off"
+            case -8: why = "lt-install was handed a null path \u{2014} installd was never called"
             default: why = "installd turned it down (the usual reason is an unsigned app on a device whose installd "
                 + "didn\u{2019}t get AppSync, but installd does not say which)"
             }
@@ -645,7 +754,8 @@ extension GuestAgent {
             let said = await installdLogTail(since: logBefore)
             log("installd: \(display) not installed, code \(code): \(why)"
                 + (detail.isEmpty ? "" : " — lt-install said: " + detail)
-                + (said.isEmpty ? " — and installd itself logged nothing"
+                + (said.isEmpty ? " — and installd itself wrote nothing to its log (it reports through ASL, "
+                                + "not stderr, so an empty file here rules the redirect out rather than installd)"
                                 : " — installd itself said: " + said)
                 + "; installing it by hand instead")
             // Whether AppSync is actually on this device, since "no AppSync" is the thing everyone assumes and
@@ -654,7 +764,7 @@ extension GuestAgent {
             // dylib is missing, preparation didn't bake it; if it is there and the job doesn't name it, the job
             // edit didn't take; if both are right, AppSync is innocent and installd refused for some other reason
             // entirely — which is worth knowing before another update is spent on the wrong suspect.
-            if code != -2, code != -3, code != -4, code != -5, code != -6 {
+            if !neverReachedInstalld.contains(code) {
                 let dylib = await getFile("/usr/lib/libappsync.dylib")
                 var named = false
                 var jobFound = false
@@ -677,6 +787,7 @@ extension GuestAgent {
             // copying a whole .ipa in first only to be turned down again — that upload is half the time a big
             // install takes, and it was being spent on a refusal that never changes within a boot.
             installdRefuses = true
+            if neverReachedInstalld.contains(code) { installdNeverReached = true }
             return nil
         }
         // installd has written the app list before it answers: the entry says where the app went.

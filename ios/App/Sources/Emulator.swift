@@ -174,17 +174,37 @@ final class Emulator: ObservableObject {
             Task.detached {
                 // The guest takes ~10 s to reach a lit frame and its agent starts later still, so one probe three
                 // seconds in always misses. Keep asking (slowly) until it answers or five minutes have passed.
+                var answered = false
                 for attempt in 0..<60 {
                     try? await Task.sleep(nanoseconds: attempt < 6 ? 3_000_000_000 : 6_000_000_000)
                     if Task.isCancelled { return }
                     await ga.probe()
                     let status = await ga.status
+                    if status == .alive { answered = true; break }
+                }
+                if !answered {
+                    // This used to end here without a word, which made a device whose agent was simply slow look
+                    // exactly like one whose agent is broken, and left the repairs below undone in silence.
+                    await ga.log("Agent: no answer in five minutes, so the once-per-boot repairs (the web proxy, "
+                        + "the GL front end) have not run. Still watching; they run as soon as it answers.")
+                }
+                // And then keep watching, for the life of the session.
+                //
+                // These repairs used to get exactly one chance: the loop returned on the first success, and
+                // probe() was never called again. A guest that rebooted -- or a SpringBoard restart that took the
+                // agent with it -- came back with preparation's dead web proxy and nothing to put it right, so the
+                // internet went slow again with no way to tell why. Each one reads the guest's own files before it
+                // changes anything, so a pass with nothing to do costs one read and says nothing.
+                while !Task.isCancelled {
+                    let status = await ga.status
                     if status == .alive {
                         await ga.checkShellCapabilities()
                         await ga.fixWebProxy()
                         await ga.revertGLFrontEnd()
-                        return
                     }
+                    try? await Task.sleep(nanoseconds: 30_000_000_000)
+                    if Task.isCancelled { return }
+                    await ga.probe()
                 }
             }
             // The bridge is already running; it keeps retrying on its own until the guest's USB core is up, which
