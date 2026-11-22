@@ -182,66 +182,106 @@ extension GuestAgent {
 // which makes knowing why it refuses the thing everything else waits on.
 
 enum InstallDLog {
-    /// Where installd's stderr is pointed. On the data volume, which is writable on every prepared device.
-    static let path = "/var/mobile/Media/LightTouch/installd.log"
+    /// installd's job, whose stderr update 64 pointed at a file we could read. Kept only so a device that still
+    /// carries that edit can be put back (see restoreInstalldJob).
     static let jobs = [
         "/System/Library/LaunchDaemons/com.apple.mobile.installd.plist",
         "/System/Library/LaunchDaemons/com.apple.installd.plist"
     ]
+    /// Where that edit pointed it. Nothing reads this any more; installd reports through ASL, never stderr.
+    static let path = "/var/mobile/Media/LightTouch/installd.log"
+    /// Where ASL keeps its store. installd's own words are in here and nowhere else.
+    static let asl = "/var/log/asl"
 }
 
 extension GuestAgent {
-    /// Points installd's stderr at a file we can read, once per boot. Quiet if it is already pointed there.
-    /// The job plist is backed up first and put back if it will not load again.
-    func ensureInstalldLogging() async {
-        guard !installdLoggingReady, ops.contains("get"), ops.contains("spawn"),
-            ops.contains("put") || ops.contains("putpart")
-        else { return }
-        installdLoggingReady = true   // once per boot either way: a failure here must not retry every install
-
+    /// Puts installd's job back the way the device shipped it.
+    ///
+    /// Update 64 rewrote that job to point installd's stderr at a file, so that a refusal could say why. It never
+    /// said anything: installd reports through ASL and not stderr, which three updates' worth of empty log files
+    /// established. What the edit did do was unload and reload a system daemon two seconds before asking it to
+    /// install something — the guest's own syslog shows installd being SIGKILLed — and leave it running from a job
+    /// this app had rewritten. That is the last thing in the install path that this app changes and does not
+    /// control, so it is going back, whether or not it was the reason installd said no.
+    func restoreInstalldJob() async {
+        guard !installdJobChecked, ops.contains("get"), ops.contains("put") || ops.contains("putpart") else { return }
+        installdJobChecked = true
         for job in InstallDLog.jobs {
-            guard let data = await getFile(job),
-                var plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
-            else { continue }
-            if plist["StandardErrorPath"] as? String == InstallDLog.path { return }
-
-            plist["StandardErrorPath"] = InstallDLog.path
-            plist["StandardOutPath"] = InstallDLog.path
-            guard let edited = try? PropertyListSerialization.data(
-                fromPropertyList: plist, format: .xml, options: 0)
-            else { return }
-            // Keep the original: if the edited job will not load, installd must come back as it was.
             let backup = job + ".ltm-old"
-            if await getFile(backup) == nil { _ = await putData(data, guestPath: backup, mode: "0644") }
-            guard await putData(edited, guestPath: job, mode: "0644") else {
-                log("installd: couldn\u{2019}t point its log anywhere. \(lastLog)")
-                return
+            guard let original = await getFile(backup), !original.isEmpty else { continue }
+            guard await putData(original, guestPath: job, mode: "0644") else {
+                log("installd: couldn\u{2019}t put its job back. \(lastLog)")
+                continue
             }
-            _ = await run(["/bin/launchctl", "unload", job], timeout: 20)
-            let loaded = await run(["/bin/launchctl", "load", job], timeout: 20)
-            if (loaded?.status ?? -1) != 0 {
-                log("installd: it would not start with its log redirected; putting its job back")
-                _ = await putData(data, guestPath: job, mode: "0644")
-                _ = await run(["/bin/launchctl", "load", job], timeout: 20)
-                return
-            }
-            log("installd: its messages now go to \(InstallDLog.path), so a refusal can say why")
+            _ = await unlink(path: backup)
+            _ = await unlink(path: InstallDLog.path)
+            await sync()
+            log("installd: its job is back the way the device shipped it (update 64 had rewritten it to capture a "
+                + "stderr that installd never writes to). Reboot the device so launchd reloads it.")
             return
         }
     }
 
-    /// How much installd has written so far, so only what a given install adds is read back.
-    func installdLogSize() async -> Int { await getFile(InstallDLog.path)?.count ?? 0 }
-
-    /// What installd wrote past `since`, trimmed for the log.
-    func installdLogTail(since: Int) async -> String {
-        guard let data = await getFile(InstallDLog.path), data.count > since else { return "" }
-        let text = String(decoding: data.dropFirst(since), as: UTF8.self)
-        let lines = text.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-        return lines.suffix(8).joined(separator: " / ")
+    /// What installd itself said, out of ASL.
+    ///
+    /// This is the one place installd's refusal reason has ever been. It reports through ASL, so pointing its
+    /// stderr at a file caught nothing, and `syslog` only exists on a jailbroken device. The store itself is a
+    /// plain file on every device: `/var/log/asl/<date>.asl`, plus a per-uid store for messages only root may read,
+    /// which is where a daemon's are. The names are made from the date rather than listed, because listing needs a
+    /// shell that stock iOS 6 has not got.
+    ///
+    /// The format is a record stream, but every value in it is a NUL-terminated string, so the messages can be
+    /// recovered by reading the printable runs — enough to see what installd said, which is all this is for.
+    func installdSaid(onOrAfter when: Date) async -> String {
+        guard ops.contains("get") else { return "" }
+        let stamp = DateFormatter()
+        stamp.locale = Locale(identifier: "en_US_POSIX")
+        stamp.timeZone = TimeZone(identifier: "UTC")
+        stamp.dateFormat = "yyyy.MM.dd"
+        // Today and yesterday in the guest's own reckoning, since its clock is set from ours but the store rolls
+        // over at UTC midnight.
+        var names: [String] = []
+        for back in 0...1 {
+            let day = stamp.string(from: when.addingTimeInterval(TimeInterval(-86400 * back)))
+            names += ["\(day).asl", "\(day).U0.asl", "\(day).G80.asl", "\(day).U501.asl"]
+        }
+        for name in names {
+            guard let data = await getFile(InstallDLog.asl + "/" + name), data.count > 16 else { continue }
+            let said = Self.aslMessages(in: data, mentioning: "install")
+            if !said.isEmpty {
+                return "ASL \(name): " + said.suffix(6).joined(separator: " / ")
+            }
+        }
+        return ""
     }
 
+    /// The printable runs in an ASL store that mention `needle`, longest-last, de-duplicated.
+    static func aslMessages(in data: Data, mentioning needle: String) -> [String] {
+        var runs: [String] = []
+        var current: [UInt8] = []
+        for byte in data {
+            if byte >= 0x20, byte < 0x7f {
+                current.append(byte)
+                continue
+            }
+            if current.count >= 12, let text = String(bytes: current, encoding: .utf8),
+                text.lowercased().contains(needle.lowercased())
+            {
+                runs.append(text)
+            }
+            current.removeAll(keepingCapacity: true)
+        }
+        if current.count >= 12, let text = String(bytes: current, encoding: .utf8),
+            text.lowercased().contains(needle.lowercased())
+        {
+            runs.append(text)
+        }
+        var seen = Set<String>()
+        return runs.filter { seen.insert($0).inserted }
+    }
+}
+
+extension GuestAgent {
     /// What iOS puts in an app's entry that this app's hand-written one does not.
     ///
     /// On iOS 6 a hand-written installation-cache entry gets the app listed — reading the cache back finds it — and

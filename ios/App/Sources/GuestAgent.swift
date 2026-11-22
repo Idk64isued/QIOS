@@ -39,8 +39,8 @@ final class GuestAgent: ObservableObject {
     /// wouldn't load, or no path in argv). installd is not the thing that said no, so none of the things that are
     /// worth doing about a refusal \u{2014} rewriting its dyld marker, probing AppSync \u{2014} are worth doing here.
     var installdNeverReached = false
-    /// installd's stderr has been pointed somewhere readable this boot (GuestInstallD).
-    var installdLoggingReady = false
+    /// installd's job has been looked at this boot (GuestInstallD), so it is put back once and not every install.
+    var installdJobChecked = false
     /// The end of the queue of installs and imports: each waits for the one before it (one at a time, so two never
     /// write into the guest at once).
     var jobTail: Task<Void, Never>?
@@ -174,7 +174,7 @@ final class GuestAgent: ObservableObject {
         installdRefuses = false
         installdRestrictionTried = false
         installdNeverReached = false
-        installdLoggingReady = false
+        installdJobChecked = false
     }
 
     /// Guest tools already copied into the running device, by name. Cleared when a fresh agent says hello.

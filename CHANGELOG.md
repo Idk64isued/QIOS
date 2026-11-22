@@ -3,6 +3,39 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 70 — Phone Home
+
+Stacks on 69. App-side only; builds from cache.
+
+69 asked the install one question and got a clear answer. `lt-install` wrote its path file, no `argv did not arrive`
+line appeared, and installd still said `-1`. So argv was never the problem, and `-1` now means one thing only:
+**installd was reached, and it refused.** Five updates of suspects are finally down to one fact.
+
+**Added**
+- **A call or a text, on a timer.** The modem could always ring on demand, which is a button. Now it can ring in
+  thirty seconds, which is an alibi: set it going, put this phone down, and the 2007 one rings itself in your hand.
+  Calls and texts both take a delay — now, 15s, 30s, 1m or 5m — and whichever is waiting shows a live countdown
+  with a cancel, on whichever card you are looking at. It needed nothing new in the emulator: the baseband has had
+  `incoming-call` and `incoming-sms` all along, so this is a timer in front of the buttons that were already there.
+  The device still has to be on the network before it can ring, and it says so rather than pretending.
+
+**Removed**
+- **installd's job goes back the way the device shipped it.** Update 64 rewrote that job to point installd's stderr
+  at a file so a refusal could say why. It never said anything — installd reports through ASL and not stderr, which
+  three updates of empty log files established. What the edit *did* do was unload and reload a system daemon two
+  seconds before asking it to install something (the guest's own syslog shows installd being SIGKILLed), and then
+  leave it running from a job this app had rewritten. That was the last thing in the install path this app changed
+  and did not control, and it is gone: the original is put back from the backup, the backup and the dead log file
+  are deleted, and nothing rewrites that job again. Whether or not it was the reason installd said no, it had no
+  business being there while we were trying to find out.
+
+**Added**
+- **installd's own words, out of ASL.** This is the one place its refusal reason has ever been, and the one place
+  nobody has looked. `syslog` only exists on a jailbroken device, but the store itself is a plain file on every
+  device — `/var/log/asl/<date>.asl`, plus the per-uid store that holds a root daemon's messages. The names are
+  built from the date instead of listed, because listing needs a shell that stock iOS 6 hasn't got. A refusal now
+  reports what ASL has for installd instead of reporting that an empty file was empty.
+
 ## Update 69 — Three Times The Width
 
 Stacks on 68. Rebuilds the emulator (patch 0027) and the guest helper.

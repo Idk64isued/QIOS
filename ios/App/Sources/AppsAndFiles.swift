@@ -366,7 +366,7 @@ struct HelpView: View {
 /// iPod touch has no modem, which is why this screen only appears for a phone.
 struct CarrierEditor: View {
     let agent: GuestAgent?
-    let modem: ModemController
+    @ObservedObject var modem: ModemController
     let onDismiss: () -> Void
 
     @State private var carrier = UserDefaults.standard.string(forKey: "carrier") ?? "Light Touch"
@@ -374,6 +374,8 @@ struct CarrierEditor: View {
     @State private var callNumber = UserDefaults.standard.string(forKey: "callNumber") ?? "+15551234567"
     @State private var textNumber = UserDefaults.standard.string(forKey: "textNumber") ?? "+15551234567"
     @State private var textBody = "hello world from 2007!"
+    /// Seconds to wait before the call or the text arrives; 0 is "now", which is what the buttons always did.
+    @State private var delay = UserDefaults.standard.integer(forKey: "modemDelay")
     @State private var message = ""
     @State private var busy = false
     @StateObject private var keyboard = KeyboardInset()
@@ -478,10 +480,13 @@ struct CarrierEditor: View {
     private var callCard: some View {
         card("CALLING", icon: "phone.fill") {
             field("Calling from", text: $callNumber, keyboard: .phonePad)
+            delayPicker
+            countdown()
             HStack(spacing: 10) {
-                action("Ring the device", icon: "phone.arrow.down.left", tint: Theme.accent) {
+                action(delay == 0 ? "Ring the device" : "Ring in \(ModemController.spell(delay))",
+                       icon: "phone.arrow.down.left", tint: Theme.accent) {
                     UserDefaults.standard.set(callNumber, forKey: "callNumber")
-                    message = modem.call(from: callNumber)
+                    message = modem.schedule(.init(kind: .call, number: callNumber, delay: delay))
                 }
                 action("Hang up", icon: "phone.down.fill", tint: Theme.ink.opacity(0.12)) {
                     message = modem.hangUpRemotely()
@@ -490,7 +495,7 @@ struct CarrierEditor: View {
             action("Answer from the other end", icon: "phone.fill", tint: Theme.ink.opacity(0.12)) {
                 message = modem.answerRemotely()
             }
-            Text("The device has to be on the network before it can ring. Answer on the device itself, or use the button above to have the caller pick up.")
+            Text("The device has to be on the network before it can ring. Answer on the device itself, or use the button above to have the caller pick up. Set a delay and the 2007 phone rings itself while you put this one down.")
                 .font(.system(size: 11, design: .rounded))
                 .foregroundStyle(Theme.secondaryText)
         }
@@ -500,9 +505,12 @@ struct CarrierEditor: View {
         card("TEXTING", icon: "message.fill") {
             field("From", text: $textNumber, keyboard: .phonePad)
             field("Message", text: $textBody)
-            action("Send to the device", icon: "paperplane.fill", tint: Theme.accent) {
+            delayPicker
+            countdown()
+            action(delay == 0 ? "Send to the device" : "Send in \(ModemController.spell(delay))",
+                   icon: "paperplane.fill", tint: Theme.accent) {
                 UserDefaults.standard.set(textNumber, forKey: "textNumber")
-                message = modem.text(from: textNumber, body: textBody)
+                message = modem.schedule(.init(kind: .text(textBody), number: textNumber, delay: delay))
             }
         }
     }
@@ -518,6 +526,47 @@ struct CarrierEditor: View {
     // MARK: Building blocks
 
     @ViewBuilder
+    /// When it should arrive. 0 keeps the old behaviour, so the plain button is still one tap.
+    private var delayPicker: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("When")
+                .font(.system(size: 11, design: .rounded))
+                .foregroundStyle(Theme.secondaryText)
+            Picker("When", selection: $delay) {
+                Text("Now").tag(0)
+                Text("15s").tag(15)
+                Text("30s").tag(30)
+                Text("1m").tag(60)
+                Text("5m").tag(300)
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: delay) { seconds in UserDefaults.standard.set(seconds, forKey: "modemDelay") }
+        }
+    }
+
+    /// The countdown, while something is waiting to arrive. There is only ever one of these at a time, so both
+    /// cards show the same one.
+    @ViewBuilder
+    private func countdown() -> some View {
+        if let waiting = modem.alarm {
+            HStack(spacing: 8) {
+                Image(systemName: waiting.isCall ? "phone.arrow.down.left" : "message.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("\(waiting.isCall ? "Ringing" : "Texting") \(waiting.number) in "
+                     + ModemController.spell(modem.secondsLeft))
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                Spacer(minLength: 0)
+                Button("Cancel") { message = modem.cancelAlarm() }
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.accent)
+            }
+            .foregroundStyle(Theme.primaryText)
+            .padding(10)
+            .background(Theme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+    }
+
     private func card<Content: View>(_ title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Label(title, systemImage: icon)

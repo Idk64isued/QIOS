@@ -157,6 +157,19 @@ text and images should be — iPhone OS 1 does this on some builds, and the log 
 (FirmwareKit's `gles_shim` off), so the device composites its own screen the way it did on the real hardware. It is
 slower, and it is the thing to try when a device boots but draws nothing worth looking at.
 
+## Calls and texts
+
+A phone's modem is a real model (`hw/misc/ios_baseband_core.c`), so an incoming call and an incoming text are real
+to the guest rather than a picture of one: `+CLIP` with the caller's number, `RING` repeated until it is answered or
+given up on, and a 23.040 SMS-DELIVER as `+CMT`. The app reaches them through the modem's own QOM properties
+(`incoming-call`, `incoming-sms` as `"<number>|<text>"`, `remote-answer`, `remote-hangup`) over
+`qemu_ios_ui_modem_set`, in the gear menu's carrier screen.
+
+Both take a delay — now, 15s, 30s, 1m, 5m — which is kept on `ModemController` rather than in the view, so leaving
+the screen doesn't cancel it, and whichever is waiting shows a live countdown. The modem refuses a call unless the
+device is registered with the radio on, which is the guest's own state, so the app reports that back instead of
+pretending it rang.
+
 ## When a phone boots and then wedges
 
 The iPhones carry a fake modem on UART1 that the iPod touch does not have. If a phone reaches the Home screen and
@@ -219,6 +232,14 @@ beside the .ipa before each run, printing `argv did not arrive: ...` when it has
 hand-off into a dynamically linked program with an `LC_UNIXTHREAD` entry is the one step in this path nobody had
 measured; now the install works either way and the log says which way it went. `build.py --check` fails if the
 assembly and the app disagree about that file's name.
+
+Update 69 answered that question on a real device: the path file was written, no `argv did not arrive` line
+appeared, and installd still answered `-1`. So argv arrives, and `-1` means installd was reached and refused.
+installd's reason is in ASL and nowhere else — pointing its stderr at a file (update 64) caught nothing across
+three updates, because installd does not write to stderr. That edit also unloaded and reloaded a system daemon
+seconds before each install, so update 70 puts the job back as shipped and reads `/var/log/asl/<date>.asl` (and the
+per-uid store, where a root daemon's messages go) instead. The names are built from the date, since listing the
+directory needs a shell stock iOS 6 has not got.
 
 **iPhone OS 1 to 3, and the fallback: written in by hand.** Apps install through the guest agent, which runs as root
 inside the device. A stock image has no tool to make a folder, so the app puts one in: `lt-mkdirs`, a 456-byte static

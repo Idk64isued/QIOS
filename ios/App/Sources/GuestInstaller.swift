@@ -682,8 +682,10 @@ extension GuestAgent {
         // takes it a while on an emulated CPU, so the wait is long; the agent's spawn reports when it has finished.
         progress(0.82, "Installing \(display)\u{2026}")
         // Give installd somewhere to write before asking it for anything, so a refusal leaves its own words behind.
-        await ensureInstalldLogging()
-        let logBefore = await installdLogSize()
+        // installd's job goes back the way the device shipped it before we ask it for anything. Update 64 had
+        // rewritten it to capture a stderr installd never writes to, and left a system daemon running from our
+        // edit; that is the last thing in this path this app changed and did not control.
+        await restoreInstalldJob()
         let started = Date()
         // Two spellings of the same file. installd is handed an absolute path here, but the API has always been
         // driven through installation_proxy, which passes a path relative to /var/mobile/Media ("PublicStaging/
@@ -750,13 +752,14 @@ extension GuestAgent {
                 .filter { !$0.hasPrefix("lt-install: ") }
                 .joined(separator: " / ")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            // installd's own stderr, which is the thing nobody has had yet.
-            let said = await installdLogTail(since: logBefore)
+            // installd's own words, out of ASL — the one place they have ever been. Pointing its stderr at a file
+            // caught nothing across three updates because installd does not use stderr.
+            let said = await installdSaid(onOrAfter: started.addingTimeInterval(-120))
             log("installd: \(display) not installed, code \(code): \(why)"
                 + (detail.isEmpty ? "" : " — lt-install said: " + detail)
-                + (said.isEmpty ? " — and installd itself wrote nothing to its log (it reports through ASL, "
-                                + "not stderr, so an empty file here rules the redirect out rather than installd)"
-                                : " — installd itself said: " + said)
+                + (said.isEmpty ? " — and nothing in ASL mentions it, so either installd never ran at all or its "
+                                + "store is somewhere this build doesn\u{2019}t look"
+                                : " — ASL has this: " + said)
                 + "; installing it by hand instead")
             // Whether AppSync is actually on this device, since "no AppSync" is the thing everyone assumes and
             // nobody has checked. Preparation is supposed to put libappsync.dylib on the system volume and name it

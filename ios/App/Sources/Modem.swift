@@ -163,6 +163,94 @@ final class ModemController: ObservableObject {
         return "Sent."
     }
 
+    // MARK: - On a timer
+
+    /// A call or a text, waiting for its moment.
+    ///
+    /// The modem has always been able to ring on demand. What it could not do is ring in a minute, which is the
+    /// difference between a button and an alibi: set it going, put the phone down, and the 2007 one rings itself.
+    struct Alarm: Equatable {
+        enum Kind: Equatable {
+            case call
+            case text(String)
+        }
+        var kind: Kind
+        var number: String
+        /// Whole seconds from when it was set.
+        var delay: Int
+
+        var isCall: Bool { kind == .call }
+    }
+
+    /// The countdown, so the UI can show it and nothing else has to keep time.
+    @Published private(set) var alarm: Alarm?
+    @Published private(set) var secondsLeft = 0
+
+    private var alarmTask: Task<Void, Never>?
+
+    /// Sets a call or a text to arrive later. Replaces one already waiting, since two at once is not a feature.
+    func schedule(_ wanted: Alarm) -> String {
+        let cleaned = Self.cleanNumber(wanted.number)
+        guard !cleaned.isEmpty else { return "Type a number first." }
+        if case .text(let body) = wanted.kind,
+            body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            return "Type a message first."
+        }
+        guard wanted.delay > 0 else {
+            // No delay asked for: this is the plain button, so behave like it.
+            switch wanted.kind {
+            case .call: return call(from: cleaned)
+            case .text(let body): return text(from: cleaned, body: body)
+            }
+        }
+        cancelAlarm()
+        var set = wanted
+        set.number = cleaned
+        alarm = set
+        secondsLeft = set.delay
+        alarmTask = Task { [weak self] in
+            // Counted down a second at a time rather than slept through in one go, so the UI can show it and a
+            // cancel takes effect at once. Task.sleep throws on cancellation, which ends this quietly.
+            while true {
+                do {
+                    try await Task.sleep(nanoseconds: 1_000_000_000)
+                } catch {
+                    return
+                }
+                guard let self, self.secondsLeft > 0 else { return }
+                self.secondsLeft -= 1
+                if self.secondsLeft == 0 { break }
+            }
+            guard let self, let due = self.alarm else { return }
+            self.alarm = nil
+            switch due.kind {
+            case .call: self.note = self.call(from: due.number)
+            case .text(let body): self.note = self.text(from: due.number, body: body)
+            }
+        }
+        return (set.isCall ? "Ringing" : "Texting") + " in \(Self.spell(set.delay))."
+    }
+
+    /// Calls the whole thing off.
+    @discardableResult
+    func cancelAlarm() -> String {
+        alarmTask?.cancel()
+        alarmTask = nil
+        guard alarm != nil else { return "" }
+        alarm = nil
+        secondsLeft = 0
+        return "Called off."
+    }
+
+    /// "30 seconds", "1 minute", "2 minutes 30 seconds" \u{2014} whichever reads best for the number given.
+    static func spell(_ seconds: Int) -> String {
+        guard seconds >= 60 else { return "\(seconds) seconds" }
+        let minutes = seconds / 60, rest = seconds % 60
+        let m = "\(minutes) minute" + (minutes == 1 ? "" : "s")
+        return rest == 0 ? m : m + " \(rest) seconds"
+    }
+
     /// Digits, keeping a leading +, which is all the modem accepts.
     static func cleanNumber(_ raw: String) -> String {
         let plus = raw.trimmingCharacters(in: .whitespaces).hasPrefix("+")
