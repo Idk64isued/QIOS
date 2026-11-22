@@ -1,0 +1,161 @@
+From 578e74ab73536b9f1803db76d73c0c9be8d02620 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 21 Nov 2026 21:36:19 -0700
+Subject: [PATCH] ios: what the framebuffer was asked to hold, and what it
+ actually holds
+
+0024 answered the question it was built for: on 6.1.3 every call of the
+framebuffer family reaches this host -- glFramebufferTexture2D and
+glFramebufferRenderbuffer included -- and the framebuffer is still
+MISSING_ATTACHMENT when the app draws into it. The guest is not losing
+the call to an unnamed dispatch slot. The attachment is being asked for
+here and is attaching nothing, which is this host's bug, not the shim's.
+
+Several things look identical from outside: an object name GL does not
+know, a renderbuffer with no storage, an attach aimed at a framebuffer
+that is not the one bound, and this host's own drawable aliasing, which
+deliberately skips the GL call when a framebuffer name means the CA
+drawable. Telling them apart needs both halves -- what was asked for and
+what GL holds -- and only the first was ever recorded, behind
+IT_GLES_VERBOSE, which nobody debugging a black screen on a phone has set.
+
+So the last eight attachment changes are kept unconditionally, with the
+framebuffer they were aimed at and whether the drawable aliasing skipped
+the GL call, and the incomplete-framebuffer report prints them next to
+GL's own answer for colour, depth and stencil: the kind of object attached
+and its name, or NONE. One run now distinguishes every one of those cases.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01UGCtLRD1vYicb9wVRzGR7X
+---
+ hw/arm/gles-host.c | 93 ++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 93 insertions(+)
+
+diff --git a/hw/arm/gles-host.c b/hw/arm/gles-host.c
+index 9b82e01e8b..8b2d6b737a 100644
+--- a/hw/arm/gles-host.c
++++ b/hw/arm/gles-host.c
+@@ -1368,6 +1368,42 @@ static void gles_set_drawable(uint32_t name, bool drawable)
+ /* Every attachment change, with the role it left the framebuffer in. Which
+  * framebuffer is the drawable decides where a whole pass lands, and getting it
+  * wrong sends a render-to-texture to the screen with no error anywhere. */
++/*
++ * The last few attachment changes, kept whether or not anyone asked.
++ *
++ * 0024 established that the attachment calls do reach this host on 6.1.3 --
++ * every one of the framebuffer family arrives -- and that the framebuffer is
++ * nonetheless MISSING_ATTACHMENT when the app draws into it. So the call is
++ * being made and is attaching nothing, and the only way to tell which of the
++ * several ways that can happen is the one happening is to record what was
++ * asked for and then ask GL what it actually holds. gles_trace_attach already
++ * printed the first half, behind IT_GLES_VERBOSE, which nobody debugging a
++ * black screen on a phone has set.
++ */
++typedef struct {
++    uint32_t fb, attach, obj, textarget;
++    const char *what;
++    bool skipped;           /* the framebuffer meant the drawable: no GL call */
++} GlesAttachNote;
++
++#define GLES_ATTACH_LOG 8
++static GlesAttachNote gles_attach_log[GLES_ATTACH_LOG];
++static unsigned gles_attach_n;
++
++static void gles_attach_note(const char *what, uint32_t attach, uint32_t obj,
++                             uint32_t textarget, bool skipped)
++{
++    GlesAttachNote *n = &gles_attach_log[gles_attach_n % GLES_ATTACH_LOG];
++
++    n->fb = gh.bound_framebuffer;
++    n->attach = attach;
++    n->obj = obj;
++    n->textarget = textarget;
++    n->what = what;
++    n->skipped = skipped;
++    gles_attach_n++;
++}
++
+ static void gles_trace_attach(const char *what, uint32_t attach, uint32_t obj)
+ {
+     if (!getenv("IT_GLES_VERBOSE")) {
+@@ -2959,6 +2995,59 @@ static void gles_check_fb_complete(void)
+                 ? "an attachment call did reach the host: the attachment itself failed"
+                 : "NO attachment call has ever reached the host -- the guest never sent one, "
+                   "so its dispatch slot is one of the unnamed ones");
++
++        /* What this host was asked to attach, most recent last. */
++        for (i = 0; i < GLES_ATTACH_LOG && i < gles_attach_n; i++) {
++            unsigned k = (gles_attach_n - MIN(gles_attach_n, GLES_ATTACH_LOG) + i)
++                         % GLES_ATTACH_LOG;
++            const GlesAttachNote *n = &gles_attach_log[k];
++
++            fprintf(stderr, "[gles]   asked: %s(attach=0x%x obj=%u%s) on fb %u%s\n",
++                    n->what, n->attach, n->obj,
++                    n->textarget ? " tex2d" : "", n->fb,
++                    n->skipped ? "  [SKIPPED: this fb meant the drawable]" : "");
++        }
++
++        /*
++         * And what GL itself holds. This is the half that has been missing:
++         * "we called glFramebufferTexture2D" and "the framebuffer has a colour
++         * attachment" are different claims, and only the second one decides
++         * whether anything is drawn.
++         */
++        {
++            static const struct { GLenum at; const char *name; } points[] = {
++                { GL_COLOR_ATTACHMENT0_EXT, "color0" },
++                { GL_DEPTH_ATTACHMENT_EXT, "depth" },
++                { GL_STENCIL_ATTACHMENT_EXT, "stencil" },
++            };
++            size_t j;
++
++            fprintf(stderr, "[gles]   GL holds:");
++            for (j = 0; j < ARRAY_SIZE(points); j++) {
++                GLint kind = 0, obj = 0;   /* GL_NONE; not spelled by the EAGL headers */
++
++                while (glGetError() != GL_NO_ERROR) {
++                }
++                glGetFramebufferAttachmentParameterivEXT(
++                    GL_FRAMEBUFFER_EXT, points[j].at,
++                    GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE_EXT, &kind);
++                if (kind) {
++                    glGetFramebufferAttachmentParameterivEXT(
++                        GL_FRAMEBUFFER_EXT, points[j].at,
++                        GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME_EXT, &obj);
++                }
++                fprintf(stderr, " %s=%s", points[j].name,
++                        !kind ? "NONE"
++                        : kind == GL_TEXTURE ? "texture"
++                        : kind == GL_RENDERBUFFER_EXT ? "renderbuffer" : "other");
++                if (kind) {
++                    fprintf(stderr, "(%d)", obj);
++                }
++            }
++            while (glGetError() != GL_NO_ERROR) {
++            }
++            fprintf(stderr, "\n");
++        }
+     }
+ }
+ 
+@@ -8699,6 +8788,8 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
+                                   gh.rb_sized, GUINT_TO_POINTER(rb)));
+         }
+         gles_trace_attach("glFramebufferRenderbuffer", attach, rb);
++        gles_attach_note("glFramebufferRenderbuffer", attach, rb, 0,
++                         gles_is_drawable(gh.bound_framebuffer));
+         gh.fb_dirty = true;
+         if (gles_is_drawable(gh.bound_framebuffer)) {
+             /* gh.fbo already carries the color target we present out of and a
+@@ -8730,6 +8821,8 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
+             gles_set_drawable(gh.bound_framebuffer, false);
+         }
+         gles_trace_attach("glFramebufferTexture2D", a[1], a[3]);
++        gles_attach_note("glFramebufferTexture2D", a[1], a[3], a[2],
++                         gles_is_drawable(gh.bound_framebuffer));
+         gh.fb_dirty = true;
+         if (gles_is_drawable(gh.bound_framebuffer)) {
+             return 0;
+-- 
+2.43.0
+

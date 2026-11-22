@@ -32,6 +32,9 @@ final class GuestAgent: ObservableObject {
     /// This device's installd has already turned an app down this boot, so the next install skips it and copies the
     /// app in by hand straight away (GuestInstaller). Cleared when a fresh agent says hello.
     var installdRefuses = false
+    /// installd's dyld restriction marker has been looked at this boot (GuestInstallD), so a second refusal
+    /// doesn't read and rewrite the same binary again.
+    var installdRestrictionTried = false
     /// The end of the queue of installs and imports: each waits for the one before it (one at a time, so two never
     /// write into the guest at once).
     var jobTail: Task<Void, Never>?
@@ -123,6 +126,7 @@ final class GuestAgent: ObservableObject {
             // A fresh agent means a fresh boot, and /tmp went with it: whatever was copied there is gone.
             toolsInPlace.removeAll()
             installdRefuses = false
+            installdRestrictionTried = false
         }
         if let opsLine = lines.first(where: { $0.hasPrefix("ops ") }) {
             ops = opsLine.dropFirst(4).components(separatedBy: " ").filter { !$0.isEmpty }

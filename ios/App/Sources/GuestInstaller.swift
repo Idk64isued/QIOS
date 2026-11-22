@@ -125,6 +125,23 @@ extension GuestAgent {
             {
                 return InstalledApp(name: display, bundleID: bundleID, path: installed, needsRestart: false)
             }
+            // installd turned it down. Update 63's report showed AppSync present on the device and named in
+            // installd's job, which rules out the explanation this code carried for four updates and points at
+            // dyld dropping the insertion instead. If that is what happened, it is fixable here and now, so the
+            // marker is renamed and installd gets one more chance before the app is copied in by hand.
+            if installdRefuses, !installdRestrictionTried {
+                installdRestrictionTried = true
+                if await fixInstalldRestriction() {
+                    installdRefuses = false
+                    progress(0.06, "Trying the device\u{2019}s installer again\u{2026}")
+                    if let installed = try await installThroughInstalld(
+                        ipa: ipa, bundleID: bundleID, display: display, progress: progress)
+                    {
+                        log("installd took \(display) once dyld stopped dropping AppSync")
+                        return InstalledApp(name: display, bundleID: bundleID, path: installed, needsRestart: false)
+                    }
+                }
+            }
             progress(0.06, "Copying \(display) in by hand\u{2026}")
         }
 

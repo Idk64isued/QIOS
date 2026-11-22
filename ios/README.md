@@ -334,6 +334,15 @@ can't download alongside yet.
   id (`gles_seen_mark`), and the incomplete-framebuffer report names the whole framebuffer family with yes or NO
   against each and says whether an attachment call arrived and failed or never arrived. Arrived means the fault is
   in this host's FBO handling; never arrived means the slot is unnamed and the fix is a per-firmware slot map.
+  **It arrived.** On 6.1.3 every call of the family reaches the host and the framebuffer is still
+  `MISSING_ATTACHMENT`, so the shim is not losing it and the slot map is not the job to do.
+- `patches/qemu-ios/0025`: the other half — what the framebuffer was asked to hold beside what GL says it holds. An
+  object GL does not know, a renderbuffer with no storage, an attach aimed at the wrong framebuffer and this host's
+  drawable aliasing (which skips the GL call when a framebuffer name means the CA drawable) all look the same from
+  outside. The last eight attachment changes are kept unconditionally, with their target framebuffer and whether
+  the aliasing skipped the call, and printed next to `glGetFramebufferAttachmentParameteriv` for colour, depth and
+  stencil. `gles_trace_attach` printed half of this already, behind `IT_GLES_VERBOSE`, which nobody debugging a
+  black screen on a phone has set.
 - The screen is drawn through Metal (`MetalPresenter`): one copy of each frame into a shared texture and a blit,
   instead of a CGImage per frame that Core Animation copied and converted again.
 - The profiler samples 10 times a second (it was 50; every sample stops the virtual CPU for a moment).

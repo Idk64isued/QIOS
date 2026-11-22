@@ -3,6 +3,42 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 64 — It Was Never AppSync
+
+Update 63's two diagnostics both came back, and both overturned an assumption this project had been carrying.
+
+**Fixed**
+- **installd refuses apps because dyld is dropping AppSync, not because AppSync is missing.** 63 asked the device
+  instead of assuming, and the answer was `libappsync.dylib present (134624 bytes), installd's job names it`. Both
+  halves of the bake are correct; installd simply is not loading the library it is told to load.
+  dyld drops every `DYLD_*` variable for a process it considers restricted, and an empty `__RESTRICT/__restrict`
+  section in the executable is one of the things that makes it restricted — which is exactly what Apple put in
+  installd. FirmwareKit already knows this and renames the marker, but preparation only calls that for iOS 8 and
+  later, on the view that "older profiles are intact". On iOS 6 that does not hold.
+  So the device's own installd is now checked, and if it carries the marker the same rename is applied in place
+  through the agent: sixteen bytes, nothing moved, nothing resized, the original kept beside it as
+  `installd.ltm-old`. installd is restarted and the install is tried through it once more before falling back to
+  copying the app in by hand. No re-signing is needed because every prepared device boots with
+  `cs_enforcement_disable=1`.
+  If the marker turns out **not** to be there, nothing is changed and the log says so plainly — which rules the
+  theory out rather than leaving it to be assumed for another four updates.
+- The detection was checked against real 32-bit ARM Mach-O binaries (the guest helpers walk end to end) and against
+  a synthetic installd carrying the marker: detected at the right offset, renamed by exactly sixteen bytes with the
+  file's size unchanged, and re-read afterwards as already fixed so it is never done twice.
+
+**Added**
+- **Patch 0025: what the framebuffer was asked to hold, next to what it actually holds.** 63 established that every
+  framebuffer call *does* reach the host on 6.1.3 — `glFramebufferTexture2D=yes`,
+  `glFramebufferRenderbuffer=yes`, all of them — and that the framebuffer is still `MISSING_ATTACHMENT` when
+  Minecraft draws into it. The guest is not losing the call to an unnamed dispatch slot, as updates 61 and 63 both
+  supposed. The attachment is being asked for *here* and is attaching nothing, which makes it this host's bug.
+  Several causes look identical from outside: an object name GL does not know, a renderbuffer with no storage, an
+  attach aimed at a framebuffer that is not the bound one, and this host's own drawable aliasing, which
+  deliberately skips the GL call when a framebuffer name means the CA drawable. So the last eight attachment
+  changes are now kept unconditionally — with the framebuffer they were aimed at, and whether the aliasing skipped
+  the call — and printed beside GL's own answer for colour, depth and stencil: the kind of object attached and its
+  name, or `NONE`. One run separates every one of those cases.
+
 ## Update 63 — Which Side Is It On
 
 **Added**
