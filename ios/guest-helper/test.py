@@ -11,7 +11,7 @@ import sys
 import os
 
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM, UC_HOOK_INTR, UC_HOOK_CODE, UcError
-from unicorn.arm_const import UC_ARM_REG_CPSR, \
+from unicorn.arm_const import UC_ARM_REG_CPSR, UC_ARM_REG_R9, \
     UC_ARM_REG_SP, UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R12, \
     UC_ARM_REG_PC, UC_ARM_REG_R3
 
@@ -565,6 +565,12 @@ def run_notify(args, missing=False, results=None):
         elif address == at["notify_post"]:
             name = cstr(uc.reg_read(UC_ARM_REG_R0))
             state["posted"].append(name)
+            # iOS treats r9 as a volatile scratch register (Apple's ARM ABI departs from AAPCS here), so a real
+            # notify_post may come back with it holding anything. lt-notify used r9 as its loop counter and posted
+            # only the first of three names on the device while passing here, because this fake was politer than
+            # the real thing. It isn't any more.
+            for reg in (UC_ARM_REG_R9, UC_ARM_REG_R12):
+                uc.reg_write(reg, 0xDEADBEEF)
             uc.reg_write(UC_ARM_REG_R0, (results or {}).get(name, 0))
 
     uc.hook_add(UC_HOOK_CODE, fake, begin=FAKES, end=FAKES + 0x1000)

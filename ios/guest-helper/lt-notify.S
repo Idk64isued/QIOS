@@ -50,21 +50,25 @@ start:
     beq     Lnosym
     str     r6, [r11, #8]
 
-    mov     r9, #1                  @ argv index
+    @ r6 is the index and r7 the name, NOT r9 and r10. iOS treats r9 as a volatile scratch register -- Apple's ARM
+    @ ABI departs from AAPCS here -- so notify_post is entitled to destroy it, and did: the loop counter came back
+    @ wrong after the first call and only one of the three names was ever posted. r4-r8 and r10-r11 are callee-saved
+    @ on every ARM ABI, and Lreport saves the ones it uses.
+    mov     r6, #1                  @ argv index
 Lnext:
-    ldr     r10, [r5, r9, lsl #2]   @ argv[r9]
-    cmp     r10, #0
+    ldr     r7, [r5, r6, lsl #2]    @ argv[r6]
+    cmp     r7, #0
     beq     Ldone
-    mov     r0, r10
+    mov     r0, r7
     ldr     r12, [r11, #8]
     blx     r12                     @ notify_post(name)
     mov     r1, r0                  @ its result
     cmp     r1, #0
     movne   r8, r1                  @ remember that something failed; the exit code is all or nothing
-    mov     r0, r10
+    mov     r0, r7
     bl      Lreport                 @ "lt-notify: NAME <r1>"
-    add     r9, r9, #1
-    cmp     r9, r4
+    add     r6, r6, #1
+    cmp     r6, r4
     blt     Lnext
 Ldone:
     cmp     r8, #0

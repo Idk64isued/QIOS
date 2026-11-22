@@ -31,6 +31,9 @@ final class GuestAgent: ObservableObject {
     var installReady = false
     /// lt-notify is in the guest (GuestInstaller.ensureNotifier).
     var notifyReady = false
+    /// Apps this boot has already asked iOS to rebuild its list for. The rebuild takes the app list away for a few
+    /// seconds, so it is attempted once per app and never in a loop.
+    var rebuildTried: Set<String> = []
     /// This device's installd has already turned an app down this boot, so the next install skips it and copies the
     /// app in by hand straight away (GuestInstaller). Cleared when a fresh agent says hello.
     var installdRefuses = false
@@ -174,6 +177,7 @@ final class GuestAgent: ObservableObject {
     private func forgetLastBoot() {
         toolsInPlace.removeAll()
         notifyReady = false
+        rebuildTried.removeAll()
         installReady = false
         installdRefuses = false
         installdRestrictionTried = false

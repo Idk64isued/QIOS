@@ -3,6 +3,36 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 73 — Let iOS Write It
+
+Stacks on 72. App-side only plus the guest helper; builds from cache.
+
+**Fixed**
+- **lt-notify only ever posted the first of its three names.** It used `r9` as the loop counter, and on iOS `r9`
+  is a *volatile* scratch register — Apple's ARM ABI departs from AAPCS here — so `notify_post` was entitled to
+  destroy it, and did. The counter came back wrong after the first call and the loop ended. 72's log shows exactly
+  one name going out where three were asked for, which means **the notification idea was never actually tested**:
+  `com.apple.LaunchServices.applicationRegistered` never fired. The loop uses `r6` now, and the emulator's fake
+  `notify_post` scribbles over `r9` the way a real one may, so this cannot pass in the test and fail on the device
+  again — which is precisely what it did.
+
+**Added**
+- **The app list is handed back to iOS to write, the way it was before update 61.** Until 61 every install from
+  iOS 4 up took the installation cache away and let MobileInstallation rebuild it from the app folders as the Home
+  screen started — the jailbreak-era "delete the plist" fix. **It drew icons.** It was removed because of how it
+  failed, not because it didn't work: the cache went, SpringBoard restarted, and nothing checked for thirty
+  seconds. On a device where the rebuild never came, SpringBoard came up with no app list at all, fell over, was
+  restarted by launchd and fell over again — a boot loop, with the old cache put back long after the Home screen
+  was already looping.
+  Nothing was wrong with the rebuild. What was wrong was the thirty seconds and having nothing to put back. Both
+  are gone: by the time this runs the device already holds a complete, valid, hand-written app list with the app in
+  it, so there is a known-good copy to restore; it is kept in memory, polled for twice a second instead of once
+  every two, and restored after **six** seconds rather than thirty. Six seconds is less than one SpringBoard
+  launch, so the worst case is a single restart rather than a loop, and the device ends up where it started —
+  installed without an icon, rather than bricked.
+  It runs once per app per boot, and only when SpringBoard has already read the hand-written list and declined to
+  place the app, which on iOS 4 and 5 never happens because installd does the install there.
+
 ## Update 72 — Nobody Told Anybody
 
 Stacks on 71. App-side only plus a new guest helper; builds from cache.

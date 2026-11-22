@@ -461,8 +461,11 @@ extension GuestAgent {
                     let placed = state.range(of: Data(bundleID.utf8)) != nil
                     log(placed
                         ? "SpringBoard has \(display) in its icon layout"
-                        : "SpringBoard\u{2019}s icon layout does NOT mention \(display), so it read the app list and "
-                          + "declined to place it \u{2014} the entry is what it is objecting to, not the files")
+                        : "SpringBoard\u{2019}s icon layout does NOT mention \(display); asking iOS to rebuild its "
+                          + "app list from the folders on disk instead")
+                    if !placed, major >= 4 {
+                        needsRestart = await rebuildAppList(bundleID: bundleID, display: display) || needsRestart
+                    }
                 }
             } else {
                 log("\(display) is on the device at \(appPath) but its app list no longer has the entry "
@@ -554,6 +557,79 @@ extension GuestAgent {
     }
 
 
+
+    /// Takes the Home screen down and brings it back, so whatever it reads at startup it reads again.
+    ///
+    /// launchctl is on a stock device even though the shell tools are not, which is how the install has always
+    /// restarted SpringBoard; the device's own syslog shows the job being stopped.
+    private func restartSpringBoard() async {
+        let plist = "/System/Library/LaunchDaemons/com.apple.SpringBoard.plist"
+        _ = await run(["/bin/launchctl", "unload", plist], timeout: 20)
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        _ = await run(["/bin/launchctl", "load", plist], timeout: 20)
+    }
+
+    /// Asks iOS to write the app list itself, the way it did before update 61.
+    ///
+    /// Until 61 every install from iOS 4 up took the installation cache away and let MobileInstallation rebuild it
+    /// from the app folders on disk as the Home screen started — the jailbreak-era "delete the plist" fix. It drew
+    /// icons. It was removed because of how it failed: the cache went, SpringBoard restarted, and only thirty
+    /// seconds later did anything check. On a device where the rebuild never came, SpringBoard came up with no app
+    /// list at all, fell over, was restarted by launchd and fell over again — a boot loop with the app never
+    /// arriving, and the old cache put back long after the Home screen was already looping.
+    ///
+    /// Nothing was wrong with the rebuild. What was wrong was the thirty seconds, and having nothing to put back.
+    /// Both are gone now: by the time this runs the device already has a complete, valid, hand-written app list
+    /// with this app in it, so there is a known-good copy to restore; this keeps it in memory, polls twice a
+    /// second instead of once every two, and restores it after six seconds rather than thirty. Six seconds is less
+    /// than one SpringBoard launch, so the worst case is one restart rather than a loop — and the device ends up
+    /// exactly where it started, which is installed-but-no-icon rather than bricked.
+    ///
+    /// It only runs when SpringBoard has already read the hand-written list and declined to place the app, which
+    /// on iOS 4 and 5 never happens because installd does the install there. Returns true if the device should be
+    /// restarted.
+    private func rebuildAppList(bundleID: String, display: String) async -> Bool {
+        guard let ours = await getFile(Self.installationCache), !ours.isEmpty else {
+            log("No app list to put back, so not risking the rebuild")
+            return false
+        }
+        guard rebuildTried.insert(bundleID).inserted else { return false }
+
+        func putBack(_ why: String) async {
+            if await putData(ours, guestPath: Self.installationCache, mode: "0644") {
+                _ = await chown(uid: 501, gid: 501, path: Self.installationCache)
+                await sync()
+                log("\(why); the app list this app wrote is back, with \(display) in it")
+            } else {
+                log("\(why); AND THE APP LIST COULD NOT BE PUT BACK \u{2014} restart the device. \(lastLog)")
+            }
+        }
+
+        guard await unlink(path: Self.installationCache) else {
+            log("Could not take the app list away, so the rebuild was not attempted")
+            return false
+        }
+        await sync()
+        await restartSpringBoard()
+
+        // Twice a second for six seconds. The rebuild, when it comes, comes as the Home screen starts.
+        for _ in 0..<12 {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard let data = await getFile(Self.installationCache), !data.isEmpty else { continue }
+            guard let plist = try? PropertyListSerialization.propertyList(
+                from: data, options: [], format: nil) as? [String: Any]
+            else { continue }
+            if (plist["User"] as? [String: Any])?[bundleID] != nil {
+                log("iOS rebuilt its app list and put \(display) in it \u{2014} this is the entry it wanted all "
+                    + "along, written by iOS rather than by us")
+                return false
+            }
+            await putBack("iOS rebuilt the app list and left \(display) out")
+            return true
+        }
+        await putBack("iOS did not rebuild the app list in six seconds")
+        return true
+    }
 
     /// Keys SpringBoard needs for a third-party app whether or not iOS's own entries carry them: its identity, its
     /// name, and where its icon is. A System app's entry has no CFBundleIcons because system icons come from
