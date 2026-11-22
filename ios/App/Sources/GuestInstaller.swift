@@ -517,7 +517,42 @@ extension GuestAgent {
             throw InstallFailure(message: "The app is on the device but could not be registered. \(lastLog)")
         }
         _ = await chown(uid: 501, gid: 501, path: Self.installationCache)
+        await sync()
+        await announceInstall(bundleID: bundleID)
     }
+
+    /// Tells the rest of the device that an app has appeared.
+    ///
+    /// This is the step the hand-written path has always been missing, and it is why an app whose files, icons and
+    /// installation-cache entry are all correct still leaves the Home screen empty. SpringBoard does not read that
+    /// plist — it asks installd, which keeps the app list in memory. A cache this app rewrote behind installd's
+    /// back is a cache installd has never read, so SpringBoard is answered out of a list that predates the install
+    /// and quite correctly places no icon. The log said as much and I read it the other way round for three
+    /// updates: "it read the app list and declined to place it" was wrong. It never saw the app list.
+    ///
+    /// installd ends a real install by posting a Darwin notification, and that is the only reason anything else
+    /// re-reads. iOS 4 and 5 never needed this from us because there installd does the install itself. So the same
+    /// notifications go out by hand, through lt-notify.
+    private func announceInstall(bundleID: String) async {
+        guard ops.contains("spawn") else { return }
+        guard await ensureNotifier() else { return }
+        let names = [
+            "com.apple.mobile.application_installed",
+            "com.apple.LaunchServices.applicationRegistered",
+            "com.apple.mobile.installation_cache_changed",
+        ]
+        let out = await run([GuestNotifyBinary.guestPath] + names, timeout: 60)
+        let text = out.map { String(decoding: $0.output, as: UTF8.self) } ?? ""
+        let said = text.split(separator: "\n").map(String.init)
+            .filter { $0.hasPrefix("lt-notify: ") }
+            .map { $0.dropFirst("lt-notify: ".count).trimmingCharacters(in: .whitespaces) }
+        log(said.isEmpty
+            ? "Told the device about \(bundleID), but lt-notify said nothing"
+                + (text.isEmpty ? "" : ": " + text.trimmingCharacters(in: .whitespacesAndNewlines))
+            : "Told the device an app was installed: " + said.joined(separator: ", ")
+                + " (0 means the notification went out)")
+    }
+
 
 
     /// Keys SpringBoard needs for a third-party app whether or not iOS's own entries carry them: its identity, its
@@ -838,6 +873,20 @@ extension GuestAgent {
             return false
         }
         installReady = true
+        return true
+    }
+
+    /// Puts lt-notify into the guest once per session; false if it can't.
+    func ensureNotifier() async -> Bool {
+        if notifyReady { return true }
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("lt-notify")
+        guard (try? GuestNotifyBinary.data.write(to: tmp)) != nil else { return false }
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        guard await putFile(localURL: tmp, guestPath: GuestNotifyBinary.guestPath, mode: "0755") else {
+            log("Could not put lt-notify into the device")
+            return false
+        }
+        notifyReady = true
         return true
     }
 

@@ -3,6 +3,38 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 72 — Nobody Told Anybody
+
+Stacks on 71. App-side only plus a new guest helper; builds from cache.
+
+71 asked installd as mobile. It said no the same way:
+
+```
+installd: turned it down as root (-1); asking again as mobile, ...
+installd: and turned it down as mobile too (-1)
+```
+
+So it isn't who's asking either. That's two hypotheses retired in one build, which is what they were for.
+
+**Fixed**
+- **Nothing was ever told the app existed.** I have been reading this line backwards for three updates:
+  *"SpringBoard's icon layout does NOT mention Skype, so it read the app list and declined to place it."*
+  It did not read the app list. **SpringBoard never reads that plist** — it asks `installd`, which keeps the
+  list in memory. A cache this app rewrites behind installd's back is a cache installd has never read, so
+  SpringBoard is answered out of a list that predates the install and quite correctly draws no icon. The files,
+  the icons, the 57-key entry, the sequence bump: all correct, all invisible.
+  installd ends a real install by posting a Darwin notification, and that is the *only* reason anything else
+  re-reads. iOS 4 and 5 never needed it from us because there installd does the install itself and its own list
+  is already right — which is exactly why this only ever showed up on 6. So the same notifications now go out by
+  hand after the cache is written: `com.apple.mobile.application_installed`,
+  `com.apple.LaunchServices.applicationRegistered` and `com.apple.mobile.installation_cache_changed`.
+
+**Added**
+- **`lt-notify`**, a fourth guest helper — an armv6 program that posts Darwin notifications through `notify_post`,
+  built the same way `lt-install` is (dyld binds `dlopen` and `dlsym`, everything else is looked up) and checked
+  the same way: five tests under the ARM emulator covering the names it posts and their order, a failing post, no
+  names at all, and an iOS with no `notify_post`, which it reports rather than pretending.
+
 ## Update 71 — The Clue That Shook the World
 
 Stacks on 70. Rebuilds the emulator (patch 0027 changes) and the guest helper.

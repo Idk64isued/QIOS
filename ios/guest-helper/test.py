@@ -242,6 +242,7 @@ good &= check_unpack("a missing archive (2)", state["exit"] == 2)
 
 # --- lt-install: dyld's part played here, then libSystem, CoreFoundation and MobileInstallation faked ---------------
 install_blob = load("GuestInstallBinary.swift")
+notify_blob = load("GuestNotifyBinary.swift")
 
 LC_SEGMENT_, LC_UNIXTHREAD_, LC_DYLD_INFO_ONLY_, LC_LOAD_DYLINKER_, LC_LOAD_DYLIB_ = 1, 5, 0x80000022, 0xE, 0xC
 
@@ -519,4 +520,109 @@ good &= check_install("MobileInstallationInstall missing (-5)",
 st = run_install(["/usr/local/bin/lt-install", IPA], missing=("CFDictionaryCreate",))
 good &= check_install("a CoreFoundation function missing (-4)",
                       st["exit"] == 1 and st["out"] == b"lt-install: -4\n", st)
+def run_notify(args, missing=False, results=None):
+    """lt-notify under the same emulator, with libSystem and notify_post faked."""
+    flags, cmds = load_commands(notify_blob)
+    segments, entry = [], None
+    for cmd, c in cmds:
+        if cmd == LC_SEGMENT_:
+            name = c[8:24].rstrip(b"\0").decode()
+            vmaddr, vmsize, fileoff, filesize = struct.unpack_from("<IIII", c, 24)
+            segments.append((vmaddr, vmsize, fileoff, filesize, name))
+        elif cmd == LC_UNIXTHREAD_:
+            entry = struct.unpack_from("<17I", c, 16)[15]
+    uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
+    for vmaddr, vmsize, fileoff, filesize, name in segments:
+        if vmsize and name != "__PAGEZERO":
+            uc.mem_map(vmaddr, vmsize)
+            uc.mem_write(vmaddr, notify_blob[fileoff:fileoff + filesize])
+    FAKES = 0x00F00000
+    uc.mem_map(FAKES, 0x10000)
+    at = {n: FAKES + 16 * i for i, n in enumerate(["dlopen", "dlsym", "notify_post"])}
+    for a in at.values():
+        uc.mem_write(a, struct.pack("<I", 0xE12FFF1E))     # bx lr
+    for addr, ordinal, symbol in binds(notify_blob, segments):
+        uc.mem_write(addr, struct.pack("<I", at[symbol.lstrip("_")]))
+
+    state = {"exit": None, "out": b"", "err": b"", "posted": [], "opened": []}
+
+    def cstr(addr):
+        out = b""
+        while True:
+            ch = uc.mem_read(addr, 1)
+            if ch == b"\0":
+                return out.decode()
+            out += ch
+            addr += 1
+
+    def fake(uc, address, size, _):
+        if address == at["dlopen"]:
+            state["opened"].append(cstr(uc.reg_read(UC_ARM_REG_R0)))
+            uc.reg_write(UC_ARM_REG_R0, 0x1234)
+        elif address == at["dlsym"]:
+            name = cstr(uc.reg_read(UC_ARM_REG_R1))
+            uc.reg_write(UC_ARM_REG_R0, 0 if missing else at.get(name, 0))
+        elif address == at["notify_post"]:
+            name = cstr(uc.reg_read(UC_ARM_REG_R0))
+            state["posted"].append(name)
+            uc.reg_write(UC_ARM_REG_R0, (results or {}).get(name, 0))
+
+    uc.hook_add(UC_HOOK_CODE, fake, begin=FAKES, end=FAKES + 0x1000)
+
+    def svc(uc, intno, _):
+        num = uc.reg_read(UC_ARM_REG_R12)
+        if num == 4:
+            fd = uc.reg_read(UC_ARM_REG_R0)
+            buf, n = uc.reg_read(UC_ARM_REG_R1), uc.reg_read(UC_ARM_REG_R2)
+            state["err" if fd == 2 else "out"] += bytes(uc.mem_read(buf, n))
+            uc.reg_write(UC_ARM_REG_R0, n)
+        elif num == 1:
+            state["exit"] = uc.reg_read(UC_ARM_REG_R0)
+            uc.emu_stop()
+        else:
+            raise AssertionError(f"lt-notify made system call {num}")
+
+    uc.hook_add(UC_HOOK_INTR, svc)
+    stack, strings = 0x80000, 0x90000
+    uc.mem_map(stack - 0x10000, 0x30000)
+    ptrs, at_s = [], strings
+    for a in args:
+        uc.mem_write(at_s, a.encode() + b"\0")
+        ptrs.append(at_s)
+        at_s += len(a) + 1
+    uc.mem_write(stack - 12, struct.pack(f"<I{len(ptrs)}II", len(ptrs), *ptrs, 0))
+    uc.reg_write(UC_ARM_REG_SP, stack - 12)
+    uc.emu_start(entry, 0, count=200_000)
+    return state
+
+
+def check_notify(name, ok, state=None):
+    print(("ok   " if ok else "FAIL ") + "lt-notify: " + name)
+    if not ok and state is not None:
+        print("  ", state)
+    return ok
+
+
+INSTALLED = "com.apple.mobile.application_installed"
+st = run_notify(["/usr/local/bin/lt-notify", INSTALLED])
+good &= check_notify("posts the name it is given and exits 0",
+                     st["exit"] == 0 and st["posted"] == [INSTALLED]
+                     and st["out"] == f"lt-notify: {INSTALLED} 0\n".encode()
+                     and st["opened"] == ["/usr/lib/libSystem.B.dylib"], st)
+st = run_notify(["/usr/local/bin/lt-notify", INSTALLED, "com.apple.LaunchServices.applicationRegistered"])
+good &= check_notify("posts every name, in order",
+                     st["exit"] == 0
+                     and st["posted"] == [INSTALLED, "com.apple.LaunchServices.applicationRegistered"], st)
+st = run_notify(["/usr/local/bin/lt-notify", INSTALLED], results={INSTALLED: 7})
+good &= check_notify("a failing post is reported with its code and exit 1",
+                     st["exit"] == 1 and st["out"] == f"lt-notify: {INSTALLED} 7\n".encode(), st)
+st = run_notify(["/usr/local/bin/lt-notify"])
+good &= check_notify("no names at all says so on stderr and exits 1",
+                     st["exit"] == 1 and st["err"] == b"lt-notify: no notification names\n"
+                     and st["posted"] == [], st)
+st = run_notify(["/usr/local/bin/lt-notify", INSTALLED], missing=True)
+good &= check_notify("an iOS with no notify_post says so rather than pretending",
+                     st["exit"] == 1 and st["err"] == b"lt-notify: this iOS has no notify_post\n"
+                     and st["posted"] == [], st)
+
 sys.exit(0 if good else 1)

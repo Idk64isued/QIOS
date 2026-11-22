@@ -36,10 +36,14 @@ HELPERS = [
     ("lt-install.S", "GuestInstallBinary.swift", "GuestInstallBinary", "/usr/local/bin/lt-install",
      "lt-install, an armv6 program the app puts into the guest to hand an .ipa to the device's own installer\n"
      "/// (`lt-install IPA`: MobileInstallationInstall, which installd answers). Dynamically linked: see macho_dyld."),
+    ("lt-notify.S", "GuestNotifyBinary.swift", "GuestNotifyBinary", "/usr/local/bin/lt-notify",
+     "lt-notify, an armv6 program the app puts into the guest to post Darwin notifications (`lt-notify NAME...`),\n"
+     "/// the way installd does once it has installed something, so the rest of the system re-reads the app list.\n"
+     "/// Dynamically linked: see macho_dyld."),
 ]
 
 # The helpers dyld loads, and the libSystem symbols bound into their __DATA, in slot order.
-DYLD_HELPERS = {"lt-install.S": ["_dlopen", "_dlsym"]}
+DYLD_HELPERS = {"lt-install.S": ["_dlopen", "_dlsym"], "lt-notify.S": ["_dlopen", "_dlsym"]}
 
 CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V6 = 12, 6
 MH_MAGIC, MH_EXECUTE, MH_NOUNDEFS, MH_DYLDLINK, MH_TWOLEVEL = 0xFEEDFACE, 2, 1, 4, 0x80

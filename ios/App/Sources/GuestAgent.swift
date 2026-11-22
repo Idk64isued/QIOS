@@ -29,6 +29,8 @@ final class GuestAgent: ObservableObject {
     var unpackReady = false
     /// lt-install is in the guest (GuestInstaller.ensureInstaller).
     var installReady = false
+    /// lt-notify is in the guest (GuestInstaller.ensureNotifier).
+    var notifyReady = false
     /// This device's installd has already turned an app down this boot, so the next install skips it and copies the
     /// app in by hand straight away (GuestInstaller). Cleared when a fresh agent says hello.
     var installdRefuses = false
@@ -171,6 +173,8 @@ final class GuestAgent: ObservableObject {
     /// once this boot" marker belongs to a boot that is over.
     private func forgetLastBoot() {
         toolsInPlace.removeAll()
+        notifyReady = false
+        installReady = false
         installdRefuses = false
         installdRestrictionTried = false
         installdNeverReached = false
