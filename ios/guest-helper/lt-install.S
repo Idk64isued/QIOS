@@ -35,7 +35,7 @@
 @   0 dlopen   4 dlsym   (bound by dyld)
 @   8 CFStringCreateWithCString   12 CFDictionaryCreate   16 kCFTypeDictionaryKeyCallBacks
 @  20 kCFTypeDictionaryValueCallBacks   24 MobileInstallationInstall
-@  28 the path   32 the key   36 the value   40 the options dictionary
+@  28 the path   32 the key   36 the value   40 the options dictionary   44 CFShow (0 if absent)
 @
 @ ARMv6, ARM state: runs on every armv6 and armv7 device.
 
@@ -44,6 +44,12 @@
     .arm
     .globl start
 start:
+    @ stderr onto stdout before anything else, so what the callback below prints (CFShow writes to stderr)
+    @ comes back to the app with the rest of the output however the agent collects it.
+    mov     r0, #1
+    mov     r1, #2
+    mov     r12, #90                @ SYS_dup2
+    svc     #0x80
     ldr     r4, [sp]                @ argc
     add     r5, sp, #4              @ argv
     bic     sp, sp, #7              @ calls want an 8-byte aligned stack
@@ -131,6 +137,12 @@ Lready:
     adr     r1, Lsmi
     bl      Lsym
     str     r0, [r11, #24]
+    @ CFShow, for the callback. Looked up directly rather than through Lsym: missing it is not a reason to fail.
+    mov     r0, r7
+    adr     r1, Lsshow
+    ldr     r12, [r11, #4]          @ dlsym
+    blx     r12
+    str     r0, [r11, #44]
 
     @ The three strings: the path, "ApplicationType", "User"
     mvn     r8, #5                  @ -6
@@ -159,10 +171,17 @@ Lready:
     add     sp, sp, #8
     str     r0, [r11, #40]
 
-    @ MobileInstallationInstall(path, options, NULL, path)
+    @ MobileInstallationInstall(path, options, callback, path)
+    @
+    @ The third argument used to be NULL. installd reports progress and, on failure, its reason -- the
+    @ "ApplicationVerificationFailed" / "PackageExtractionFailed" dictionary iTunes and ideviceinstaller show --
+    @ through this callback, and the return value is only a generic -1. Every refusal on iOS 6 came with its
+    @ reason attached, and this program threw it away. Now each status dictionary is printed with CFShow.
     ldr     r0, [r11, #28]
     ldr     r1, [r11, #40]
-    mov     r2, #0
+    ldr     r2, [r11, #44]          @ CFShow found?
+    cmp     r2, #0
+    adrne   r2, Lcallback           @ then the callback, else NULL as before
     mov     r3, r0
     ldr     r12, [r11, #24]
     blx     r12
@@ -267,6 +286,14 @@ Lreadpath:
     pop     {r4, r5, lr}
     bx      lr
 
+@ MobileInstallationInstall's callback: void (CFDictionaryRef status, void *context). Prints the status with
+@ CFShow and returns. It runs inside MobileInstallationInstall, where r11 belongs to that function, so __DATA is
+@ addressed afresh; a tail call leaves the stack and lr exactly as the caller set them.
+Lcallback:
+    mov     r12, #0x2000
+    ldr     r12, [r12, #44]         @ CFShow
+    bx      r12                     @ CFShow(status), returning straight to MobileInstallation
+
 @ r0 handle, r1 name -> r0 = dlsym(handle, name); a missing one ends in Lreport with r8's step.
 Lsym:
     push    {r4, lr}
@@ -314,6 +341,8 @@ Lskc:   .asciz "kCFTypeDictionaryKeyCallBacks"
 Lsvc:   .asciz "kCFTypeDictionaryValueCallBacks"
     .align 2
 Lsmi:   .asciz "MobileInstallationInstall"
+    .align 2
+Lsshow: .asciz "CFShow"
     .align 2
 Lkey:   .asciz "ApplicationType"
     .align 2

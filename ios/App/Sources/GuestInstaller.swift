@@ -121,7 +121,11 @@ extension GuestAgent {
         // through lt-install, and installd unpacks, places and registers the app and tells SpringBoard, which draws
         // the icon as it does for any other app. The hand-written path stays below for iOS 2 and 3, where it has
         // always worked, and as the fallback when installd refuses (a device prepared without AppSync, say).
-        if major >= 4, ops.contains("spawn"), !installdRefuses {
+        //
+        // Not on iOS 6. There installd has refused every app this way (-1, whatever it was given), and Update 55 —
+        // which never asked it — installed eBay on that same device on 22 Nov 2026 with the sequence in step 6 below:
+        // "iOS rebuilt its app list with eBay in it", and every earlier app came back with it. That is the route.
+        if major >= 4, major < 6, ops.contains("spawn"), !installdRefuses {
             if let installed = try await installThroughInstalld(
                 ipa: ipa, bundleID: bundleID, display: display, progress: progress)
             {
@@ -311,8 +315,19 @@ extension GuestAgent {
         // Icon@2x.png, the names every one of these iOS versions actually looks for — is what put real icons on the
         // Home screen, and it runs whichever way the app was registered. So the gamble is gone: the entry is written
         // by hand, the device always has a complete, valid app list, and there is no window in which it has none.
+        //
+        // iOS 6 is the exception, and Update 55 is why. Its log on 22 Nov 2026, on a device every later update had
+        // failed on: cache deleted, installd stopped, SpringBoard stopped (not unloaded), and 17 seconds later "iOS
+        // rebuilt its app list with eBay in it" — with every app installed before it showing up too. The rebuild
+        // that "never happens on iOS 6" was being prevented by what came after 55: SpringBoard unloaded and loaded
+        // instead of stopped, installd left running with the old list in memory, and six seconds of waiting. So iOS
+        // 6 takes 55's steps exactly, and the hand-written list goes back only if no rebuild arrives in 30 seconds.
         var needsRestart = false
-        if major >= 2, let container {
+        let rebuildLikeUpdate55 = major >= 6 && container != nil && cache != nil
+        if rebuildLikeUpdate55 {
+            progress(0.94, "Registering \(display)\u{2026}")
+            _ = await unlink(path: Self.installationCache)
+        } else if major >= 2, let container {
             progress(0.94, "Registering \(display)\u{2026}")
             if let cache {
                 try await registerByHand(cache: cache, format: cacheFormat, info: info, bundleID: bundleID,
@@ -367,7 +382,7 @@ extension GuestAgent {
         // uicache is the jailbreak tool for exactly that: it walks the installed apps and rebuilds the record. It
         // only exists on a jailbroken device, which is also the only kind that can be checked for here, so it is
         // used where it is present and skipped quietly where it isn't.
-        if major >= 4, hasShell {
+        if major >= 4, hasShell, !rebuildLikeUpdate55 {
             var found = false
             defer {
                 if !found {
@@ -394,7 +409,18 @@ extension GuestAgent {
         _ = await sync()
         if major >= 2 { _ = await run(["/bin/launchctl", "stop", "com.apple.mobile.installd"], timeout: 15) }
         var cleared = false
-        if major >= 4 {
+        if rebuildLikeUpdate55 {
+            // Update 55's step 8, as it was: icon caches deleted with SpringBoard running, then a plain stop, which
+            // launchd answers by starting it again at once.
+            for base in ["icons", "smallicons", "spotlight"] {
+                for scale in ["", "@2x"] {
+                    for ext in ["", ".plist"] {
+                        _ = await unlink(path: "/var/mobile/Library/Caches/com.apple.springboard-imagecache-" + base + scale + ext)
+                    }
+                }
+            }
+            _ = await sync()
+        } else if major >= 4 {
             let plist = "/System/Library/LaunchDaemons/com.apple.SpringBoard.plist"
             let unloaded = await run(["/bin/launchctl", "unload", plist], timeout: 20)
             cleared = (unloaded?.status ?? -1) == 0
@@ -434,7 +460,34 @@ extension GuestAgent {
         // 9. The app list, read back now that the Home screen has restarted. Nothing is being waited for here — the
         // entry was written before the restart — so this only confirms it survived, and says so plainly if it
         // didn't, which is the one case worth a rebuild of the device rather than another install.
-        if major >= 2, container != nil {
+        if rebuildLikeUpdate55, let cache, let container {
+            // Update 55's step 9: wait for the rebuilt list and check this app is in it.
+            progress(0.98, "Waiting for iOS to list \(display)\u{2026}")
+            var state = "missing"
+            for _ in 0..<15 {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard let data = await getFile(Self.installationCache) else { continue }
+                state = "rebuilt"
+                if let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+                    (plist["User"] as? [String: Any])?[bundleID] != nil
+                {
+                    state = "listed"
+                    break
+                }
+            }
+            switch state {
+            case "listed":
+                log("iOS rebuilt its app list with \(display) in it")
+            case "rebuilt":
+                log("iOS rebuilt its app list WITHOUT \(display): it read \(appPath) and left the app out. Send this log.")
+                needsRestart = true
+            default:
+                log("No rebuilt app list after 30 seconds; putting the old one back, \(display) added by hand")
+                try? await registerByHand(cache: cache, format: cacheFormat, info: info, bundleID: bundleID,
+                    appPath: appPath, container: container, work: work)
+                needsRestart = true
+            }
+        } else if major >= 2, container != nil {
             progress(0.98, "Checking \(display) is listed\u{2026}")
             var listed = false
             for attempt in 0..<5 {
@@ -557,6 +610,52 @@ extension GuestAgent {
     }
 
 
+
+    /// Which third-party apps the device's app list holds, said once per boot.
+    ///
+    /// The hand-installed app is in the list when the install finishes, and the Home screen still doesn't show it
+    /// after a full reboot. That leaves two very different possibilities: iOS read the list at boot and threw our
+    /// entry out (so it is gone from the file afterwards), or the entry survives and SpringBoard looks somewhere
+    /// else. This line tells them apart without anyone having to guess.
+    func reportAppListOncePerBoot() async {
+        guard !appListReported, ops.contains("get") else { return }
+        appListReported = true
+        guard let data = await getFile(Self.installationCache),
+            let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil)
+                as? [String: Any]
+        else {
+            log("App list at boot: could not be read")
+            return
+        }
+        let user = (plist["User"] as? [String: Any]).map { Array($0.keys).sorted() } ?? []
+        log("App list at boot: \(user.count) installed app(s)"
+            + (user.isEmpty ? "" : ": " + user.prefix(40).joined(separator: ", ")))
+    }
+
+    /// installd's own status dictionaries, out of what lt-install's callback printed with CFShow.
+    ///
+    /// CFShow prints a dictionary as `<CFString ...>{contents = "Error"} = <CFString ...>{contents = "..."}` per
+    /// entry; numbers come out as `value = N`. This keeps the key = value pairs and drops the addresses, so the log
+    /// reads `Error = ApplicationVerificationFailed; ErrorDescription = ...` rather than a page of CF noise. Nil if
+    /// the callback printed nothing (an older lt-install, or a device without CFShow).
+    static func installdStatus(in output: String) -> String? {
+        var pairs: [String] = []
+        for line in output.split(separator: "\n") {
+            let values = line.components(separatedBy: "contents = \"").dropFirst()
+                .compactMap { $0.split(separator: "\"", maxSplits: 1).first.map(String.init) }
+            let number = line.range(of: "value = ").map { line[$0.upperBound...]
+                .prefix { $0.isNumber || $0 == "-" || $0 == "+" || $0 == "." } }
+            if values.count >= 2 {
+                pairs.append("\(values[0]) = \(values[1])")
+            } else if values.count == 1, let number, !number.isEmpty {
+                pairs.append("\(values[0]) = \(number)")
+            }
+        }
+        // Progress dictionaries repeat (PercentComplete, Status); keep each distinct line once, in order.
+        var seen = Set<String>()
+        let unique = pairs.filter { seen.insert($0).inserted }
+        return unique.isEmpty ? nil : "installd said: " + unique.joined(separator: "; ")
+    }
 
     /// Takes the Home screen down and brings it back, so whatever it reads at startup it reads again.
     ///
@@ -878,7 +977,7 @@ extension GuestAgent {
             // Everything lt-install printed, not just the code: installd's own words are the only way to tell a
             // signature refusal from a malformed .ipa or a full disk, and without them every failure has read as
             // "no AppSync" whether or not that was true.
-            let detail = output
+            let detail = Self.installdStatus(in: output) ?? output
                 .split(separator: "\n")
                 .filter { !$0.hasPrefix("lt-install: ") }
                 .joined(separator: " / ")

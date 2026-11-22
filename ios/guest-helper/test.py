@@ -11,7 +11,7 @@ import sys
 import os
 
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM, UC_HOOK_INTR, UC_HOOK_CODE, UcError
-from unicorn.arm_const import UC_ARM_REG_CPSR, UC_ARM_REG_R9, \
+from unicorn.arm_const import UC_ARM_REG_CPSR, UC_ARM_REG_R9, UC_ARM_REG_R11, UC_ARM_REG_LR, \
     UC_ARM_REG_SP, UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R12, \
     UC_ARM_REG_PC, UC_ARM_REG_R3
 
@@ -301,7 +301,7 @@ def binds(blob, segments):
     return out
 
 
-def run_install(args, mi_result=0, missing=(), path_file=None):
+def run_install(args, mi_result=0, missing=(), path_file=None, call_back=False):
     flags, cmds = load_commands(install_blob)
     segments, entry, dylinker, dylibs = [], None, None, []
     for cmd, c in cmds:
@@ -325,7 +325,8 @@ def run_install(args, mi_result=0, missing=(), path_file=None):
     # The fakes: each a `bx lr` at its own address, its effect done in a code hook.
     FAKES, STRUCTS = 0x00F00000, 0x00F10000
     uc.mem_map(FAKES, 0x20000)
-    names = ["dlopen", "dlsym", "CFStringCreateWithCString", "CFDictionaryCreate", "MobileInstallationInstall"]
+    names = ["dlopen", "dlsym", "CFStringCreateWithCString", "CFDictionaryCreate", "MobileInstallationInstall",
+             "CFShow"]
     at = {n: FAKES + 16 * i for i, n in enumerate(names)}
     for a in at.values():
         uc.mem_write(a, struct.pack("<I", 0xE12FFF1E))     # bx lr
@@ -335,7 +336,7 @@ def run_install(args, mi_result=0, missing=(), path_file=None):
         uc.mem_write(addr, struct.pack("<I", at[symbol.lstrip("_")]))
 
     state = {"exit": None, "out": b"", "opened": [], "looked": [], "strings": {}, "dict": None, "install": None,
-             "read_path_from": None, "became": []}
+             "read_path_from": None, "became": [], "dup2": [], "shown": []}
 
     def cstr(addr):
         out = b""
@@ -377,6 +378,8 @@ def run_install(args, mi_result=0, missing=(), path_file=None):
         elif name == "MobileInstallationInstall":
             state["install"] = (state["strings"].get(r0), r1, r2, state["strings"].get(r3), sp % 8)
             result = mi_result & 0xFFFFFFFF
+        elif name == "CFShow":
+            state["shown"].append(r0)
         uc.reg_write(UC_ARM_REG_R0, result)
 
     uc.hook_add(UC_HOOK_CODE, fake, begin=FAKES, end=FAKES + 0x1000)
@@ -420,6 +423,9 @@ def run_install(args, mi_result=0, missing=(), path_file=None):
         elif num in (23, 181):                            # setuid, setgid
             state["became"].append((num, reg(UC_ARM_REG_R0)))
             return ret(0)
+        elif num == 90:                                   # dup2
+            state["dup2"].append((reg(UC_ARM_REG_R0), reg(UC_ARM_REG_R1)))
+            return ret(reg(UC_ARM_REG_R1))
         else:
             raise AssertionError(f"lt-install made system call {num}")
 
@@ -439,6 +445,14 @@ def run_install(args, mi_result=0, missing=(), path_file=None):
     uc.mem_write(sp, frame)
     uc.reg_write(UC_ARM_REG_SP, sp)
     uc.emu_start(entry, 0, count=200_000)
+    if call_back and state["install"] and state["install"][2]:
+        STOP, STATUS = FAKES + 0x800, 0x00ABC000
+        uc.reg_write(UC_ARM_REG_R0, STATUS)
+        uc.reg_write(UC_ARM_REG_R1, 0)
+        uc.reg_write(UC_ARM_REG_R11, 0x55555555)          # MobileInstallationInstall's frame, not ours
+        uc.reg_write(UC_ARM_REG_LR, STOP)
+        uc.emu_start(state["install"][2], STOP, count=50)
+        state["callback_returned"] = uc.reg_read(UC_ARM_REG_PC) == STOP
     return state
 
 
@@ -452,12 +466,20 @@ def check_install(name, ok, state=None):
 IPA = "/var/mobile/Media/LightTouch/install/Game.ipa"
 st = run_install(["/usr/local/bin/lt-install", IPA])
 good &= check_install(
-    "installs through MobileInstallationInstall(path, {ApplicationType: User}, NULL, path)",
+    "installs through MobileInstallationInstall(path, {ApplicationType: User}, callback, path)",
     st["exit"] == 0 and st["out"] == b"lt-install: 0\n"
     and st["opened"] == [("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", 2),
                          ("/System/Library/PrivateFrameworks/MobileInstallation.framework/MobileInstallation", 2)]
     and st["dict"] == (0, "ApplicationType", "User", 1, 0x00F10000, 0x00F10040, 0)
-    and st["install"] == (IPA, 0x9000, 0, IPA, 0), st)
+    and st["install"][0] == IPA and st["install"][1] == 0x9000 and st["install"][2] != 0
+    and st["install"][3:] == (IPA, 0)
+    and st["dup2"] == [(1, 2)], st)
+st = run_install(["/usr/local/bin/lt-install", IPA], mi_result=-1, call_back=True)
+good &= check_install("installd's callback prints its status dictionary with CFShow, even with r11 not ours",
+                      st["shown"] == [0x00ABC000] and st.get("callback_returned") is True, st)
+st = run_install(["/usr/local/bin/lt-install", IPA], missing=("CFShow",))
+good &= check_install("without CFShow it installs exactly as before, with no callback",
+                      st["exit"] == 0 and st["install"] is not None and st["install"][2] == 0, st)
 st = run_install(["/usr/local/bin/lt-install", IPA], mi_result=-1)
 good &= check_install("a refusal is reported with its code and exit 1",
                       st["exit"] == 1 and st["out"] == b"lt-install: -1\n"

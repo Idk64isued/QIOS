@@ -34,6 +34,8 @@ final class GuestAgent: ObservableObject {
     /// Apps this boot has already asked iOS to rebuild its list for. The rebuild takes the app list away for a few
     /// seconds, so it is attempted once per app and never in a loop.
     var rebuildTried: Set<String> = []
+    /// The app list has been reported this boot (GuestInstaller.reportAppListOncePerBoot).
+    var appListReported = false
     /// This device's installd has already turned an app down this boot, so the next install skips it and copies the
     /// app in by hand straight away (GuestInstaller). Cleared when a fresh agent says hello.
     var installdRefuses = false
@@ -178,6 +180,7 @@ final class GuestAgent: ObservableObject {
         toolsInPlace.removeAll()
         notifyReady = false
         rebuildTried.removeAll()
+        appListReported = false
         installReady = false
         installdRefuses = false
         installdRestrictionTried = false

@@ -3,6 +3,44 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 75 — Make It or Break It
+
+Stacks on 74 (push this one; it carries 74 too). App-side only; builds from cache.
+
+**Fixed**
+- **iOS 6 installs apps again.** Update 55's build, run on 22 Nov 2026 on the same iOS 6 device every update
+  since had failed on, installed eBay and brought back every app installed before it: "iOS rebuilt its app list
+  with eBay in it", 17 seconds after the Home screen restarted. So iOS 6 *does* rebuild its app list. What stopped
+  it was what came after 55: SpringBoard unloaded and loaded instead of simply stopped, a six-second wait where it
+  takes nearer twenty, installd left running with the old list in memory, and an installd that refuses every app
+  (-1) asked first. iOS 6 now does exactly what 55 did — copies the app in, deletes the app list, clears the icon
+  caches, stops installd, stops SpringBoard, and waits 30 seconds for iOS to write the list itself — and only if no
+  rebuild comes does it put the old list back with the app added by hand, as 55 did. installd is no longer asked
+  on iOS 6. iOS 2–5 are untouched.
+
+## Update 74 — Its Reason
+
+Stacks on 73. App-side plus the guest helper; builds from cache.
+
+73 proved two things on iOS 6: the app list is never rebuilt, and a full reboot doesn't bring the app up either.
+So both of the paths we control are exhausted, and what's left is to stop working out installd's reasons from the
+outside and read them.
+
+**Added**
+- **installd's own reason for refusing.** `MobileInstallationInstall`'s third argument is a callback, and it is
+  how installd reports progress and, when it fails, *why* — the `ApplicationVerificationFailed` /
+  `PackageExtractionFailed` dictionary iTunes and ideviceinstaller show. The return value is only a generic `-1`.
+  We have passed `NULL` there since the first version of `lt-install`, so every refusal on iOS 6 arrived with its
+  reason attached and was thrown away. `lt-install` now hands installd a callback that prints each status
+  dictionary with `CFShow`, with stderr folded onto stdout so it comes back with everything else, and the log
+  condenses it to `installd said: Error = …; …`. Tested under the emulator by playing installd: the callback is
+  called with `r11` scrambled the way it is inside MobileInstallation, and must still reach `CFShow` with the
+  status and return cleanly. Without `CFShow` it installs exactly as before.
+- **The app list, once per boot.** After a reboot the app still wasn't on the Home screen, which leaves two very
+  different explanations: iOS read the list at boot and threw our entry out, or the entry survives and SpringBoard
+  looks somewhere else. `App list at boot:` lists every installed app the device's list holds, so one look says
+  which.
+
 ## Update 73 — Let iOS Write It
 
 Stacks on 72. App-side only plus the guest helper; builds from cache.
