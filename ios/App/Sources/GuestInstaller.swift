@@ -220,12 +220,29 @@ extension GuestAgent {
             }
             // Prefer what the bundle actually declares, in the order it declares it, and keep the Retina copy
             // for the Retina name. An app that declares one icon gets it under both names; iOS picks the size.
+            func bytes(_ name: String) -> Int {
+                guard let url = onDisk[name] else { return 0 }
+                return (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            }
             func pick(retina: Bool) -> URL? {
+                // Every file the bundle's declared names point at, that actually landed.
+                var declared: Set<String> = []
                 for name in declaredIcons {
                     let stem = name.hasSuffix(".png") ? String(name.dropLast(4)) : name
-                    let wanted = retina ? [stem + "@2x.png", stem + ".png", name]
-                                        : [stem + ".png", name, stem + "@2x.png"]
-                    for candidate in wanted { if let url = onDisk[candidate] { return url } }
+                    for candidate in [name, stem + ".png", stem + "@2x.png"] where onDisk[candidate] != nil {
+                        declared.insert(candidate)
+                    }
+                }
+                // Biggest wins, not first. This used to walk declaredIcons in order and take the first name that
+                // was on disk, and CFBundleIcons lists its files smallest first — so a modern bundle declaring
+                // AppIcon29x29, AppIcon40x40, AppIcon57x57, AppIcon60x60 had its 29-point icon copied to Icon.png
+                // and the Home screen drew a 29-pixel picture scaled up to 57, which looks like a bug and is one.
+                // These names are all the same artwork at different sizes, so the largest file is the best source
+                // whichever name iOS ends up reading, and on a Retina device it is what the @2x name wants.
+                let (double, single) = (declared.filter { $0.contains("@2x") }, declared.filter { !$0.contains("@2x") })
+                let order = retina ? [double, single] : [single, double]
+                for group in order {
+                    if let best = group.max(by: { bytes($0) < bytes($1) }), let url = onDisk[best] { return url }
                 }
                 // Nothing the bundle names is there as a file. A build new enough to keep its icons in an asset
                 // catalog (Assets.car) has no loose icon at all, and no iOS this old can read one, so the names in
@@ -235,10 +252,6 @@ extension GuestAgent {
                 let looksLikeIcon = onDisk.keys.filter {
                     let lower = $0.lowercased()
                     return lower.hasSuffix(".png") && lower.contains("icon")
-                }
-                func bytes(_ name: String) -> Int {
-                    guard let url = onDisk[name] else { return 0 }
-                    return (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
                 }
                 if let best = looksLikeIcon.max(by: { bytes($0) < bytes($1) }), let url = onDisk[best] { return url }
                 if let art = artwork { return art }
@@ -325,6 +338,29 @@ extension GuestAgent {
             log(found.isEmpty
                 ? "None of those icon files is in the installed bundle — that is why the icon is blank"
                 : "Icon files in the guest: " + found.joined(separator: ", "))
+        }
+
+        // 7b. uicache, where the device has it.
+        //
+        // On iOS 6 an entry written into the installation cache by hand gets the app listed — reading the cache back
+        // finds it — and still leaves the Home screen without an icon, because SpringBoard builds its icon list from
+        // its own record of what is installed rather than from that file, and nothing has told it to look again.
+        // uicache is the jailbreak tool for exactly that: it walks the installed apps and rebuilds the record. It
+        // only exists on a jailbroken device, which is also the only kind that can be checked for here, so it is
+        // used where it is present and skipped quietly where it isn't.
+        if major >= 4, hasShell {
+            for tool in ["/usr/bin/uicache", "/usr/bin/uikittools-uicache"] {
+                guard let listed = await spawn(argv: ["/bin/ls", tool]),
+                    String(decoding: listed, as: UTF8.self).contains(tool)
+                else { continue }
+                progress(0.96, "Rebuilding the Home screen\u{2019}s app list\u{2026}")
+                let r = await run([tool], timeout: 240)
+                log(r?.status == 0
+                    ? "uicache rebuilt the Home screen\u{2019}s app list"
+                    : "uicache did not finish (\(r.map { "exit \($0.status)" } ?? "no answer")); "
+                      + "the icon may not appear until the device restarts")
+                break
+            }
         }
 
         progress(0.97, "Restarting the Home screen\u{2026}")
@@ -576,6 +612,31 @@ extension GuestAgent {
             log("installd: \(display) not installed, code \(code): \(why)"
                 + (detail.isEmpty ? "" : " — installd said: " + detail)
                 + "; installing it by hand instead")
+            // Whether AppSync is actually on this device, since "no AppSync" is the thing everyone assumes and
+            // nobody has checked. Preparation is supposed to put libappsync.dylib on the system volume and name it
+            // in installd's job so dyld inserts it. Both halves are files the agent can read, so read them: if the
+            // dylib is missing, preparation didn't bake it; if it is there and the job doesn't name it, the job
+            // edit didn't take; if both are right, AppSync is innocent and installd refused for some other reason
+            // entirely — which is worth knowing before another update is spent on the wrong suspect.
+            if code != -2, code != -3, code != -4, code != -5, code != -6 {
+                let dylib = await getFile("/usr/lib/libappsync.dylib")
+                var named = false
+                var jobFound = false
+                for job in ["com.apple.mobile.installd", "com.apple.installd"] {
+                    guard let data = await getFile("/System/Library/LaunchDaemons/\(job).plist"),
+                        let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+                    else { continue }
+                    jobFound = true
+                    let env = plist["EnvironmentVariables"] as? [String: String] ?? [:]
+                    if (env["DYLD_INSERT_LIBRARIES"] ?? "").contains("libappsync") { named = true }
+                    break
+                }
+                log("AppSync on this device: libappsync.dylib \(dylib == nil ? "MISSING" : "present (\(dylib!.count) bytes)"), "
+                    + "installd's job \(jobFound ? (named ? "names it" : "does NOT name it") : "could not be read")"
+                    + (dylib != nil && named
+                       ? " \u{2014} so AppSync is baked in and installd refused for another reason; send this log."
+                       : " \u{2014} that is why it was refused. Rebuilding the device should fix it."))
+            }
             // Don't pay for this twice. The next app this session goes straight to the hand install instead of
             // copying a whole .ipa in first only to be turned down again — that upload is half the time a big
             // install takes, and it was being spent on a refusal that never changes within a boot.

@@ -106,7 +106,6 @@ struct TweaksView: View {
     @State private var caAvailable = false
     @State private var loading = true
     @State private var status = ""
-    @State private var oldGL = false
     @State private var proxyFixed = false
 
     private var tweaks: [GuestTweak] { GuestTweak.all(version: version) }
@@ -140,18 +139,6 @@ struct TweaksView: View {
                             }
                             .onChange(of: caColor) { color in
                                 Task { _ = await agent.caDebug(mask: CAColor.mask, value: color.rawValue) }
-                            }
-                        }
-                    }
-                    if oldGL {
-                        Section(footer: Text("This device\u{2019}s GL was updated for iOS 6 games such as Minecraft. If apps draw worse since, put back the one it was prepared with; it then stays.")) {
-                            Button("Put Back the Old GL") {
-                                Task {
-                                    status = "Putting the old GL back\u{2026}"
-                                    let ok = await agent.restoreOldGLFrontEnd()
-                                    status = ok ? "The old GL is back. The Home screen is restarting." : "Couldn\u{2019}t put the old GL back. \(agent.lastLog)"
-                                    if ok { oldGL = false }
-                                }
                             }
                         }
                     }
@@ -197,7 +184,6 @@ struct TweaksView: View {
             caAvailable = true
             caColor = CAColor.allCases.first { $0 != .off && flags & $0.rawValue != 0 } ?? .off
         }
-        oldGL = await agent.hasOldGLFrontEnd()
         proxyFixed = await agent.hasRewrittenProxy()
         loading = false
     }

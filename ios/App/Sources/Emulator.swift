@@ -182,7 +182,7 @@ final class Emulator: ObservableObject {
                     if status == .alive {
                         await ga.checkShellCapabilities()
                         await ga.fixWebProxy()
-                        await ga.updateGLFrontEnd()
+                        await ga.revertGLFrontEnd()
                         return
                     }
                 }

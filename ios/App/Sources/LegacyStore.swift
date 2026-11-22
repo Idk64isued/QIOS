@@ -301,9 +301,9 @@ enum Classic {
     static let searchTop = c(0xCDD5DF, 0x3A3C42)
     static let searchBottom = c(0xA5B3C5, 0x232429)
     static let rowText = c(0x000000, 0xFFFFFF)
-    static let rowDetail = c(0x7A7A7A, 0x9A9EA6)
+    static let rowDetail = c(0x7A7A7A, 0xB4B8C0)
     static let separator = c(0xE0E0E0, 0x3A3C42)
-    static let priceText = c(0x3B5A82, 0x9DB8DC)
+    static let priceText = c(0x3B5A82, 0xB4CCEC)
     static let priceFill = c(0xE3E9F1, 0x3A3C42)
     static let priceBorder = c(0x8EA0B5, 0x5A5C62)
     static let installTop = c(0x7AD35A, 0x6CC955)
@@ -321,11 +321,11 @@ enum Classic {
     /// Every other row in a list, a shade off the one above it.
     static let cellAlt = c(0xF4F5F7, 0x232429)
     static let link = c(0x3D6EBF, 0x6FA0E8)
-    static let header = c(0x4C566C, 0xA3AAB6)
-    static let detail = c(0x385487, 0x8FA6C8)
-    static let bodyText = c(0x333333, 0xD2D5DA)
-    static let chevron = c(0xB0B6BE, 0x6E727A)
-    static let faint = c(0x9AA3AE, 0x72767E)
+    static let header = c(0x4C566C, 0xBCC3CE)
+    static let detail = c(0x385487, 0xA8C0E4)
+    static let bodyText = c(0x333333, 0xDDE0E5)
+    static let chevron = c(0xB0B6BE, 0x8A8E96)
+    static let faint = c(0x9AA3AE, 0x9499A2)
     static let fieldBorder = c(0x8796AA, 0x4A4C52)
     static let sectionBack = c(0xDDE3EA, 0x25272C)
     static let sectionBackLight = c(0xEEF1F5, 0x1C1D22)
@@ -797,7 +797,7 @@ struct LegacyStoreView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.app.name)
                     .font(Classic.font(15, bold: true))
-                    .foregroundStyle(entry.preserved ? Color.black : Classic.rowDetail.opacity(0.7))
+                    .foregroundStyle(entry.preserved ? Classic.rowText : Classic.rowDetail.opacity(0.7))
                     .lineLimit(2)
                 if let developer = entry.app.developer {
                     Text(developer).font(Classic.font(12)).foregroundStyle(Classic.rowDetail).lineLimit(1)
@@ -1519,7 +1519,7 @@ struct StoreAppPage: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(facts.isEmpty ? "Archived copy" : facts.joined(separator: "  \u{00B7}  "))
                     .font(Classic.font(13))
-                    .foregroundStyle(problem == nil ? Color.black : Classic.rowDetail)
+                    .foregroundStyle(problem == nil ? Classic.rowText : Classic.rowDetail)
                 if let problem { Text(problem).font(Classic.font(11)).foregroundStyle(Classic.warning) }
             }
             Spacer(minLength: 0)

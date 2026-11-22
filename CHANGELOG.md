@@ -3,6 +3,43 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 62 — Put That Back
+
+**Fixed**
+- **Update 61's GL front end is taken back out, and that is what was black-screening iOS 6.** 61 installed the front
+  end from LightTouchMac v1.0-2026.11.16 into 6.x devices, on the theory that its decoder reads iOS 6's longer
+  dispatch stubs. The device says otherwise: it named **311 of 914 slots where the old one named 309**. Two. The
+  decoder that reads a MOVW-built offset followed by a register-offset load is in qemu-ios `db230fe8e8`'s source and
+  is *not* in the binary that release ships, so swapping the file bought nothing.
+  It was worse than nothing. OpenGLES lives in the dyld shared cache and preparation makes dyld prefer the copy on
+  disk — but not for every process. One boot's log shows three processes running the old front end (name table
+  `0xad3b3412`, 309 named) and three running the new one (`0xf31a2b68`, 311 named), against a host that speaks the
+  first and warns that "the shim was built from another table": two sets of slot numbers resolved as though they
+  were the same, which is a black screen waiting to happen, and on the non-jailbroken iOS 6 device it happened.
+  Any device 61 changed has preparation's own front end put back automatically on its next boot, and the backup and
+  the opt-out marker are cleared with it. Nothing is installed in its place.
+  The genuine fix for iOS 6's dispatch table is the emulator move, because the decoder that matters is in the host.
+- **The Legacy Store's dark mode is readable.** Two places set their text to black outside the pattern the rest of
+  the conversion matched — the chart rows' app names among them — so on a dark page the thing you were trying to
+  read was the one thing still black. Both are fixed, and the dimmer greys were raised: every text colour in dark
+  now clears 4.5:1 against what it sits on, most of them comfortably.
+- **An app's icon is taken from its biggest file, not its first.** The copy to `Icon.png` walked the names in
+  `CFBundleIcons` in order and took the first that existed, and that list runs smallest first — so Minecraft PE's
+  29-point icon became the Home screen icon and got scaled up to 57, which looks exactly like the bug it is. The
+  largest declared file wins now, and on a Retina device the `@2x` name prefers the `@2x` files.
+
+**Added**
+- **`uicache` is run after a hand install where the device has it.** On iOS 6 an entry written into the installation
+  cache by hand gets the app listed — reading the cache back finds it, and 61's log said so — and still leaves the
+  Home screen with no icon, because SpringBoard builds its icon list from its own record rather than from that file.
+  `uicache` is the jailbreak tool that rebuilds exactly that record. It only exists on a jailbroken device, so it is
+  used where it is there and skipped quietly where it isn't. This is why an install could say it worked and the app
+  never appear.
+- **When installd turns an app down, the log now says whether AppSync is actually on the device** — whether
+  `libappsync.dylib` is on the system volume and whether installd's job names it in `DYLD_INSERT_LIBRARIES`. Every
+  refusal so far has been blamed on AppSync without anyone checking, and both halves are files the agent can read.
+  If they are both right, AppSync is innocent and the next update can stop chasing it.
+
 ## Update 61 — Cydia Oh My Cydia
 
 **Fixed**

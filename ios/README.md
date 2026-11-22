@@ -313,15 +313,19 @@ can't download alongside yet.
   the first of each named — not exported at all, against a trampoline the decoder cannot read — and the framebuffer
   and renderbuffer calls are checked by name, since one of those unnamed is enough on its own to explain a black
   screen.
-- `patches/qemu-ios/0023`: takes the 2026.11.16 GL front end. 0022 measured the damage; this is the repair. Upstream's
-  newer `contrib/gles-public` decodes iOS 6's longer trampolines (an offset built with MOVW, then a register-offset
-  load) and names all 914 slots, so the framebuffer, renderbuffer and viewport calls stop going nowhere — which is
-  what had iOS 6 games drawing into a corner, sideways, or not at all. It asks three things of the host that this
-  emulator's pin (1ad1c781) predates: a third word in `GLES_OP_DRAWABLE_STORAGE` (the format, which the old host
-  refused outright, black-screening everything), `GLES_OP_CAPABILITIES` and `GLES_OP_SET_ERROR`. The patch accepts
-  the longer storage call and answers the two new ones. `GuestGL.swift` puts the front end into a device on 6.x and
-  later, keeping the old file beside it; it is never installed by hand, because only a host carrying this patch can
-  speak to it.
+- `patches/qemu-ios/0023`: lets this host talk to the 2026.11.16 GL front end — a third word in
+  `GLES_OP_DRAWABLE_STORAGE` (the format, which the old host refused outright), `GLES_OP_CAPABILITIES` and
+  `GLES_OP_SET_ERROR`. Update 61 installed that front end into iOS 6 devices on the theory that its decoder reads
+  their longer trampolines. **It doesn't, and update 62 took it back out.** On the device it named 311 of 914 slots
+  where the old one named 309; the decoder that reads a MOVW-built offset followed by a register-offset load is in
+  qemu-ios `db230fe8e8`'s `contrib/it-gles/gles_dispatch.c`, and it is not in the binary that release ships.
+  It was also actively harmful: OpenGLES is in the dyld shared cache and preparation makes dyld prefer the on-disk
+  copy, but not for every process, so one boot's log had three processes on the old front end (name table
+  `0xad3b3412`) and three on the new one (`0xf31a2b68`) against a host that speaks the first and warns that "the
+  shim was built from another table" — two sets of slot numbers resolved as if they were one, and a black screen at
+  the end of it. The patch stays because it costs three lines, it is correct, and the host will need it when the
+  emulator moves; nothing installs that front end any more. **The actual fix for iOS 6's dispatch table is the
+  emulator move**, since the decoder that matters is host-side.
 - The screen is drawn through Metal (`MetalPresenter`): one copy of each frame into a shared texture and a blit,
   instead of a CGImage per frame that Core Animation copied and converted again.
 - The profiler samples 10 times a second (it was 50; every sample stops the virtual CPU for a moment).
