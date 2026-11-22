@@ -30,6 +30,10 @@ targets:
       # The changelog, so the app can show what each update changed (Main menu > What's new).
       - path: ../../CHANGELOG.md
         buildPhase: resources
+      # The GL front end iOS 6+ devices are brought up to (GuestGL.swift): LightTouchMac v1.0-2026.11.16's
+      # guest-tools/OpenGLES, raw DEFLATE so it is data, not a loose Mach-O in the bundle.
+      - path: Resources/gl-frontend-2026.11.16.deflate
+        buildPhase: resources
     dependencies:
       - package: HostRuntime
       - package: FirmwareKit

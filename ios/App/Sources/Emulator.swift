@@ -132,7 +132,11 @@ final class Emulator: ObservableObject {
             let info = Bundle.main.infoDictionary
             let short = info?["CFBundleShortVersionString"] as? String ?? "?"
             let build = info?["CFBundleVersion"] as? String ?? "?"
-            LTMLog.note("build \(short) (\(build))")
+            // LTMUpdateName is the CHANGELOG's newest heading, stamped in by the build (.github/workflows/ios.yml).
+            // A commit hash says which build exactly; the update's name says which one it is in conversation, which
+            // is how a log gets talked about ("that's the Cydia Oh My Cydia build").
+            let update = (info?["LTMUpdateName"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            LTMLog.note("build \(short) (\(build))" + (update.map { ", \($0)" } ?? ""))
             LTMLog.note("engine \(qemu.isJIT ? "JIT" : "TCI"), GL \(QemuRuntime.renderer.rawValue), \(JIT.summary)")
             LTMLog.note("args \(argv.joined(separator: " "))")
             // Optional: skip the renderer's per-call GL error checks (each one makes the GPU driver catch up).
@@ -177,6 +181,8 @@ final class Emulator: ObservableObject {
                     let status = await ga.status
                     if status == .alive {
                         await ga.checkShellCapabilities()
+                        await ga.fixWebProxy()
+                        await ga.updateGLFrontEnd()
                         return
                     }
                 }

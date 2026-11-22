@@ -29,6 +29,9 @@ final class GuestAgent: ObservableObject {
     var unpackReady = false
     /// lt-install is in the guest (GuestInstaller.ensureInstaller).
     var installReady = false
+    /// This device's installd has already turned an app down this boot, so the next install skips it and copies the
+    /// app in by hand straight away (GuestInstaller). Cleared when a fresh agent says hello.
+    var installdRefuses = false
     /// The end of the queue of installs and imports: each waits for the one before it (one at a time, so two never
     /// write into the guest at once).
     var jobTail: Task<Void, Never>?
@@ -119,6 +122,7 @@ final class GuestAgent: ObservableObject {
             log("Agent: \(first)")
             // A fresh agent means a fresh boot, and /tmp went with it: whatever was copied there is gone.
             toolsInPlace.removeAll()
+            installdRefuses = false
         }
         if let opsLine = lines.first(where: { $0.hasPrefix("ops ") }) {
             ops = opsLine.dropFirst(4).components(separatedBy: " ").filter { !$0.isEmpty }
@@ -153,20 +157,41 @@ final class GuestAgent: ObservableObject {
     /// that it is no longer there.
     func forgetGuestTool(_ name: String) { toolsInPlace.remove(name) }
 
+    /// The largest body one request can carry: the emulator's IT_AGENT_REQUEST_MAX (256 KiB) less room for the
+    /// request line, and base64 expands by four bytes for every three.
+    private static let chunkSize = 256 * 1024 - 4097
+
+    /// How many putpart requests are kept in the emulator's queue at once.
+    ///
+    /// This is where "copying anything takes ages" came from. The guest's daemon polls for work, and when it finds
+    /// none it sleeps a quarter of a second before asking again. Sending one chunk, waiting for its reply, and only
+    /// then sending the next meant the queue was empty every single time the daemon looked: each 252 KiB chunk cost
+    /// its own transfer plus most of that sleep, which pinned every copy — a song, a photo, a 36 MB app bundle — at
+    /// about a megabyte a second no matter how fast the link underneath was.
+    ///
+    /// Keeping a few chunks queued ahead means the daemon always has the next one waiting the moment it finishes the
+    /// last, and never sleeps mid-file. The emulator's queue holds 16 items in all (IT_AGENT_QUEUE_MAX, shared with
+    /// finished results and with whatever else is talking to the agent), so four leaves plenty of room. The agent
+    /// takes one item at a time from the head of that queue, so the chunks still land in the order they were sent.
+    private static let putDepth = 4
+
     /// Put a file into the guest filesystem.
-    /// For files > ~250 KB, uses putpart (256 KiB chunks minus header overhead).
+    /// For files over one chunk, uses putpart, a few chunks in flight at a time.
     func putFile(localURL: URL, guestPath: String, mode: String = "0644",
                  progress: ((Int, Int) -> Void)? = nil) async -> Bool {
-        guard let data = try? Data(contentsOf: localURL) else {
+        guard let handle = try? FileHandle(forReadingFrom: localURL),
+            let total = (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.size] as? NSNumber)?.intValue
+        else {
             log("Cannot read \(localURL.lastPathComponent)"); return false
         }
+        defer { try? handle.close() }
         isBusy = true
         defer { isBusy = false }
 
-        let chunkSize = 256 * 1024 - 4097  // putpart chunk limit
+        let chunkSize = Self.chunkSize
 
-        if data.count <= chunkSize {
-            // Single put
+        if total <= chunkSize {
+            let data = (try? handle.readToEnd()) ?? Data()
             let id = UUID().uuidString
             let b64 = data.base64EncodedString()
             let ok = agentRequest("\(id) put \(guestPath) \(mode)\n\(b64)")
@@ -177,30 +202,66 @@ final class GuestAgent: ObservableObject {
             let success = Self.succeeded(result)
             log(success ? "Put \(guestPath) ok (\(data.count) bytes)" : "Put failed: \(Self.failureText(result))")
             return success
-        } else {
-            // Multi-part put
-            var offset = 0
-            while offset < data.count {
-                let end = min(offset + chunkSize, data.count)
-                let chunk = data[offset..<end]
-                let isFinal = end >= data.count
-                let id = UUID().uuidString
-                let b64 = chunk.base64EncodedString()
-                let ok = agentRequest("\(id) putpart \(offset) \(isFinal ? 1 : 0) \(mode) \(guestPath)\n\(b64)")
-                guard ok else { log("putpart failed at offset \(offset)"); return false }
-                guard let result = await pollResult(id: id, timeout: 30.0) else {
-                    log("putpart timed out at offset \(offset)"); return false
-                }
-                if !Self.succeeded(result) {
-                    log("putpart failed at \(offset): \(Self.failureText(result))"); return false
-                }
-                offset = end
-                progress?(end, data.count)
-                log("Uploaded \(end)/\(data.count) bytes")
+        }
+
+        // Multi-part put, pipelined. `sending` holds the chunks the emulator has taken but not yet answered, oldest
+        // first; the loop tops it up to putDepth, then waits for the oldest to come back.
+        var sending: [(id: String, end: Int)] = []
+        var offset = 0           // the next byte to read
+        var done = 0             // bytes the guest has confirmed written
+        var announced = 0        // bytes at the last log line
+        let step = 4 << 20       // how often the log says where the copy is
+
+        func submit() -> Bool? {
+            guard offset < total else { return nil }   // nothing left to send
+            let end = min(offset + chunkSize, total)
+            guard let chunk = try? handle.read(upToCount: end - offset), chunk.count == end - offset else {
+                log("Could not read \(localURL.lastPathComponent) at \(offset)")
+                return false
             }
-            log("Put \(guestPath) ok (\(data.count) bytes, multi-part)")
+            let id = UUID().uuidString
+            let line = "\(id) putpart \(offset) \(end >= total ? 1 : 0) \(mode) \(guestPath)\n"
+            guard agentRequest(line + chunk.base64EncodedString()) else { return false }
+            sending.append((id, end))
+            offset = end
             return true
         }
+
+        while done < total {
+            // Fill the queue. A refused request means the emulator's queue is full, not an error: wait for the
+            // oldest reply to make room and try again next time round.
+            while sending.count < Self.putDepth {
+                guard let accepted = submit() else { break }
+                if !accepted {
+                    guard !sending.isEmpty else {
+                        log("putpart failed at offset \(offset): the device wouldn\u{2019}t take it")
+                        return false
+                    }
+                    break
+                }
+            }
+            guard !sending.isEmpty else { break }
+            let oldest = sending.removeFirst()
+            guard let result = await pollResult(id: oldest.id, timeout: 60.0) else {
+                log("putpart timed out at offset \(oldest.end)"); return false
+            }
+            guard Self.succeeded(result) else {
+                log("putpart failed at \(oldest.end): \(Self.failureText(result))"); return false
+            }
+            done = oldest.end
+            progress?(done, total)
+            // One line every few megabytes. A line per chunk filled the log with hundreds of near-identical
+            // "Uploaded" lines for one app, and each of them was a main-actor write while the copy was running.
+            if done - announced >= step || done >= total {
+                announced = done
+                log("Uploaded \(done)/\(total) bytes")
+            }
+        }
+        guard done == total else {
+            log("putpart stopped at \(done)/\(total) bytes"); return false
+        }
+        log("Put \(guestPath) ok (\(total) bytes, multi-part)")
+        return true
     }
 
     /// Put bytes into the guest filesystem (through a temporary file, so large ones go in parts too).
@@ -459,6 +520,7 @@ final class GuestAgent: ObservableObject {
     /// Waits for the result of request `id`: its status (the agent's number when it is one) and its decoded body.
     private func pollRaw(id: String, timeout: TimeInterval) async -> (status: Int?, statusText: String, body: Data)? {
         let deadline = Date().addingTimeInterval(timeout)
+        var spins = 0
         while Date() < deadline {
             if let mine = mailbox.removeValue(forKey: id) { return mine }
             while let raw = agentResult() {
@@ -473,7 +535,10 @@ final class GuestAgent: ObservableObject {
                 if header[0] == id { return entry }
                 if mailbox.count < 64 { mailbox[header[0]] = entry }
             }
-            try? await Task.sleep(nanoseconds: 20_000_000)  // 20 ms: an install is hundreds of round trips
+            // A reply that is already on its way arrives within a few milliseconds, and a copy is hundreds of round
+            // trips, so look often at first and back off once it is clear this one is going to take a while.
+            spins += 1
+            try? await Task.sleep(nanoseconds: spins < 40 ? 5_000_000 : 20_000_000)
         }
         agentCancel(id)
         return nil

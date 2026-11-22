@@ -1,0 +1,53 @@
+From 380d8f7ace7abe84d5d790c1a859796d21e2eaf9 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 16 Nov 2026 22:28:13 -0700
+Subject: [PATCH] ios: run the 2026.11.16 GL front end on this emulator
+
+LightTouchMac v1.0-2026.11.16's guest OpenGLES (built from qemu-ios
+db230fe8e8) decodes iOS 6's dispatch trampolines that this pin's could
+not, so iOS 6 apps' framebuffer calls reach the host. It sends three
+things this host refused or did not know: GLES_OP_DRAWABLE_STORAGE with
+a third word (the layer's color format), GLES_OP_CAPABILITIES and
+GLES_OP_SET_ERROR. Take the third word and ignore it, and answer the
+other two with 0 (no optional features; the shim keeps its old paths).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01UGCtLRD1vYicb9wVRzGR7X
+---
+ hw/arm/gles-host.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/hw/arm/gles-host.c b/hw/arm/gles-host.c
+index f44b27f80a..98ac6fb9ad 100644
+--- a/hw/arm/gles-host.c
++++ b/hw/arm/gles-host.c
+@@ -6691,6 +6691,11 @@ static bool gles_es2_call(CPUState *cpu, uint32_t slot, uint32_t argc,
+ }
+ 
+ 
++/* Two engine operations a newer guest front end sends (qemu-ios db230fe8e8's gles.h): the renderer's optional
++ * features, and an error the shim set itself. Answered so that front end runs on this host unchanged. */
++#define GLES_OP_CAPABILITIES_COMPAT     (GLES_OP_BASE + 10)
++#define GLES_OP_SET_ERROR_COMPAT        (GLES_OP_BASE + 11)
++
+ #if defined(GLES_HOST_EAGL) && !defined(GLES_HOST_ANGLE)
+ static int64_t gles_host_call_inner(CPUState *cpu, uint32_t slot, uint32_t ctx,
+                                     uint32_t argc, const uint32_t *a)
+@@ -6709,7 +6714,13 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
+     case GLES_OP_BIND_SURFACE:      /* the ninth word, when a shim sends it, is the IOSurface ID */
+         return argc == 8 || argc == 9 ? gles_bind_surface(cpu, a, argc == 9 ? a[8] : 0) : -1;
+     case GLES_OP_DRAWABLE_STORAGE:
+-        return argc == 2 ? gles_drawable_storage(a[0], a[1]) : -1;
++        /* Newer front ends (LightTouchMac v1.0-2026.11.16's OpenGLES) add the layer's color format as a third
++         * word. This host's drawable is RGBA8 with its own depth and stencil whatever the format, as before. */
++        return argc == 2 || argc == 3 ? gles_drawable_storage(a[0], a[1]) : -1;
++    case GLES_OP_CAPABILITIES_COMPAT:
++        return 0;                   /* none of the optional renderer features: the front end keeps the old paths */
++    case GLES_OP_SET_ERROR_COMPAT:
++        return 0;                   /* a shim-side refusal; this host reads errors from the host GL */
+ 
+     case GLES_OP_PRESENT: {
+         uint64_t t0 = gles_t();
+-- 
+2.43.0
+

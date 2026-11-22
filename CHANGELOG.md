@@ -3,6 +3,66 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 61 — Cydia Oh My Cydia
+
+**Fixed**
+- **The internet works properly.** Every prepared device is baked with a proxy auto-config that sends its web traffic
+  to `PROXY 10.0.2.100:3128; DIRECT` — on the Mac that is a real helper process running beside the emulator, and this
+  app, which runs the emulator as a library inside itself, has never had one. Nothing answered that address, so
+  CFNetwork tried it first on *every single connection*, waited out the connect timeout, and only then fell back to
+  going direct, with nothing remembered between attempts. That is the whole of "it says it's connected but everything
+  times out": Cydia taking minutes to list a repository and then timing out on an install, the store spinning, a web
+  page taking a minute. The traffic was never broken — it was queued behind a dead proxy. Light Touch now rewrites
+  that PAC to go straight out, on every boot, on devices old and new. The original is kept, and Tweaks ▸ Put Back the
+  Web Proxy restores it for anyone running a proxy of their own. (This does not give the device modern encryption: a
+  site needing TLS 1.2 and a recent root still won't load. Cydia's repositories are plain HTTP and are fine.)
+- **iOS 6 installs apps again, and stops boot-looping afterwards.** From iOS 4 up the installer took the app list
+  away and let MobileInstallation rebuild it from the app folders as the Home screen restarted — the jailbreak-era
+  "delete the plist" trick. The order was fatal: the list went, SpringBoard was restarted, and only *then* did the
+  install wait half a minute to see whether a rebuild had happened. On iOS 6 it doesn't ("No rebuilt app list after
+  30 seconds" in the log), so SpringBoard came up with no app list at all, fell over, was restarted by launchd, and
+  fell over again. Putting the old list back thirty seconds later was far too late. The entry is now written before
+  the restart and the list is never taken away, so there is no window in which the device has none. The icons were
+  never the list's doing anyway — copying the app's icon to `Icon.png` and `Icon@2x.png`, the names every one of
+  these iOS versions actually looks for, is what fixed those, and that runs either way.
+- **Copying anything is several times faster** — songs, photos, an app bundle. The guest's agent sleeps a quarter of
+  a second whenever it looks for work and finds none. Sending one 252 KiB chunk, waiting for its reply and only then
+  sending the next meant its queue was empty every time it looked, so each chunk cost its own transfer *plus* most of
+  that sleep: about a megabyte a second, whatever the link underneath could do. A few chunks are now kept queued
+  ahead, so it never sleeps in the middle of a file. The log no longer carries a line per chunk either.
+- An install that installd turns down no longer copies the whole `.ipa` in first on every later app that session —
+  that upload was half the time a big install took, spent on a refusal that cannot change within a boot. The log also
+  prints what installd actually said now, instead of guessing "no AppSync" at every kind of failure.
+- **This phone's volume buttons are this phone's again.** Sending them to the device was novel and then just in the
+  way: you couldn't turn the sound down while a device was open, and the device threw its own volume overlay up over
+  whatever was running. It is now Settings ▸ Volume buttons, off by default.
+
+**Changed**
+- **The graphics front end inside iOS 6 devices is replaced with the one from LightTouchMac v1.0-2026.11.16**, and
+  patch 0023 teaches this emulator to speak to it. The older one can't read iOS 6's longer dispatch stubs: of 6.1.3's
+  914 entry points it named 309 and left 605 unknown, so calls as basic as the framebuffer and viewport ones went
+  nowhere. That is why games drew into the wrong place or not at all — Need for Speed Shift in a small box in the
+  corner, Shrek Kart and Monkey Ball sideways over garbage, FIFA and Goat Z falling over on launch, Minecraft black.
+  The new one reads them all. It goes in automatically on 6.x and later; 1.x–5.x devices are untouched. The old file
+  is kept, and Tweaks ▸ Put Back the Old GL restores it (and opts that device out) if anything draws worse.
+- **Settings is readable.** Every switch used to carry a full paragraph under it — twenty-odd of them, so the page was
+  a wall of grey text you had to read through to find the line you came for. Each row now shows its name and a few
+  words; the full explanation is behind the ⓘ beside it. The ones most people never touch — the boot log, the debug
+  port, the USB bridge, the translation cache — start collapsed under Advanced.
+- **The Legacy Store has a dark mode**, on its own switch (the moon in its top bar), independent of this phone's
+  appearance. Same bar glosses, borders and pinstripes, different material; the light side is unchanged to the hex
+  digit.
+- **The Setup Assistant is full screen under the iOS 6 interface.** It was always drawn as iOS 6's, but it arrived as
+  a modern sheet — a rounded card stopping short of the top with the Home screen behind it — which was the one thing
+  giving it away. The glass interface still gets a sheet.
+- Settings ▸ Location now says what it can and can't do: only the iPhone 3GS has a GPS receiver the modem answers, so
+  on every other board there is nothing for iOS to ask and Location Services finds nothing however it is set.
+- **Updates are called by their names where the work happens.** The build reads this file's newest heading and puts
+  it at the top of the run's summary in Actions, so a run says "Update 61 — Cydia Oh My Cydia" rather than only a
+  number, and stamps it into the app so the first line of every log carries it too (`build 1.0-abc1234 (63), Update
+  61 — Cydia Oh My Cydia`). A run started by hand, which has no commit to be named after, says so and names the
+  branch. Name an update in its commit message and the Actions list reads as the changelog does.
+
 ## Update 60 — (not yet named)
 
 **Changed**

@@ -313,6 +313,15 @@ can't download alongside yet.
   the first of each named — not exported at all, against a trampoline the decoder cannot read — and the framebuffer
   and renderbuffer calls are checked by name, since one of those unnamed is enough on its own to explain a black
   screen.
+- `patches/qemu-ios/0023`: takes the 2026.11.16 GL front end. 0022 measured the damage; this is the repair. Upstream's
+  newer `contrib/gles-public` decodes iOS 6's longer trampolines (an offset built with MOVW, then a register-offset
+  load) and names all 914 slots, so the framebuffer, renderbuffer and viewport calls stop going nowhere — which is
+  what had iOS 6 games drawing into a corner, sideways, or not at all. It asks three things of the host that this
+  emulator's pin (1ad1c781) predates: a third word in `GLES_OP_DRAWABLE_STORAGE` (the format, which the old host
+  refused outright, black-screening everything), `GLES_OP_CAPABILITIES` and `GLES_OP_SET_ERROR`. The patch accepts
+  the longer storage call and answers the two new ones. `GuestGL.swift` puts the front end into a device on 6.x and
+  later, keeping the old file beside it; it is never installed by hand, because only a host carrying this patch can
+  speak to it.
 - The screen is drawn through Metal (`MetalPresenter`): one copy of each frame into a shared texture and a blit,
   instead of a CGImage per frame that Core Animation copied and converted again.
 - The profiler samples 10 times a second (it was 50; every sample stops the virtual CPU for a moment).
@@ -394,6 +403,15 @@ capture path in their I2S models, so the item isn't offered there.
 
 - **Wi-Fi**: the device's Wi-Fi card on QEMU's user network (slirp). Plain HTTP works; HTTPS sites that refuse
   old TLS don't, because the Mac app's TLS-upgrading web proxy and its certificate trust aren't ported yet.
+
+  Not porting that proxy had a cost nobody had counted, and it was most of what "the internet is broken" meant here
+  until update 61. Preparation bakes its PAC into every device anyway (`web_proxy: true` in every catalog recipe,
+  `/usr/share/ltm/proxy.pac`), and that PAC says `PROXY 10.0.2.100:3128; DIRECT`. Nothing in this app has ever
+  answered 10.0.2.100:3128, and CFNetwork has no memory of a proxy that failed, so *every* connection tried it,
+  waited out the connect timeout, and only then went direct. Everything worked and everything was unbearably slow,
+  and anything with a timeout shorter than the proxy's — Cydia installing a package, most of the App Store —
+  simply failed. `GuestNetwork.swift` rewrites that PAC to DIRECT on every boot, keeping the original at
+  `proxy.pac.ltm-old` for Tweaks ▸ Put Back the Web Proxy. If the proxy is ever ported, that is the file to restore.
 - **Hardware keyboard keys**: on the boards with a USB host the emulator attaches a USB keyboard and gets raw keys.
 - **Debug port**: QEMU's gdbstub on TCP 1234, for one boot. It has no password; leave it off otherwise.
 

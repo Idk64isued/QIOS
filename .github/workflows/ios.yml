@@ -1,4 +1,14 @@
 name: iOS build
+
+# What the run is called in the Actions list. A push is named for its commit, which is where an update's name lives
+# ("Update 61 — Cydia Oh My Cydia"); a run started by hand says so, with the branch, since it has no commit of its
+# own to be named after. The build also reads the name out of the CHANGELOG into its summary, so a run whose commit
+# forgot to carry it still says which update it is.
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch'
+      && format('iOS build by hand ({0})', github.ref_name)
+      || github.event.head_commit.message }}
+
 on:
   workflow_dispatch:
   push:
@@ -18,8 +28,20 @@ jobs:
   precheck:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      update: ${{ steps.name.outputs.update }}
     steps:
       - uses: actions/checkout@v4
+      - name: Which update this is
+        # The CHANGELOG's newest heading ("## Update 61 — Cydia Oh My Cydia") is where an update's number and name
+        # are written down, so the build takes them from there rather than from anything typed twice. It goes at the
+        # top of the run's summary, and is passed to the build job, which stamps it into the app.
+        id: name
+        run: |
+          UPDATE=$(sed -nE 's/^## +(Update .*)$/\1/p' CHANGELOG.md | head -1)
+          [ -n "$UPDATE" ] || UPDATE="Unnamed update"
+          echo "update=$UPDATE" >> "$GITHUB_OUTPUT"
+          echo "## $UPDATE" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install tree-sitter==0.26.1 tree-sitter-swift==0.7.4 unicorn==2.1.4
@@ -52,7 +74,9 @@ jobs:
         run: |
           plutil -replace CFBundleVersion -string "${{ github.run_number }}" ios/App/Info.plist
           plutil -replace CFBundleShortVersionString -string "1.0-${GITHUB_SHA:0:7}" ios/App/Info.plist
-          plutil -p ios/App/Info.plist | grep -i bundleversion || true
+          # The update's name as well as its hash, so a log says which update it is in the words we use for it.
+          plutil -replace LTMUpdateName -string "${{ needs.precheck.outputs.update }}" ios/App/Info.plist
+          plutil -p ios/App/Info.plist | grep -iE 'bundleversion|LTMUpdateName' || true
       - name: Tools
         run: brew install meson ninja pkg-config jq xcodegen ldid
       - name: The pins the iOS build uses
@@ -230,7 +254,8 @@ jobs:
           ldid -Sios/App/LightTouchiOS.entitlements "$APP/LightTouch"
           mkdir Payload && cp -R "$APP" Payload/ && zip -qry LightTouch.ipa Payload
           SRC=rebuilt; [ "${{ steps.qcache.outputs.cache-hit }}" = "true" ] && SRC="from cache"
-          echo "### LightTouch.ipa $(du -h LightTouch.ipa | cut -f1), emulator libraries $SRC, ANGLE ${{ steps.angle.outputs.have }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "### ${{ needs.precheck.outputs.update }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "LightTouch.ipa $(du -h LightTouch.ipa | cut -f1), emulator libraries $SRC, ANGLE ${{ steps.angle.outputs.have }}" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with: { name: LightTouch-ipa, path: LightTouch.ipa }
       - uses: actions/upload-artifact@v4

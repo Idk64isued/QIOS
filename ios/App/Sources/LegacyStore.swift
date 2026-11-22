@@ -271,32 +271,70 @@ final class LegacyStoreClient: ObservableObject {
 
 /// The colours and pieces of the store as it looked on iPhone OS 3: a blue-grey glossy bar on top, a black tab bar
 /// below, white rows, glossy icons, a grey-blue price button that turns into a green INSTALL, pinstripes behind the
-/// detail page. Fixed, not light/dark: that look only ever came in one.
+/// detail page.
+///
+/// That look only ever came in one shade, and the store was pinned to light to keep it honest. A white page in a
+/// dark room at two in the morning is its own kind of wrong, though, so every colour here is a pair now and the
+/// store picks between them (the moon button in its top bar). The light side is unchanged, to the hex digit; the
+/// dark side keeps the same shapes, glosses and borders and only swaps what they are made of, so it still reads as
+/// this store rather than a modern one. It follows a switch of its own, never this phone's appearance: someone
+/// running their whole phone dark may still want the store the way it was.
 enum Classic {
     static func hex(_ v: UInt32) -> Color {
         Color(red: Double((v >> 16) & 0xff) / 255, green: Double((v >> 8) & 0xff) / 255, blue: Double(v & 0xff) / 255)
     }
-    static let navTop = hex(0xB2BFD0)
-    static let navMid = hex(0x8A9DB8)
-    static let navBottom = hex(0x6D84A2)
-    static let navLine = hex(0x2D3642)
-    static let searchTop = hex(0xCDD5DF)
-    static let searchBottom = hex(0xA5B3C5)
-    static let rowText = Color.black
-    static let rowDetail = hex(0x7A7A7A)
-    static let separator = hex(0xE0E0E0)
-    static let priceText = hex(0x3B5A82)
-    static let priceFill = hex(0xE3E9F1)
-    static let priceBorder = hex(0x8EA0B5)
-    static let installTop = hex(0x7AD35A)
-    static let installBottom = hex(0x3D9A2B)
-    static let pinstripeBase = hex(0xC5CCD4)
-    static let pinstripeLine = hex(0xCBD2D8)
-    static let groupBorder = hex(0xABABAB)
-    static let tabTop = hex(0x3B3B3B)
-    static let tabBottom = hex(0x0B0B0B)
-    static let tabIdle = hex(0x8F8F8F)
-    static let warning = hex(0xB23B2B)
+    /// A colour that resolves to `light` or `dark` with the colour scheme the store is being drawn in.
+    static func c(_ light: UInt32, _ dark: UInt32) -> Color {
+        Color(UIColor { $0.userInterfaceStyle == .dark ? ui(dark) : ui(light) })
+    }
+    private static func ui(_ v: UInt32) -> UIColor {
+        UIColor(red: CGFloat((v >> 16) & 0xff) / 255, green: CGFloat((v >> 8) & 0xff) / 255,
+                blue: CGFloat(v & 0xff) / 255, alpha: 1)
+    }
+    static let navTop = c(0xB2BFD0, 0x5A5C62)
+    static let navMid = c(0x8A9DB8, 0x2C2D31)
+    static let navBottom = c(0x6D84A2, 0x0E0F11)
+    static let navLine = c(0x2D3642, 0x000000)
+    static let barButtonTop = c(0x8EA2BD, 0x5C5E64)
+    static let barButtonBottom = c(0x4D6789, 0x202125)
+    static let barButtonBorder = c(0x3A4C66, 0x000000)
+    static let searchTop = c(0xCDD5DF, 0x3A3C42)
+    static let searchBottom = c(0xA5B3C5, 0x232429)
+    static let rowText = c(0x000000, 0xFFFFFF)
+    static let rowDetail = c(0x7A7A7A, 0x9A9EA6)
+    static let separator = c(0xE0E0E0, 0x3A3C42)
+    static let priceText = c(0x3B5A82, 0x9DB8DC)
+    static let priceFill = c(0xE3E9F1, 0x3A3C42)
+    static let priceBorder = c(0x8EA0B5, 0x5A5C62)
+    static let installTop = c(0x7AD35A, 0x6CC955)
+    static let installBottom = c(0x3D9A2B, 0x2E7A20)
+    static let pinstripeBase = c(0xC5CCD4, 0x18191D)
+    static let pinstripeLine = c(0xCBD2D8, 0x1D1E23)
+    static let groupBorder = c(0xABABAB, 0x0B0C0E)
+    static let tabTop = c(0x3B3B3B, 0x303033)
+    static let tabBottom = c(0x0B0B0B, 0x000000)
+    static let tabIdle = c(0x8F8F8F, 0x8F8F8F)
+    static let warning = c(0xB23B2B, 0xF0675C)
+    /// The page behind the rows, and a row itself: white then, near-black now.
+    static let page = c(0xFFFFFF, 0x121317)
+    static let cell = c(0xFFFFFF, 0x2A2C31)
+    /// Every other row in a list, a shade off the one above it.
+    static let cellAlt = c(0xF4F5F7, 0x232429)
+    static let link = c(0x3D6EBF, 0x6FA0E8)
+    static let header = c(0x4C566C, 0xA3AAB6)
+    static let detail = c(0x385487, 0x8FA6C8)
+    static let bodyText = c(0x333333, 0xD2D5DA)
+    static let chevron = c(0xB0B6BE, 0x6E727A)
+    static let faint = c(0x9AA3AE, 0x72767E)
+    static let fieldBorder = c(0x8796AA, 0x4A4C52)
+    static let sectionBack = c(0xDDE3EA, 0x25272C)
+    static let sectionBackLight = c(0xEEF1F5, 0x1C1D22)
+    static let segmentBottom = c(0xE3E7EC, 0x2D2F34)
+    static let placeholderTop = c(0xE6E9ED, 0x35373D)
+    static let placeholderBottom = c(0xC9CED6, 0x25272C)
+    static let shotPlaceholder = c(0xDDE2E8, 0x2D2F34)
+    static let chartHeader = c(0x2E3D52, 0xB6BDC8)
+    static let clearField = c(0xA8A8A8, 0x707479)
 
     static func font(_ size: CGFloat, bold: Bool = false) -> Font {
         .custom(bold ? "Helvetica-Bold" : "Helvetica", size: size)
@@ -340,9 +378,9 @@ struct ClassicBarButton: View {
                 .padding(.horizontal, 10)
                 .frame(height: 30)
                 .background(
-                    LinearGradient(colors: [Classic.hex(0x8EA2BD), Classic.hex(0x4D6789)], startPoint: .top, endPoint: .bottom),
+                    LinearGradient(colors: [Classic.barButtonTop, Classic.barButtonBottom], startPoint: .top, endPoint: .bottom),
                     in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).stroke(Classic.hex(0x3A4C66), lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).stroke(Classic.barButtonBorder, lineWidth: 1))
         }
         .buttonStyle(.plain)
     }
@@ -353,6 +391,9 @@ struct ClassicNavBar: View {
     let title: String
     var left: (String, () -> Void)?
     var right: (String, () -> Void)?
+    /// The store's own light/dark switch, drawn as a moon beside the right-hand button. Only the store's top bar
+    /// passes one; the pages below it inherit the choice and don't repeat the control.
+    var dark: Binding<Bool>?
 
     var body: some View {
         ZStack {
@@ -361,10 +402,29 @@ struct ClassicNavBar: View {
                 .foregroundStyle(.white)
                 .shadow(color: .black.opacity(0.5), radius: 0, y: -1)
                 .lineLimit(1)
-                .padding(.horizontal, 80)
-            HStack {
+                .padding(.horizontal, 96)
+            HStack(spacing: 6) {
                 if let left { ClassicBarButton(title: left.0, action: left.1) }
                 Spacer()
+                if let dark {
+                    Button {
+                        dark.wrappedValue.toggle()
+                    } label: {
+                        Image(systemName: dark.wrappedValue ? "sun.max.fill" : "moon.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .shadow(color: .black.opacity(0.45), radius: 0, y: -1)
+                            .frame(width: 32, height: 30)
+                            .background(
+                                LinearGradient(colors: [Classic.barButtonTop, Classic.barButtonBottom],
+                                               startPoint: .top, endPoint: .bottom),
+                                in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .stroke(Classic.barButtonBorder, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(Text(dark.wrappedValue ? "Light store" : "Dark store"))
+                }
                 if let right { ClassicBarButton(title: right.0, action: right.1) }
             }
             .padding(.horizontal, 6)
@@ -402,7 +462,7 @@ struct ClassicPriceButton: View {
                 .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .stroke(armed ? Classic.hex(0x2E7A20) : Classic.priceBorder, lineWidth: 1))
+                        .stroke(armed ? Classic.installBottom : Classic.priceBorder, lineWidth: 1))
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
@@ -416,6 +476,8 @@ struct ClassicPriceButton: View {
 /// The store, as iPhone OS 3's App Store was laid out: Featured, the charts as they stood on a given day, Categories
 /// and Search, each app with its own page (screenshots, ratings, reviews, every archived version). Full screen.
 struct LegacyStoreView: View {
+    /// Legacy Store ▸ the moon in the top bar. Its own switch, not this phone's appearance.
+    @AppStorage("storeDark") private var storeDark = false
     @StateObject private var store = LegacyStoreClient()
     @ObservedObject private var downloads = StoreDownloads.shared
     /// The running device's agent; nil when no device is running (the store can still be browsed).
@@ -459,7 +521,7 @@ struct LegacyStoreView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ClassicNavBar(title: title, left: backButton, right: ("Done", onDismiss))
+            ClassicNavBar(title: title, left: backButton, right: ("Done", onDismiss), dark: $storeDark)
             if tab == .search && drill == nil { searchBar }
             if agent == nil && tab != .downloads {
                 notice("No device is running: apps you get are downloaded, ready to install from Downloads.")
@@ -481,8 +543,8 @@ struct LegacyStoreView: View {
             if !message.isEmpty || (downloads.activeCount > 0 && tab != .downloads) { statusStrip }
             tabBar
         }
-        .background(Color.white.ignoresSafeArea())
-        .environment(\.colorScheme, .light)
+        .background(Classic.page.ignoresSafeArea())
+        .environment(\.colorScheme, storeDark ? .dark : .light)
         .onAppear {
             store.target = target
             store.search()
@@ -597,13 +659,13 @@ struct LegacyStoreView: View {
                         } label: {
                             Text(t.name)
                                 .font(Classic.font(12, bold: true))
-                                .foregroundStyle(chartType == t.slug ? .white : Classic.hex(0x4C566C))
+                                .foregroundStyle(chartType == t.slug ? .white : Classic.header)
                                 .padding(.horizontal, 12)
                                 .frame(height: 28)
                                 .background(chartType == t.slug
                                     ? AnyShapeStyle(LinearGradient(colors: [Classic.hex(0x6D84A2), Classic.hex(0x4A6589)], startPoint: .top, endPoint: .bottom))
-                                    : AnyShapeStyle(Color.white), in: Capsule())
-                                .overlay(Capsule().stroke(Classic.hex(0x8796AA), lineWidth: 1))
+                                    : AnyShapeStyle(Classic.cell), in: Capsule())
+                                .overlay(Capsule().stroke(Classic.fieldBorder, lineWidth: 1))
                         }
                         .buttonStyle(.plain)
                     }
@@ -650,7 +712,7 @@ struct LegacyStoreView: View {
                 VStack(spacing: 1) {
                     Text(chart.map { Self.pretty($0.snapshotDate) } ?? Self.pretty(chartDate))
                         .font(Classic.font(15, bold: true))
-                        .foregroundStyle(Classic.hex(0x2E3D52))
+                        .foregroundStyle(Classic.chartHeader)
                     Text("Top 50 on this day \u{00B7} change").font(Classic.font(10)).foregroundStyle(Classic.rowDetail)
                 }
             }
@@ -660,10 +722,10 @@ struct LegacyStoreView: View {
                 .disabled(index == nil || index == dates.count - 1)
         }
         .font(.system(size: 16))
-        .foregroundStyle(Classic.hex(0x3D6EBF))
+        .foregroundStyle(Classic.link)
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(Classic.hex(0xEEF1F5))
+        .background(Classic.sectionBackLight)
         .overlay(alignment: .bottom) { Classic.separator.frame(height: 1) }
     }
 
@@ -709,9 +771,9 @@ struct LegacyStoreView: View {
                                     loadChart()
                                 } label: {
                                     HStack {
-                                        Text(Self.pretty(day)).foregroundStyle(.black)
+                                        Text(Self.pretty(day)).foregroundStyle(Classic.rowText)
                                         Spacer()
-                                        if day == chart?.snapshotDate { Image(systemName: "checkmark").foregroundStyle(Classic.hex(0x3D6EBF)) }
+                                        if day == chart?.snapshotDate { Image(systemName: "checkmark").foregroundStyle(Classic.link) }
                                     }
                                 }
                             }
@@ -721,7 +783,7 @@ struct LegacyStoreView: View {
                 .listStyle(.grouped)
             }
         }
-        .environment(\.colorScheme, .light)
+        .environment(\.colorScheme, storeDark ? .dark : .light)
     }
 
     private func chartRow(_ entry: ChartEntry) -> some View {
@@ -743,15 +805,15 @@ struct LegacyStoreView: View {
                 if !entry.preserved {
                     Text("Not in the archive yet").font(Classic.font(11)).foregroundStyle(Classic.rowDetail.opacity(0.7))
                 } else if let note = Compatibility.note(for: entry.app.id) {
-                    Label(note.verdict.title, systemImage: note.verdict.symbol).font(Classic.font(11)).foregroundStyle(Classic.hex(0x385487))
+                    Label(note.verdict.title, systemImage: note.verdict.symbol).font(Classic.font(11)).foregroundStyle(Classic.detail)
                 }
             }
             Spacer(minLength: 0)
-            Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(Classic.hex(0xB0B6BE))
+            Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(Classic.chevron)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .background(entry.position % 2 == 0 ? Classic.hex(0xF4F5F7) : Color.white)
+        .background(entry.position % 2 == 0 ? Classic.cellAlt : Classic.cell)
         .overlay(alignment: .bottom) { Classic.separator.frame(height: 1) }
     }
 
@@ -824,7 +886,7 @@ struct LegacyStoreView: View {
             TextField("Search apps for \(target.name)", text: $store.query)
                 .textFieldStyle(.plain)
                 .font(Classic.font(15))
-                .foregroundStyle(.black)
+                .foregroundStyle(Classic.rowText)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
                 .submitLabel(.search)
@@ -832,19 +894,19 @@ struct LegacyStoreView: View {
                 .onChange(of: store.query) { _ in store.search() }
             if !store.query.isEmpty {
                 Button { store.query = "" } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(Classic.hex(0xA8A8A8))
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(Classic.clearField)
                 }
                 .buttonStyle(.plain)
             }
         }
         .padding(.horizontal, 10)
         .frame(height: 30)
-        .background(Color.white, in: Capsule())
-        .overlay(Capsule().stroke(Classic.hex(0x8796AA), lineWidth: 1))
+        .background(Classic.cell, in: Capsule())
+        .overlay(Capsule().stroke(Classic.fieldBorder, lineWidth: 1))
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
         .background(LinearGradient(colors: [Classic.searchTop, Classic.searchBottom], startPoint: .top, endPoint: .bottom))
-        .overlay(alignment: .bottom) { Classic.hex(0x8796AA).frame(height: 1) }
+        .overlay(alignment: .bottom) { Classic.fieldBorder.frame(height: 1) }
     }
 
     @ViewBuilder private var searchResults: some View {
@@ -852,7 +914,7 @@ struct LegacyStoreView: View {
             centred {
                 Text("Search for apps that run on \(target.name), \(target.os).")
                     .font(Classic.font(15, bold: true))
-                    .foregroundStyle(Classic.hex(0x9AA3AE))
+                    .foregroundStyle(Classic.faint)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 30)
             }
@@ -869,7 +931,7 @@ struct LegacyStoreView: View {
         } else if let error = store.error, rows.isEmpty {
             centred { errorText(error) { store.search() } }
         } else if rows.isEmpty {
-            centred { Text("No Results").font(Classic.font(18, bold: true)).foregroundStyle(Classic.hex(0x9AA3AE)) }
+            centred { Text("No Results").font(Classic.font(18, bold: true)).foregroundStyle(Classic.faint) }
         } else {
             ScrollView {
                 LazyVStack(spacing: 0) {
@@ -878,23 +940,23 @@ struct LegacyStoreView: View {
                     }
                 }
             }
-            .background(Color.white)
+            .background(Classic.page)
         }
     }
 
     private func notice(_ text: String) -> some View {
         Text(text)
             .font(Classic.font(12, bold: true))
-            .foregroundStyle(Classic.hex(0x4C566C))
+            .foregroundStyle(Classic.header)
             .shadow(color: .white.opacity(0.8), radius: 0, y: 1)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 7)
-            .background(Classic.hex(0xDDE3EA))
+            .background(Classic.sectionBack)
             .overlay(alignment: .bottom) { Classic.separator.frame(height: 1) }
     }
 
     private func centred<V: View>(@ViewBuilder _ inner: () -> V) -> some View {
-        VStack { Spacer(); inner(); Spacer() }.frame(maxWidth: .infinity).background(Color.white)
+        VStack { Spacer(); inner(); Spacer() }.frame(maxWidth: .infinity).background(Classic.page)
     }
 
     private func errorText(_ text: String, retry: @escaping () -> Void) -> some View {
@@ -908,15 +970,15 @@ struct LegacyStoreView: View {
     private func plainRow(title: String, subtitle: String, shaded: Bool) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(Classic.font(16, bold: true)).foregroundStyle(.black)
+                Text(title).font(Classic.font(16, bold: true)).foregroundStyle(Classic.rowText)
                 if !subtitle.isEmpty { Text(subtitle).font(Classic.font(12)).foregroundStyle(Classic.rowDetail) }
             }
             Spacer()
-            Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(Classic.hex(0xB0B6BE))
+            Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(Classic.chevron)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 12)
-        .background(shaded ? Classic.hex(0xF4F5F7) : Color.white)
+        .background(shaded ? Classic.cellAlt : Classic.cell)
         .overlay(alignment: .bottom) { Classic.separator.frame(height: 1) }
         .contentShape(Rectangle())
     }
@@ -925,20 +987,20 @@ struct LegacyStoreView: View {
         HStack(spacing: 10) {
             StoreIcon(url: app.iconURL, size: 57)
             VStack(alignment: .leading, spacing: 2) {
-                Text(app.name).font(Classic.font(15, bold: true)).foregroundStyle(.black).lineLimit(2)
+                Text(app.name).font(Classic.font(15, bold: true)).foregroundStyle(Classic.rowText).lineLimit(2)
                 if let developer = app.developer { Text(developer).font(Classic.font(12)).foregroundStyle(Classic.rowDetail).lineLimit(1) }
                 if let label = app.label {
-                    Text(label).font(Classic.font(11)).foregroundStyle(Classic.hex(0x385487)).lineLimit(1)
+                    Text(label).font(Classic.font(11)).foregroundStyle(Classic.detail).lineLimit(1)
                 } else if let count = app.versionCount {
                     Text("\(count) archived versions").font(Classic.font(11)).foregroundStyle(Classic.rowDetail)
                 }
             }
             Spacer(minLength: 0)
-            Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(Classic.hex(0xB0B6BE))
+            Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(Classic.chevron)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .background(shaded ? Classic.hex(0xF4F5F7) : Color.white)
+        .background(shaded ? Classic.cellAlt : Classic.cell)
         .overlay(alignment: .bottom) { Classic.separator.frame(height: 1) }
         .contentShape(Rectangle())
     }
@@ -978,7 +1040,7 @@ struct LegacyStoreView: View {
 
             if let active = downloads.activeEntry(ipaID: app.ipaID) {
                 VStack(spacing: 4) {
-                    ProgressView(value: min(1, max(0, active.progress))).frame(width: 60).tint(Classic.hex(0x3D6EBF))
+                    ProgressView(value: min(1, max(0, active.progress))).frame(width: 60).tint(Classic.link)
                     Text(active.state == .waiting ? "Waiting" : active.state == .installing ? "Installing" : "Loading")
                         .font(Classic.font(10)).foregroundStyle(Classic.rowDetail)
                 }
@@ -995,7 +1057,7 @@ struct LegacyStoreView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .background(shaded ? Classic.hex(0xF4F5F7) : Color.white)
+        .background(shaded ? Classic.cellAlt : Classic.cell)
         .overlay(alignment: .bottom) { Classic.separator.frame(height: 1) }
     }
 
@@ -1113,20 +1175,20 @@ struct ClassicSegments<T: Hashable>: View {
                 Button { selection = item.1 } label: {
                     Text(item.0)
                         .font(Classic.font(12, bold: true))
-                        .foregroundStyle(on ? .white : Classic.hex(0x4C566C))
+                        .foregroundStyle(on ? .white : Classic.header)
                         .lineLimit(1)
                         .frame(maxWidth: .infinity)
                         .frame(height: 28)
                         .background(on
                             ? AnyShapeStyle(LinearGradient(colors: [Classic.hex(0x6D84A2), Classic.hex(0x4A6589)], startPoint: .top, endPoint: .bottom))
-                            : AnyShapeStyle(LinearGradient(colors: [.white, Classic.hex(0xE3E7EC)], startPoint: .top, endPoint: .bottom)))
+                            : AnyShapeStyle(LinearGradient(colors: [Classic.cell, Classic.segmentBottom], startPoint: .top, endPoint: .bottom)))
                 }
                 .buttonStyle(.plain)
-                if index < items.count - 1 { Classic.hex(0x8796AA).frame(width: 1, height: 28) }
+                if index < items.count - 1 { Classic.fieldBorder.frame(width: 1, height: 28) }
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).stroke(Classic.hex(0x8796AA), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).stroke(Classic.fieldBorder, lineWidth: 1))
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
         .frame(maxWidth: .infinity)
@@ -1157,6 +1219,7 @@ struct ClassicStars: View {
 /// version they were captured for), the description, information, customer reviews, every archived version, and a
 /// place to note how it ran here.
 struct StoreAppPage: View {
+    @AppStorage("storeDark") private var storeDark = false
     let app: StoreApp
     @ObservedObject var store: LegacyStoreClient
     let canInstall: Bool
@@ -1214,7 +1277,7 @@ struct StoreAppPage: View {
             }
             .background(Classic.Pinstripes().ignoresSafeArea())
         }
-        .environment(\.colorScheme, .light)
+        .environment(\.colorScheme, storeDark ? .dark : .light)
         .task { await load() }
         .sheet(isPresented: $reporting) {
             CompatibilityReportView(app: shown, version: best?.version.version ?? detail?.versions.first?.version ?? "?",
@@ -1243,9 +1306,9 @@ struct StoreAppPage: View {
             HStack(alignment: .top, spacing: 12) {
                 StoreIcon(url: shown.iconURL, size: 72)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(shown.name).font(Classic.font(17, bold: true)).foregroundStyle(.black).lineLimit(3)
+                    Text(shown.name).font(Classic.font(17, bold: true)).foregroundStyle(Classic.rowText).lineLimit(3)
                     if let developer = shown.developer {
-                        Text(developer).font(Classic.font(13)).foregroundStyle(Classic.hex(0x4C566C))
+                        Text(developer).font(Classic.font(13)).foregroundStyle(Classic.header)
                     }
                     if let r = rating, let average = r.average {
                         HStack(spacing: 4) {
@@ -1259,7 +1322,7 @@ struct StoreAppPage: View {
                     }
                     if let best {
                         Text("Version \(best.version.version ?? "?") runs on \(store.target.name)")
-                            .font(Classic.font(11)).foregroundStyle(Classic.hex(0x385487))
+                            .font(Classic.font(11)).foregroundStyle(Classic.detail)
                     } else if detail != nil {
                         Text("No archived copy runs on \(store.target.name), \(store.target.os)")
                             .font(Classic.font(11)).foregroundStyle(Classic.warning)
@@ -1285,7 +1348,7 @@ struct StoreAppPage: View {
             HStack {
                 if let myNote {
                     Label("You said: \(myNote.verdict.title)", systemImage: myNote.verdict.symbol)
-                        .font(Classic.font(12, bold: true)).foregroundStyle(Classic.hex(0x385487))
+                        .font(Classic.font(12, bold: true)).foregroundStyle(Classic.detail)
                 } else {
                     Text("Tried it? Say how it runs.").font(Classic.font(12)).foregroundStyle(Classic.rowDetail)
                 }
@@ -1294,7 +1357,7 @@ struct StoreAppPage: View {
             }
         }
         .padding(12)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(Classic.cell, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Classic.groupBorder, lineWidth: 1))
     }
 
@@ -1312,7 +1375,7 @@ struct StoreAppPage: View {
                     } label: {
                         Label(set.title.isEmpty ? "Other captures" : set.title, systemImage: "chevron.up.chevron.down")
                             .font(Classic.font(12, bold: true))
-                            .foregroundStyle(Classic.hex(0x3D6EBF))
+                            .foregroundStyle(Classic.link)
                     }
                     .padding(.trailing, 10)
                 }
@@ -1326,7 +1389,7 @@ struct StoreAppPage: View {
                             if let image = phase.image {
                                 image.resizable().aspectRatio(contentMode: .fit)
                             } else {
-                                Rectangle().fill(Classic.hex(0xDDE2E8)).overlay(ProgressView().tint(Classic.rowDetail))
+                                Rectangle().fill(Classic.shotPlaceholder).overlay(ProgressView().tint(Classic.rowDetail))
                             }
                         }
                         .frame(width: width, height: height)
@@ -1344,12 +1407,12 @@ struct StoreAppPage: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(text)
                     .font(Classic.font(13))
-                    .foregroundStyle(Classic.hex(0x333333))
+                    .foregroundStyle(Classic.bodyText)
                     .lineLimit(moreText ? nil : 5)
                 if !moreText && text.count > 220 {
                     Button("More \u{25BE}") { moreText = true }
                         .font(Classic.font(13, bold: true))
-                        .foregroundStyle(Classic.hex(0x3D6EBF))
+                        .foregroundStyle(Classic.link)
                 }
             }
             .padding(12)
@@ -1375,8 +1438,8 @@ struct StoreAppPage: View {
                 ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
                     if index > 0 { Classic.separator.frame(height: 1) }
                     HStack(alignment: .top) {
-                        Text(row.0).font(Classic.font(13, bold: true)).foregroundStyle(Classic.hex(0x4C566C)).frame(width: 90, alignment: .leading)
-                        Text(row.1).font(Classic.font(13)).foregroundStyle(.black)
+                        Text(row.0).font(Classic.font(13, bold: true)).foregroundStyle(Classic.header).frame(width: 90, alignment: .leading)
+                        Text(row.1).font(Classic.font(13)).foregroundStyle(Classic.rowText)
                         Spacer(minLength: 0)
                     }
                     .padding(.horizontal, 12)
@@ -1394,14 +1457,14 @@ struct StoreAppPage: View {
                     if index > 0 { Classic.separator.frame(height: 1) }
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
-                            Text(review.title.isEmpty ? "Review" : review.title).font(Classic.font(13, bold: true)).foregroundStyle(.black)
+                            Text(review.title.isEmpty ? "Review" : review.title).font(Classic.font(13, bold: true)).foregroundStyle(Classic.rowText)
                             Spacer()
                             ClassicStars(rating: Double(review.stars), size: 11)
                         }
                         if let author = review.author {
                             Text("by \(author)").font(Classic.font(11)).foregroundStyle(Classic.rowDetail)
                         }
-                        Text(review.body).font(Classic.font(12)).foregroundStyle(Classic.hex(0x333333))
+                        Text(review.body).font(Classic.font(12)).foregroundStyle(Classic.bodyText)
                     }
                     .padding(12)
                 }
@@ -1412,7 +1475,7 @@ struct StoreAppPage: View {
     private func sectionTitle(_ text: String) -> some View {
         Text(text)
             .font(Classic.font(17, bold: true))
-            .foregroundStyle(Classic.hex(0x4C566C))
+            .foregroundStyle(Classic.header)
             .shadow(color: .white.opacity(0.8), radius: 0, y: 1)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
@@ -1421,17 +1484,17 @@ struct StoreAppPage: View {
     private func group<V: View>(@ViewBuilder _ inner: () -> V) -> some View {
         VStack(alignment: .leading, spacing: 0) { inner() }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .background(Classic.cell, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Classic.groupBorder, lineWidth: 1))
     }
 
     private func versionGroup(_ version: CatalogVersion) -> some View {
         group {
             HStack {
-                Text("Version \(version.version ?? "unknown")").font(Classic.font(15, bold: true)).foregroundStyle(.black)
+                Text("Version \(version.version ?? "unknown")").font(Classic.font(15, bold: true)).foregroundStyle(Classic.rowText)
                 Spacer()
                 if let minimum = version.minimumOSVersion, !minimum.isEmpty {
-                    Text("Requires \(minimum)").font(Classic.font(12)).foregroundStyle(Classic.hex(0x385487))
+                    Text("Requires \(minimum)").font(Classic.font(12)).foregroundStyle(Classic.detail)
                 }
             }
             .padding(.horizontal, 12)
@@ -1495,6 +1558,7 @@ struct StoreAppPage: View {
 // MARK: - Saying how an app ran
 
 struct CompatibilityReportView: View {
+    @AppStorage("storeDark") private var storeDark = false
     let app: StoreApp
     let version: String
     let device: String
@@ -1512,7 +1576,7 @@ struct CompatibilityReportView: View {
                     HStack(spacing: 12) {
                         StoreIcon(url: app.iconURL, size: 44)
                         VStack(alignment: .leading) {
-                            Text(app.name).font(Classic.font(15, bold: true)).foregroundStyle(.black)
+                            Text(app.name).font(Classic.font(15, bold: true)).foregroundStyle(Classic.rowText)
                             Text("Version \(version) on \(device)").font(Classic.font(12)).foregroundStyle(Classic.rowDetail)
                         }
                     }
@@ -1520,9 +1584,9 @@ struct CompatibilityReportView: View {
                         ForEach(CompatibilityNote.Verdict.allCases, id: \.self) { v in
                             Button { verdict = v } label: {
                                 HStack {
-                                    Label(v.title, systemImage: v.symbol).font(Classic.font(15)).foregroundStyle(.black)
+                                    Label(v.title, systemImage: v.symbol).font(Classic.font(15)).foregroundStyle(Classic.rowText)
                                     Spacer()
-                                    if verdict == v { Image(systemName: "checkmark").foregroundStyle(Classic.hex(0x3D6EBF)) }
+                                    if verdict == v { Image(systemName: "checkmark").foregroundStyle(Classic.link) }
                                 }
                                 .padding(12)
                                 .contentShape(Rectangle())
@@ -1531,18 +1595,18 @@ struct CompatibilityReportView: View {
                             if v != CompatibilityNote.Verdict.allCases.last { Classic.separator.frame(height: 1) }
                         }
                     }
-                    .background(Color.white, in: RoundedRectangle(cornerRadius: 10))
+                    .background(Classic.cell, in: RoundedRectangle(cornerRadius: 10))
                     .overlay(RoundedRectangle(cornerRadius: 10).stroke(Classic.groupBorder, lineWidth: 1))
-                    Text("What did you see?").font(Classic.font(14, bold: true)).foregroundStyle(Classic.hex(0x4C566C))
+                    Text("What did you see?").font(Classic.font(14, bold: true)).foregroundStyle(Classic.header)
                     TextEditor(text: $note)
                         .frame(minHeight: 100)
                         .scrollContentBackground(.hidden)
                         .padding(6)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 10))
+                        .background(Classic.cell, in: RoundedRectangle(cornerRadius: 10))
                         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Classic.groupBorder, lineWidth: 1))
                     Text("Saved on this phone, shown on the app\u{2019}s page and in the store\u{2019}s lists, and included in every report you send. Legacy Store itself takes no submissions, so to share it with everyone, post it to the project on GitHub.")
                         .font(Classic.font(11))
-                        .foregroundStyle(Classic.hex(0x4C566C))
+                        .foregroundStyle(Classic.header)
                     ClassicBarButton(title: "Save and post on GitHub\u{2026}") {
                         let saved = makeNote()
                         Compatibility.save(saved)
@@ -1554,7 +1618,7 @@ struct CompatibilityReportView: View {
             }
             .background(Classic.Pinstripes().ignoresSafeArea())
         }
-        .environment(\.colorScheme, .light)
+        .environment(\.colorScheme, storeDark ? .dark : .light)
         .onAppear {
             if let existing = Compatibility.note(for: app.id) {
                 verdict = existing.verdict
@@ -1584,8 +1648,8 @@ struct StoreIcon: View {
             if let image = phase.image {
                 image.resizable().aspectRatio(contentMode: .fill)
             } else {
-                LinearGradient(colors: [Classic.hex(0xE6E9ED), Classic.hex(0xC9CED6)], startPoint: .top, endPoint: .bottom)
-                    .overlay(Image(systemName: "app").foregroundStyle(Classic.hex(0x9AA3AE)))
+                LinearGradient(colors: [Classic.placeholderTop, Classic.placeholderBottom], startPoint: .top, endPoint: .bottom)
+                    .overlay(Image(systemName: "app").foregroundStyle(Classic.faint))
             }
         }
         .frame(width: size, height: size)

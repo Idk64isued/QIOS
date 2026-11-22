@@ -322,10 +322,25 @@ struct RootView: View {
         .fullScreenCover(isPresented: $showLegacyStore) {
             LegacyStoreView(agent: nil, target: devices.first?.storeTarget ?? StoreTarget()) { showLegacyStore = false }
         }
-        .sheet(isPresented: $showAddDevice) {
-            // The Setup Assistant for every interface: iOS 6's look, or with the glass home screen the glass one.
+        // The Setup Assistant for every interface: iOS 6's look, or with the glass home screen the glass one.
+        //
+        // How it arrives matters as much as how it is drawn. A sheet — a rounded card that stops short of the top,
+        // with the home screen showing behind it — is the modern way, and under the iOS 6 interface it was the one
+        // thing giving the game away: iOS 6's own Setup Assistant owned the whole screen, which is what every page
+        // of this one is drawn for. So there it comes up full screen, and only the glass interface gets a sheet.
+        .sheet(isPresented: Binding(
+            get: { showAddDevice && interface == .modern },
+            set: { if !$0 { showAddDevice = false } })
+        ) {
             SetupAssistantView { device, start in addDeviceClosed(device, start) }
-                .environment(\.glassStyle, interface == .modern)
+                .environment(\.glassStyle, true)
+        }
+        .fullScreenCover(isPresented: Binding(
+            get: { showAddDevice && interface != .modern },
+            set: { if !$0 { showAddDevice = false } })
+        ) {
+            SetupAssistantView { device, start in addDeviceClosed(device, start) }
+                .environment(\.glassStyle, false)
         }
         .sheet(isPresented: $showWhatsNew) {
             WhatsNewView()
@@ -939,6 +954,10 @@ struct EmulatorScreen: View {
     @State private var installNote = ""
     @State private var toast = ""
     @StateObject private var volume = VolumeWatcher()
+    /// Settings › Volume buttons. Off (the default) leaves this phone's volume buttons to this phone. On, every
+    /// press was swallowed and sent to the guest, which threw its own volume overlay up over whatever was running,
+    /// and there was no way to turn the actual sound down while a device was open.
+    @AppStorage("passVolumeButtons") private var passVolumeButtons = false
     @StateObject private var modem = ModemController()
     @StateObject private var controls = DeviceControls()
     @State private var showSettings = false
@@ -978,7 +997,10 @@ struct EmulatorScreen: View {
                         }
                     }
                 )
-                .overlay(VolumeWatcherView(watcher: volume))
+                .overlay { if passVolumeButtons { VolumeWatcherView(watcher: volume) } }
+                // Turning it off mid-session lets go of this phone's volume at once: the view goes, but the audio
+                // session observation it started would otherwise keep swallowing presses until the device closed.
+                .onChange(of: passVolumeButtons) { on in if !on { volume.stop() } }
 
             switch mode {
             case .bezel, .plain, .model:

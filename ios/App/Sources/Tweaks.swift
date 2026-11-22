@@ -106,6 +106,8 @@ struct TweaksView: View {
     @State private var caAvailable = false
     @State private var loading = true
     @State private var status = ""
+    @State private var oldGL = false
+    @State private var proxyFixed = false
 
     private var tweaks: [GuestTweak] { GuestTweak.all(version: version) }
 
@@ -141,6 +143,31 @@ struct TweaksView: View {
                             }
                         }
                     }
+                    if oldGL {
+                        Section(footer: Text("This device\u{2019}s GL was updated for iOS 6 games such as Minecraft. If apps draw worse since, put back the one it was prepared with; it then stays.")) {
+                            Button("Put Back the Old GL") {
+                                Task {
+                                    status = "Putting the old GL back\u{2026}"
+                                    let ok = await agent.restoreOldGLFrontEnd()
+                                    status = ok ? "The old GL is back. The Home screen is restarting." : "Couldn\u{2019}t put the old GL back. \(agent.lastLog)"
+                                    if ok { oldGL = false }
+                                }
+                            }
+                        }
+                    }
+                    if proxyFixed {
+                        Section(footer: Text("This device was prepared to send its web traffic through a proxy that only the Mac app runs, so every connection waited for it before giving up and going direct. Light Touch now sends it straight out. Put the proxy back only if you are running one yourself at 10.0.2.100:3128.")) {
+                            Button("Put Back the Web Proxy") {
+                                Task {
+                                    status = "Putting the proxy back\u{2026}"
+                                    let ok = await agent.restoreWebProxy()
+                                    status = ok ? "The prepared proxy is back. It takes effect on the next connection."
+                                                : "Couldn\u{2019}t put the proxy back. \(agent.lastLog)"
+                                    if ok { proxyFixed = false }
+                                }
+                            }
+                        }
+                    }
                     if !status.isEmpty { Section { Text(status).font(.footnote) } }
                 }
             }
@@ -170,6 +197,8 @@ struct TweaksView: View {
             caAvailable = true
             caColor = CAColor.allCases.first { $0 != .off && flags & $0.rawValue != 0 } ?? .off
         }
+        oldGL = await agent.hasOldGLFrontEnd()
+        proxyFixed = await agent.hasRewrittenProxy()
         loading = false
     }
 

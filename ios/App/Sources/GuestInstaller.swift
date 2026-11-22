@@ -119,7 +119,7 @@ extension GuestAgent {
         // through lt-install, and installd unpacks, places and registers the app and tells SpringBoard, which draws
         // the icon as it does for any other app. The hand-written path stays below for iOS 2 and 3, where it has
         // always worked, and as the fallback when installd refuses (a device prepared without AppSync, say).
-        if major >= 4, ops.contains("spawn") {
+        if major >= 4, ops.contains("spawn"), !installdRefuses {
             if let installed = try await installThroughInstalld(
                 ipa: ipa, bundleID: bundleID, display: display, progress: progress)
             {
@@ -265,18 +265,22 @@ extension GuestAgent {
         // problem — it is an app iOS never really registered, exactly as on 5 and 6. The entry is enough to get a
         // name onto the Home screen and not enough to get an icon drawn.
         //
-        // So from iOS 4 up, iOS writes the entry itself: the cache is taken away, and MobileInstallation rebuilds it
-        // from the app folders on disk as the Home screen starts (the jailbreak-era "delete the plist" fix), this
-        // app included, every entry in exactly the shape that iOS wants. Step 9 checks the rebuild happened; if it
-        // didn't, the cache read in step 2 goes back (with the hand-made entry), so the device is never left without
-        // its app list.
+        // From iOS 4 up this used to take the cache away and let MobileInstallation rebuild it from the app folders
+        // as the Home screen started (the jailbreak-era "delete the plist" fix), on the theory that only an entry
+        // iOS had written itself would draw an icon. It did get icons drawn — and on iOS 6 it bricked the session.
+        //
+        // The order was the problem. The cache went, then SpringBoard was restarted, and only then did step 9 wait
+        // half a minute for the rebuild. On a device where MobileInstallation doesn't rebuild (iOS 6 here: "No
+        // rebuilt app list after 30 seconds"), SpringBoard came up with no app list at all, fell over, was restarted
+        // by launchd, fell over again — the boot loop after an install, with the app never arriving. Putting the old
+        // cache back thirty seconds later was far too late: the Home screen was already looping.
+        //
+        // The icons were never the cache's doing anyway. Step 5b — the app's own icon copied to Icon.png and
+        // Icon@2x.png, the names every one of these iOS versions actually looks for — is what put real icons on the
+        // Home screen, and it runs whichever way the app was registered. So the gamble is gone: the entry is written
+        // by hand, the device always has a complete, valid app list, and there is no window in which it has none.
         var needsRestart = false
-        var verifyRebuild = false
-        if major >= 4, container != nil {
-            progress(0.94, "Registering \(display)\u{2026}")
-            _ = await unlink(path: Self.installationCache)
-            verifyRebuild = true
-        } else if major >= 2, let container {
+        if major >= 2, let container {
             progress(0.94, "Registering \(display)\u{2026}")
             if let cache {
                 try await registerByHand(cache: cache, format: cacheFormat, info: info, bundleID: bundleID,
@@ -364,34 +368,27 @@ extension GuestAgent {
             if respring == nil || (respring?.status ?? -1) < 0 { needsRestart = true }
         }
 
-        // 9. iOS 5 and 6: wait for the rebuilt cache and check this app is in it. MobileInstallation writes it as
-        // the Home screen starts, so half a minute is plenty when it is coming at all.
-        if verifyRebuild {
-            progress(0.98, "Waiting for iOS to list \(display)\u{2026}")
-            var state = "missing"
-            for _ in 0..<15 {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                guard let data = await getFile(Self.installationCache) else { continue }
-                state = "rebuilt"
-                if let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
-                    (plist["User"] as? [String: Any])?[bundleID] != nil
-                {
-                    state = "listed"
+        // 9. The app list, read back now that the Home screen has restarted. Nothing is being waited for here — the
+        // entry was written before the restart — so this only confirms it survived, and says so plainly if it
+        // didn't, which is the one case worth a rebuild of the device rather than another install.
+        if major >= 2, container != nil {
+            progress(0.98, "Checking \(display) is listed\u{2026}")
+            var listed = false
+            for attempt in 0..<5 {
+                if attempt > 0 { try? await Task.sleep(nanoseconds: 2_000_000_000) }
+                guard let data = await getFile(Self.installationCache),
+                    let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any]
+                else { continue }
+                if (plist["User"] as? [String: Any])?[bundleID] != nil {
+                    listed = true
                     break
                 }
             }
-            switch state {
-            case "listed":
-                log("iOS rebuilt its app list with \(display) in it")
-            case "rebuilt":
-                log("iOS rebuilt its app list WITHOUT \(display): it read \(appPath) and left the app out. Send this log.")
-                needsRestart = true
-            default:
-                log("No rebuilt app list after 30 seconds; putting the old one back, \(display) added by hand")
-                if let cache, let container {
-                    try? await registerByHand(cache: cache, format: cacheFormat, info: info, bundleID: bundleID,
-                        appPath: appPath, container: container, work: work)
-                }
+            if listed {
+                log("\(display) is in the device\u{2019}s app list")
+            } else {
+                log("\(display) is on the device at \(appPath) but its app list no longer has the entry "
+                    + "(iOS rewrote the list). Restart the device; if the icon is still missing, send this log.")
                 needsRestart = true
             }
         }
@@ -565,9 +562,24 @@ extension GuestAgent {
             case -2, -3: why = "a system framework it needs would not load"
             case -4, -5: why = "this iOS has no MobileInstallationInstall"
             case -6: why = "the path could not be passed on"
-            default: why = "installd refused it (an unsigned app on a device prepared without AppSync is refused)"
+            default: why = "installd turned it down (the usual reason is an unsigned app on a device whose installd "
+                + "didn\u{2019}t get AppSync, but installd does not say which)"
             }
-            log("installd: \(display) not installed, code \(code): \(why); installing it by hand instead")
+            // Everything lt-install printed, not just the code: installd's own words are the only way to tell a
+            // signature refusal from a malformed .ipa or a full disk, and without them every failure has read as
+            // "no AppSync" whether or not that was true.
+            let detail = output
+                .split(separator: "\n")
+                .filter { !$0.hasPrefix("lt-install: ") }
+                .joined(separator: " / ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            log("installd: \(display) not installed, code \(code): \(why)"
+                + (detail.isEmpty ? "" : " — installd said: " + detail)
+                + "; installing it by hand instead")
+            // Don't pay for this twice. The next app this session goes straight to the hand install instead of
+            // copying a whole .ipa in first only to be turned down again — that upload is half the time a big
+            // install takes, and it was being spent on a refusal that never changes within a boot.
+            installdRefuses = true
             return nil
         }
         // installd has written the app list before it answers: the entry says where the app went.
