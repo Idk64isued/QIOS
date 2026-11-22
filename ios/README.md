@@ -326,6 +326,14 @@ can't download alongside yet.
   the end of it. The patch stays because it costs three lines, it is correct, and the host will need it when the
   emulator moves; nothing installs that front end any more. **The actual fix for iOS 6's dispatch table is the
   emulator move**, since the decoder that matters is host-side.
+- `patches/qemu-ios/0024`: says whether the framebuffer attachment call ever reached the host. A dispatch slot the
+  shim cannot name is a call it never forwards — the host does not refuse it, does not see it, and cannot know it
+  was made — so an app draws at full speed into a framebuffer with nothing attached and the screen stays black.
+  0022 was written to say which calls get lost and has never run, because it compiles into the GL front end and this
+  build installs that binary prebuilt. This measures it from the side that is built here: every call marks its wire
+  id (`gles_seen_mark`), and the incomplete-framebuffer report names the whole framebuffer family with yes or NO
+  against each and says whether an attachment call arrived and failed or never arrived. Arrived means the fault is
+  in this host's FBO handling; never arrived means the slot is unnamed and the fix is a per-firmware slot map.
 - The screen is drawn through Metal (`MetalPresenter`): one copy of each frame into a shared texture and a blit,
   instead of a CGImage per frame that Core Animation copied and converted again.
 - The profiler samples 10 times a second (it was 50; every sample stops the virtual CPU for a moment).

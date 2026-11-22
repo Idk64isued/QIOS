@@ -3,6 +3,25 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 63 — Which Side Is It On
+
+**Added**
+- **Patch 0024: the log now says whether the framebuffer attachment call ever reached the host.** Minecraft on 6.1.3
+  draws correctly, at full speed, into a framebuffer with nothing attached to it — `MISSING_ATTACHMENT`, 1200 draws
+  an interval, every one offscreen, a black screen with a perfectly healthy call stream behind it. Two updates have
+  now been spent guessing which side of the bridge that gap is on.
+  The guest-side diagnostic meant to answer it (patch 0022, from update 59) has **never once run**: it compiles into
+  the GL front end, and this build installs that binary prebuilt from the Mac release rather than building it. So
+  the one question that matters has never had evidence behind it, only inference — including mine, twice.
+  This measures the same thing from the side this build does compile. Every GL call marks its wire id on the way
+  into the host, and the incomplete-framebuffer report reads them back: it names the whole framebuffer family
+  (`glGenFramebuffers`, `glBindFramebuffer`, `glFramebufferTexture2D`, `glFramebufferRenderbuffer`,
+  `glRenderbufferStorage` and the rest) with yes or NO against each, and then says plainly whether an attachment
+  call arrived and failed or never arrived at all.
+  Those are different bugs. If it arrived, the fault is in this host's own framebuffer handling and is ours to fix
+  directly. If it never arrived, its dispatch slot is one of the 605 the shim cannot name on iOS 6, and the fix is a
+  per-firmware slot map — a much bigger job, and one worth knowing is necessary *before* starting it.
+
 ## Update 62 — Put That Back
 
 **Fixed**
