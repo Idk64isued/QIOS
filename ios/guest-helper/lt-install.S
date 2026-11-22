@@ -12,6 +12,9 @@
 @     -2 CoreFoundation would not load   -3 MobileInstallation would not load
 @     -4 a CoreFoundation function is missing   -5 MobileInstallationInstall is missing   -6 a CFString failed
 @     -7 no path on the command line and none in the file either
+@
+@ An optional second argument is a uid to become first (setgid then setuid), so the same program can ask installd
+@ as root or as mobile. 0 or absent stays root, which is what iOS 4 and 5 already accept.
 @ It exits 0 only on success.
 @
 @ -1 therefore means one thing only: installd was reached and refused. -7 is deliberately not -1: for five updates
@@ -65,6 +68,29 @@ Lnoargv:
     mvneq   r8, #6                  @ -7: no path on the command line and none in the file either
     beq     Lreport
 Lhavepath:
+    @ Optionally become another user before installing.
+    @
+    @ installd takes the same .ipa on iOS 4 and 5 and refuses it on 6, with everything else identical, and the one
+    @ thing this program has never varied is who it is: the agent spawns it as root, while iTunes installs through
+    @ installation_proxy as mobile. iOS 6 is the release that tightened installd, so "argv[2] is a uid" lets the
+    @ app try root first (which is what 4 and 5 already accept) and then mobile, and say which one worked.
+    @
+    @ setgid before setuid: the other order drops the privilege needed for the group.
+    cmp     r4, #3
+    blt     Lready
+    ldr     r0, [r5, #8]            @ argv[2]
+    cmp     r0, #0
+    beq     Lready
+    bl      Latoi                   @ r0 = the uid
+    cmp     r0, #0
+    beq     Lready                  @ 0 is root: nothing to drop
+    mov     r9, r0                  @ keep it; r0 is about to be the argument
+    mov     r12, #181               @ SYS_setgid
+    svc     #0x80
+    mov     r0, r9
+    mov     r12, #23                @ SYS_setuid
+    svc     #0x80
+Lready:
 
     @ CoreFoundation and MobileInstallation
     adr     r0, Lcf
@@ -185,6 +211,20 @@ Lreport:
     mov     r12, #1                 @ SYS_exit
     svc     #0x80
     b       .
+
+@ r0 a NUL-terminated decimal string -> r0 = its value. Stops at the first byte that is not a digit; an empty or
+@ non-numeric string gives 0, which this program treats as "stay root".
+Latoi:
+    mov     r1, #0                  @ the value
+1:  ldrb    r2, [r0], #1
+    sub     r2, r2, #48
+    cmp     r2, #9
+    bhi     2f
+    add     r1, r1, r1, lsl #2      @ r1 * 5
+    add     r1, r2, r1, lsl #1      @ r1 * 10 + digit
+    b       1b
+2:  mov     r0, r1
+    bx      lr
 
 @ Reads the path the app leaves at Lpathfile into __DATA+64 (1 KiB of scratch, well inside the page) and cuts it at
 @ the first space or control byte, so a trailing newline is not taken for part of the name. r6 = the path, or 0 if

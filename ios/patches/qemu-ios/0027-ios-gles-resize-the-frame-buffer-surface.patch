@@ -164,7 +164,54 @@ Claude-Session: https://claude.ai/code/session_01UGCtLRD1vYicb9wVRzGR7X
      if (!gh.iosurface) {
          glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, GLES_FB_WIDTH, GLES_FB_HEIGHT,
                       0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-@@ -3797,10 +3823,29 @@
+@@ -3094,9 +3120,14 @@
+      */
+     if (st == 0x8cd7 /* GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT */) {
+         uint32_t name = gh.bound_framebuffer;
++        /* What this framebuffer meant before the repair, so a repair that does not help can be undone. */
++        bool was_drawable = gles_is_drawable(name);
++        uint32_t was_rb = was_drawable
++            ? GPOINTER_TO_UINT(g_hash_table_lookup(gh.fbo_drawable, GUINT_TO_POINTER(name)))
++            : 0;
+         bool repaired;
+ 
+-        if (gles_is_drawable(name)) {
++        if (was_drawable) {
+             gles_set_drawable(name, false);   /* replays on the way through */
+             repaired = true;
+         } else {
+@@ -3112,6 +3143,30 @@
+                 }
+                 return;
+             }
++            /*
++             * The repair did not help, so withdrawing the guess was itself a guess -- and a one-way one, which
++             * is the exact fault this repair was written to cure. A drawable renderbuffer has no storage of its
++             * own (that is what makes it a drawable), so replaying its attachment produces INCOMPLETE_ATTACHMENT
++             * and every draw into that framebuffer is thrown away: Where's My Water renders its dirt and its
++             * fluids into offscreen targets, and they came out empty while the background art, drawn directly,
++             * looked fine.
++             *
++             * So put it back. A framebuffer that was right before the repair and wrong after it should end up
++             * the way it was, not in a third state that is worse than either.
++             */
++            if (was_drawable && was_rb) {
++                gles_set_drawable(name, was_rb);
++                glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gles_host_fbo(name));
++                st = glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT);
++                if (gles_refuse("fb-repair-undone:%u", name)) {
++                    fprintf(stderr, "[gles] framebuffer %u: putting its attachments back left it incomplete "
++                            "(0x%x), so it really was the drawable; the guess is back and it is %s\n",
++                            name, st, st == GL_FRAMEBUFFER_COMPLETE_EXT ? "complete" : "still not complete");
++                }
++                if (st == GL_FRAMEBUFFER_COMPLETE_EXT) {
++                    return;
++                }
++            }
+         }
+     }
+ 
+@@ -3797,10 +3852,29 @@
      /* Direct panel presentation has no CA transform. A resized drawable must
       * use its CA surface; reading it as a portrait panel would overrun or crop. */
      if (gh.drawable_width != GLES_FB_WIDTH ||
@@ -195,7 +242,7 @@ Claude-Session: https://claude.ai/code/session_01UGCtLRD1vYicb9wVRzGR7X
          return;
      }
      fb = nms->lcd_state->w1_framebuffer_base;
-@@ -3925,6 +3970,13 @@
+@@ -3925,6 +3999,13 @@
          g_autofree uint8_t *panel = NULL;
  
          if (!nms || !nms->lcd_state) {
@@ -209,7 +256,7 @@ Claude-Session: https://claude.ai/code/session_01UGCtLRD1vYicb9wVRzGR7X
              return;
          }
          fb = nms->lcd_state->scanout_base ? nms->lcd_state->scanout_base
-@@ -4295,6 +4347,8 @@
+@@ -4295,6 +4376,8 @@
   * nowhere, and silently returning 0 would make a black screen look like a
   * successful present.
   */
@@ -218,7 +265,7 @@ Claude-Session: https://claude.ai/code/session_01UGCtLRD1vYicb9wVRzGR7X
  static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride,
                                     uint32_t width, uint32_t height,
                                     uint32_t format)
-@@ -4322,6 +4376,38 @@
+@@ -4322,6 +4405,38 @@
          gles_refuse("present:%s", gles_fourcc(format, fourcc));
          return -1;
      }
@@ -257,7 +304,7 @@ Claude-Session: https://claude.ai/code/session_01UGCtLRD1vYicb9wVRzGR7X
      if (gh.drawable_announced ?
          (width != gh.drawable_width || height != gh.drawable_height) :
          (width > GLES_FB_WIDTH * 4 || height > GLES_FB_HEIGHT * 4)) {
-@@ -4985,8 +5071,18 @@
+@@ -4985,8 +5100,18 @@
      glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT, &framebuffer);
      color = gles_private_name(glIsTexture);
      glBindTexture(GL_TEXTURE_2D, color);
@@ -278,7 +325,7 @@ Claude-Session: https://claude.ai/code/session_01UGCtLRD1vYicb9wVRzGR7X
      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
      depth = gles_private_name(glIsRenderbufferEXT);
-@@ -5002,6 +5098,20 @@
+@@ -5002,6 +5127,20 @@
                                   GL_RENDERBUFFER_EXT, depth);
      status = glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT);
      error = glGetError();
@@ -299,7 +346,7 @@ Claude-Session: https://claude.ai/code/session_01UGCtLRD1vYicb9wVRzGR7X
      if (error == GL_NO_ERROR && status != GL_FRAMEBUFFER_COMPLETE_EXT)
          error = GL_OUT_OF_MEMORY;
      if (error != GL_NO_ERROR) gles_refuse("drawable:storage:0x%x", error);
-@@ -5017,9 +5127,9 @@
+@@ -5017,9 +5156,9 @@
          gh.readback = readback;
          gh.readback_size = (size_t)width * height * 4;
          gh.drawable_width = width; gh.drawable_height = height;

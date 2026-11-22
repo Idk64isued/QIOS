@@ -3,6 +3,40 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 71 — The Clue That Shook the World
+
+Stacks on 70. Rebuilds the emulator (patch 0027 changes) and the guest helper.
+
+The comparison that should have come first: **iOS 4 and 5 install fine, and only 6 refuses.**
+
+```
+iOS 4:  installd installed Fruit Ninja (com.Halfbrick.Fruit) ... in 2 s
+iOS 5:  installd installed Twitter (com.atebits.Tweetie2) ... in 4 s
+iOS 6:  installd: Twitter not installed, code -1
+```
+
+Same lt-install, same 8220-byte binary, same options dictionary, same staging path, same AppSync. Six updates of
+suspects — argv, the marshalling, the path, AppSync, dyld's restriction marker — are all disproved at once by a
+working case, because every one of them is identical on the two versions that work.
+
+**Fixed**
+- **The install now asks as mobile when root is refused.** The one thing that never varied is *who is asking*. The
+  agent spawns lt-install as root; iTunes installs through installation_proxy as **mobile**, which is who owns the
+  staged package and the container it goes into — and iOS 6 is the release that tightened installd. `lt-install`
+  takes a uid as its second argument now and drops to it (setgid before setuid) before calling
+  MobileInstallationInstall. Root is still tried first, so nothing that already works changes, and the log says
+  which one installd accepted.
+- **A framebuffer repair that made things worse now undoes itself** — and this is the dirt and the water in
+  Where's My Water. 65 taught this host to put back attachments it had skipped for a framebuffer it took for the
+  CA drawable. When that repair *doesn't* help, it used to leave the framebuffer withdrawn and broken anyway: a
+  drawable renderbuffer has no storage of its own, which is exactly what makes it a drawable, so replaying its
+  attachment gives `INCOMPLETE_ATTACHMENT` and **every draw into that framebuffer is thrown away**. The game
+  renders its dirt and its fluids into offscreen targets and composites them, so they came out empty while the
+  background art, drawn straight to the screen, looked perfect — `1200 offscreen draws` an interval and
+  `drawable mean rgb = 0,0,0` in the log, which is a level you can play only if you know where the dirt is.
+  Withdrawing the guess was itself a guess, and a one-way one — the very fault 65 was written to cure. It is
+  reversible now: if the repair leaves the framebuffer incomplete, the guess goes back, and the log says so.
+
 ## Update 70 — Phone Home
 
 Stacks on 69. App-side only; builds from cache.

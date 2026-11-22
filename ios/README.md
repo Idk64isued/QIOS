@@ -241,6 +241,13 @@ seconds before each install, so update 70 puts the job back as shipped and reads
 per-uid store, where a root daemon's messages go) instead. The names are built from the date, since listing the
 directory needs a shell stock iOS 6 has not got.
 
+Update 71 found the comparison that settles it: **iOS 4 and 5 install through installd fine, and only 6 refuses**,
+with the same helper, options and staging path. That disproves every suspect at once, because each is identical on
+the versions that work. What was never varied is who is asking: the agent spawns lt-install as root, while iTunes
+installs through installation_proxy as **mobile**, which owns the staged package and the container. `lt-install`
+takes an optional uid as its second argument and drops to it (setgid then setuid) before calling
+MobileInstallationInstall; the app tries root first, so iOS 4 and 5 are unaffected, then mobile.
+
 **iPhone OS 1 to 3, and the fallback: written in by hand.** Apps install through the guest agent, which runs as root
 inside the device. A stock image has no tool to make a folder, so the app puts one in: `lt-mkdirs`, a 456-byte static
 armv6 program, built from `lt-mkdirs.S` by `build.py` and embedded in `GuestHelperBinary.swift`. On iPhone OS 2 and

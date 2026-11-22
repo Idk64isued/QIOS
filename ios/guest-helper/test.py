@@ -334,7 +334,7 @@ def run_install(args, mi_result=0, missing=(), path_file=None):
         uc.mem_write(addr, struct.pack("<I", at[symbol.lstrip("_")]))
 
     state = {"exit": None, "out": b"", "opened": [], "looked": [], "strings": {}, "dict": None, "install": None,
-             "read_path_from": None}
+             "read_path_from": None, "became": []}
 
     def cstr(addr):
         out = b""
@@ -416,6 +416,9 @@ def run_install(args, mi_result=0, missing=(), path_file=None):
         elif num == 6:                                    # close
             fd["open"] = None
             return ret(0)
+        elif num in (23, 181):                            # setuid, setgid
+            state["became"].append((num, reg(UC_ARM_REG_R0)))
+            return ret(0)
         else:
             raise AssertionError(f"lt-install made system call {num}")
 
@@ -492,6 +495,20 @@ st = run_install(["/usr/local/bin/lt-install"], path_file="x" * 4000)
 good &= check_install("an absurdly long file is cut at the buffer, not run past it",
                       st["install"] is not None and st["install"][0] == "x" * 1020, st)
 # And with argv present the file is never touched, so the working path is unchanged.
+# The uid argument: setgid before setuid, both to the number given, and installd still gets the right path.
+st = run_install(["/usr/local/bin/lt-install", IPA, "501"])
+good &= check_install("argv[2] becomes that user first (setgid 501 then setuid 501)",
+                      st["exit"] == 0 and st["became"] == [(181, 501), (23, 501)]
+                      and st["install"] is not None and st["install"][0] == IPA, st)
+st = run_install(["/usr/local/bin/lt-install", IPA, "0"])
+good &= check_install("a uid of 0 stays root and drops nothing",
+                      st["exit"] == 0 and st["became"] == [] and st["install"] is not None, st)
+st = run_install(["/usr/local/bin/lt-install", IPA])
+good &= check_install("no uid argument stays root, exactly as iOS 4 and 5 already accept",
+                      st["exit"] == 0 and st["became"] == [], st)
+st = run_install(["/usr/local/bin/lt-install", IPA, "mobile"])
+good &= check_install("a uid that is not a number stays root rather than becoming 0 by accident",
+                      st["exit"] == 0 and st["became"] == [], st)
 st = run_install(["/usr/local/bin/lt-install", IPA], path_file="/wrong.ipa\n")
 good &= check_install("argv wins over the file, which is not even opened",
                       st["exit"] == 0 and st["out"] == b"lt-install: 0\n"

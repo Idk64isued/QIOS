@@ -708,6 +708,26 @@ extension GuestAgent {
         // missing argument too, so five updates read "installd turned it down" off a line that may have meant
         // "lt-install was handed no path". Nothing downstream of these codes is worth doing.
         let neverReachedInstalld: Set<Int> = [-2, -3, -4, -5, -6, -7, -8]
+        // Then as mobile, if root was refused.
+        //
+        // The same lt-install, the same .ipa and the same options install fine on iOS 4 and 5 and are refused on
+        // 6 — so none of the marshalling is wrong, and the one thing this has never varied is who is asking. The
+        // agent spawns as root; iTunes installs through installation_proxy as mobile, which owns the staged
+        // package and its container. iOS 6 is the release that tightened installd. Root is tried first because
+        // that is what 4 and 5 already accept, so nothing that works today changes.
+        if let first = answer(output), first != 0, !neverReachedInstalld.contains(first) {
+            log("installd: turned it down as root (\(first)); asking again as mobile, which is who "
+                + "installation_proxy is when iTunes installs")
+            let asMobile = await run([GuestInstallBinary.guestPath, staged, "501"], timeout: 900)
+            let mobileText = asMobile.map { String(decoding: $0.output, as: UTF8.self) } ?? ""
+            if answer(mobileText) == 0 {
+                log("installd took it as mobile. Root was the whole problem.")
+                result = asMobile
+                output = mobileText
+            } else if let code = answer(mobileText) {
+                log("installd: and turned it down as mobile too (\(code))")
+            }
+        }
         if let first = answer(output), first != 0, !neverReachedInstalld.contains(first),
             staged.hasPrefix(Self.mediaRoot)
         {
