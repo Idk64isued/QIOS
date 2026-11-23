@@ -431,6 +431,14 @@ can't download alongside yet.
   which had lost that meaning and was `INCOMPLETE_ATTACHMENT` on the host, so every draw was thrown away. Also:
   deleting the bound drawable framebuffer binds 0, and the incomplete report lists the last 24 framebuffer and
   renderbuffer operations (gen, bind, storage, delete, attach) in order.
+- `patches/qemu-ios/0032`: GL memory of apps that are gone is given back. A killed app (SpringBoard's restart after
+  an install takes every running app with it; crashes; jetsam) never destroys its EAGL contexts, so its contexts and
+  share group stayed charged until the 512 MiB cap was full and no app could get a drawable. Contexts and groups
+  record their process (TTBR0 at the call) and last use; past the cap, or with the context table full, another
+  process's objects idle for 30 s are let go (`context:evicted` if that app ever calls again). The frame buffer size
+  line prints once instead of on every failed attempt (458 MB of it in update 80). `glProgramUniform*EXT` (slots
+  892-910) are forwarded as `glUniform*` with the named program bound: GLKit's effects use them, and dropped they
+  left uniforms at zero, so those objects drew black (Wipeout 2).
 - `guest-helper/lt-locate.S`: sets the device's location through CoreLocation's `CLSimulationManager` (as Xcode's
   DTSimulateLocation does), for boards without a GPS receiver on iOS 5+. The one helper `build.py` signs: an ad-hoc
   `ldid -S`-style signature carrying `com.apple.locationd.simulation`, which locationd requires. Its strings sit at

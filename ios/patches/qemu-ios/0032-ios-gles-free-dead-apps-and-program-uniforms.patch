@@ -1,0 +1,375 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 22 Nov 2026 23:55:00 -0700
+Subject: [PATCH] ios: let go of dead apps' GL, and glProgramUniform*EXT
+
+Update 80's run: every install restarts SpringBoard, and launchd's SIGKILL
+takes every running app with it. A killed app never destroys its EAGL
+contexts, so its contexts and share group -- every texture it uploaded --
+stayed charged. Maps, Safari, Where's My Water, Monopoly and Wipeout 2 each
+left theirs behind, the total climbed to 510 of the 512 MiB cap, and then
+no app could get even a drawable:
+
+  [gles] GL objects hold 510 MiB; 4194304 bytes more would pass the 512 MiB cap
+  [gles] REFUSED host:no-context
+  [gles] frame buffer 640x960, from the display's console   (x 8,148,738)
+
+gles_host_init printed its frame buffer line on every attempt, which is the
+458 MB log. Now:
+
+- Each context and share group records the process that made it (TTBR0 at
+  the time of the call) and when it was last used. When an allocation would
+  pass the cap, or the context table is full, everything of ANOTHER process
+  that has been idle 30 s or more is let go. A dead process is idle forever;
+  the caller's own objects are never touched. A late call on a context that
+  was let go is refused as context:evicted, and deleting it succeeds.
+- The frame buffer line is printed once per size.
+- glProgramUniform*EXT (EXT_separate_shader_objects, slots 892-910) were
+  dropped. GLKit's effects set their uniforms that way, so those uniforms
+  stayed zero and every such object drew solid black -- Wipeout 2's
+  obstacles. They are now the matching glUniform* with the named program
+  bound for the length of the call.
+
+---
+  hw/arm/gles-host.c | 199 ++++++++++++++++++++++++++++++++++++++++++++++++++---
+  1 file changed, 191 insertions(+), 8 deletions(-)
+
+diff --git a/hw/arm/gles-host.c b/hw/arm/gles-host.c
+index 5b13f52..b21b7a3 100644
+--- a/hw/arm/gles-host.c
++++ b/hw/arm/gles-host.c
+@@ -486,6 +486,14 @@ static inline bool gles_budget_ok(uint64_t old, uint64_t new)
+     return new <= old || gles_buffer_bytes + gles_held_bytes + (new - old) <= GLES_MAX_GPU_BYTES;
+ }
+ 
++static bool gles_evict_idle(void);
++
++/* gles_budget_ok, after giving back what apps that are gone still hold if that is what it takes. */
++static bool gles_budget_room(uint64_t old, uint64_t new)
++{
++    return gles_budget_ok(old, new) || (gles_evict_idle() && gles_budget_ok(old, new));
++}
++
+ /*
+  * Grow-and-keep scratch of at least n bytes in *buf, or NULL past
+  * GLES_MAX_SCRATCH: a guest size never decides a host allocation unchecked.
+@@ -632,6 +640,8 @@ typedef struct {
+     CGLContextObj root;
+ #endif
+     unsigned refs;
++    uint64_t owner;             /* the creating process (gles_caller_owner) */
++    int64_t used;               /* when one of its contexts last drew (monotonic us) */
+     GHashTable *buffers, *surfaces, *rb_sized, *pvrtc;
+     GHashTable *charged;        /* gles_charge_key -> bytes, the group's named objects */
+     uint32_t next_buffer_name;
+@@ -666,6 +676,10 @@ typedef struct {
+     bool failed;
+     /* 0: older guest did not supply its API; 1/2: explicit GLES version. */
+     uint32_t api_version;
++    /* The process that made it (gles_caller_owner) and when it last made a call (monotonic us), for
++     * gles_evict_idle. */
++    uint64_t owner;
++    int64_t used;
+ #if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
+     CGLContextObj cgl;
+ #endif
+@@ -1037,7 +1051,7 @@ static bool gles_charge(GHashTable *table, gpointer key, uint64_t bytes, uint64_
+     uint64_t held = (uintptr_t)g_hash_table_lookup(table, key);
+ 
+     if (old) *old = held;
+-    if (!gles_budget_ok(held, bytes)) {
++    if (!gles_budget_room(held, bytes)) {
+         if (gles_refuse("cap:gpu-memory")) {
+             fprintf(stderr, "[gles] GL objects hold %" PRIu64 " MiB; %" PRIu64 " bytes more would pass the "
+                     "%" PRIu64 " MiB cap: GL_OUT_OF_MEMORY\n", (gles_held_bytes + gles_buffer_bytes) >> 20,
+@@ -1610,9 +1624,15 @@ static bool gles_host_init(void)
+         }
+     }
+     /* Said out loud, because a frame buffer that is not the panel's size is the whole of update 69 and nothing
+-     * in any log before it named this number. */
+-    fprintf(stderr, "[gles] frame buffer %ux%u, from %s\n", GLES_FB_WIDTH, GLES_FB_HEIGHT,
+-            panel_w > 0 ? "the display's console" : "the machine (no console size yet)");
++     * in any log before it named this number. Once per size: this runs again on every call while the drawable
++     * cannot be charged, and update 80's log carried this line eight million times (458 MB) when it could not. */
++    static uint32_t said_w, said_h;
++    if (said_w != GLES_FB_WIDTH || said_h != GLES_FB_HEIGHT) {
++        said_w = GLES_FB_WIDTH;
++        said_h = GLES_FB_HEIGHT;
++        fprintf(stderr, "[gles] frame buffer %ux%u, from %s\n", GLES_FB_WIDTH, GLES_FB_HEIGHT,
++                panel_w > 0 ? "the display's console" : "the machine (no console size yet)");
++    }
+     if (!gles_charge_drawable(GLES_FB_WIDTH, GLES_FB_HEIGHT, NULL)) {
+         return false;       /* not failed: a later call may find the memory given back */
+     }
+@@ -7192,6 +7212,38 @@ static bool gles_es2_call(CPUState *cpu, uint32_t slot, uint32_t argc,
+     g_autofree void *v = NULL;
+     uint32_t i, a[10] = { 0 };
+ 
++    /*
++     * EXT_separate_shader_objects' glProgramUniform*EXT: glUniform* aimed at a named program instead of the bound
++     * one. iOS 5 and 6 export them and GLKit's effects set their uniforms this way, so dropping them left those
++     * uniforms at zero -- every GLKBaseEffect-lit object drew solid black (Wipeout 2's obstacles, update 80). Done
++     * as the matching glUniform* with the program bound for the length of the call, the guest's view of what is
++     * bound (gh.program) included, so its location map applies.
++     */
++    if (slot >= 892 && slot <= 910) {
++        static const uint16_t uniform_slot[] = {
++            606, 607, 608, 609,         /* 1i-4i   */
++            602, 603, 604, 605,         /* 1f-4f   */
++            614, 615, 616, 617,         /* 1iv-4iv */
++            610, 611, 612, 613,         /* 1fv-4fv */
++            618, 619, 620,              /* Matrix2fv-4fv */
++        };
++        GLuint program = gles_glsl_host(ga[0]);
++        uint32_t bound = gh.program;
++        GLint current = 0;
++
++        *r = 0;
++        if (!argc || !program || gh.api_version == 1) {
++            return true;                /* GL_INVALID_VALUE on a device; nothing to set here */
++        }
++        glGetIntegerv(GL_CURRENT_PROGRAM, &current);
++        if ((GLuint)current != program) glUseProgram(program);
++        gh.program = ga[0];
++        gles_es2_call(cpu, uniform_slot[slot - 892], argc - 1, ga + 1, r);
++        gh.program = bound;
++        if ((GLuint)current != program) glUseProgram(current);
++        return true;
++    }
++
+     memcpy(a, ga, MIN(argc, 10) * sizeof(*a));
+     switch (slot) {             /* guest shader/program ids -> host ids */
+     case 593: case 598:
+@@ -8276,7 +8328,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
+             gles_refuse("buffer:unbound:0x%x", a[0]);
+             return -1;
+         }
+-        if (n > GLES_MAX_BUFFER_BYTES || !gles_budget_ok(b->size, n)) {
++        if (n > GLES_MAX_BUFFER_BYTES || !gles_budget_room(b->size, n)) {
+             gles_refuse("cap:glBufferData");
+             return gles_reject(GL_OUT_OF_MEMORY);
+         }
+@@ -9764,6 +9816,10 @@ void gles_host_set_allowed(bool allowed)
+ #if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
+ static GHashTable *gles_contexts, *gles_groups;
+ static uint32_t gles_handle = 0x80000000;
++/* Handles gles_evict_idle took back, so a late call names what happened instead of "unknown". */
++static GHashTable *gles_evicted;
++/* The process making the current request (gles_caller_owner), for the objects a context operation creates. */
++static uint64_t gles_call_owner;
+ 
+ static void gles_group_unref(GLESGroup *group)
+ {
+@@ -9835,6 +9891,7 @@ static int64_t gles_context_operation(unsigned slot, unsigned ctx, unsigned argc
+         gles_groups = g_hash_table_new(g_direct_hash, g_direct_equal);
+     }
+     if (slot == GLES_OP_NEW_SHAREGROUP) {
++        if (g_hash_table_size(gles_groups) >= GLES_MAX_CONTEXTS) gles_evict_idle();
+         if (argc || gles_handle == UINT32_MAX ||
+             g_hash_table_size(gles_groups) >= GLES_MAX_CONTEXTS) return -1;
+         GLESGroup *group = g_new0(GLESGroup, 1);
+@@ -9844,11 +9901,14 @@ static int64_t gles_context_operation(unsigned slot, unsigned ctx, unsigned argc
+         group->rb_sized = g_hash_table_new(g_direct_hash, g_direct_equal);
+         group->pvrtc = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+         group->charged = g_hash_table_new(g_direct_hash, g_direct_equal);
++        group->owner = gles_call_owner;
++        group->used = g_get_monotonic_time();
+         uint32_t handle = ++gles_handle;
+         g_hash_table_insert(gles_groups, GUINT_TO_POINTER(handle), group);
+         return handle;
+     }
+     if (slot == GLES_OP_NEW_CONTEXT) {
++        if (g_hash_table_size(gles_contexts) >= GLES_MAX_CONTEXTS) gles_evict_idle();
+         if ((argc != 1 && argc != 2) || gles_handle == UINT32_MAX ||
+             g_hash_table_size(gles_contexts) >= GLES_MAX_CONTEXTS) return -1;
+         if (argc == 2 && args[1] != 1 && args[1] != 2) return -1;
+@@ -9857,6 +9917,9 @@ static int64_t gles_context_operation(unsigned slot, unsigned ctx, unsigned argc
+         if (!gles_begin_context()) return -1;
+         GLESHost *state = g_new0(GLESHost, 1);
+         state->api_version = argc == 2 ? args[1] : 0;
++        state->owner = gles_call_owner;
++        state->used = g_get_monotonic_time();
++        group->used = state->used;
+         state->group = group; group->refs++;
+         state->buffers = group->buffers;
+         state->surfaces = group->surfaces;
+@@ -9871,7 +9934,9 @@ static int64_t gles_context_operation(unsigned slot, unsigned ctx, unsigned argc
+     if (slot == GLES_OP_DELETE_CONTEXT) {
+         if (argc) return -1;
+         GLESHost *state = g_hash_table_lookup(gles_contexts, GUINT_TO_POINTER(ctx));
+-        if (!state) return -1;
++        if (!state) {
++            return gles_evicted && g_hash_table_remove(gles_evicted, GUINT_TO_POINTER(ctx)) ? 0 : -1;
++        }
+         g_hash_table_remove(gles_contexts, GUINT_TO_POINTER(ctx));
+         gles_end_context();
+         if (trace_event_get_state_backends(TRACE_GLES_CONTEXT_LOG)) TRACE_PRINTF(trace_gles_context_log, "[gles-context] deleted %08x %p initialized=%d\n", ctx, (void *)state, state->inited);
+@@ -9881,7 +9946,9 @@ static int64_t gles_context_operation(unsigned slot, unsigned ctx, unsigned argc
+     if (slot == GLES_OP_DELETE_SHAREGROUP) {
+         if (argc != 1) return -1;
+         GLESGroup *group = g_hash_table_lookup(gles_groups, GUINT_TO_POINTER(args[0]));
+-        if (!group) return -1;
++        if (!group) {
++            return gles_evicted && g_hash_table_remove(gles_evicted, GUINT_TO_POINTER(args[0])) ? 0 : -1;
++        }
+         g_hash_table_remove(gles_groups, GUINT_TO_POINTER(args[0]));
+         gles_group_unref(group);
+         return 0;
+@@ -9889,6 +9956,95 @@ static int64_t gles_context_operation(unsigned slot, unsigned ctx, unsigned argc
+     return -1;
+ }
+ 
++/*
++ * Taking back what apps that are gone still hold.
++ *
++ * A context is destroyed by its own process (EAGLContext's dealloc sends GLES_OP_DELETE_CONTEXT). A process that is
++ * killed never gets that far: launchd's SIGKILL when SpringBoard restarts (every install and uninstall restarts
++ * it, and takes every running app down with it), a crash, jetsam, an app that exit()s when sent home. Its contexts
++ * and its share group -- every texture it uploaded -- then stayed charged for the rest of the boot. Update 80's
++ * log shows it: Maps, Safari, Where's My Water, Monopoly and Wipeout 2 each left theirs behind, the total climbed
++ * 64, 128 ... 510 MiB of the 512 MiB cap, and from then on no app could get even a drawable (and every call
++ * printed a line, which is the 458 MB log).
++ *
++ * The host cannot see guest processes, but it can tell them apart: each has its own translation table, so TTBR0
++ * at the time of a call names the calling process. When an allocation would pass the cap (or the context table is
++ * full), every context and share group that belongs to ANOTHER process and has not been used for
++ * GLES_EVICT_IDLE_US is let go. A dead process's contexts are never used again, so they always qualify; the
++ * caller's own never do. An app that is alive but sat in the background that long loses its GL, as a real
++ * device's jetsam would have taken the whole app under the same pressure; its next call is refused with
++ * "context:evicted" and it needs reopening.
++ */
++#define GLES_EVICT_IDLE_US ((int64_t)30 * G_USEC_PER_SEC)
++
++static bool gles_evictable(uint64_t owner, int64_t used, int64_t now)
++{
++    return owner != gles_call_owner && now - used >= GLES_EVICT_IDLE_US;
++}
++
++static void gles_note_evicted(gpointer handle)
++{
++    if (!gles_evicted) gles_evicted = g_hash_table_new(g_direct_hash, g_direct_equal);
++    if (g_hash_table_size(gles_evicted) < 4096) g_hash_table_add(gles_evicted, handle);
++}
++
++static bool gles_evict_idle(void)
++{
++    GHashTableIter it;
++    gpointer key, value;
++    int64_t now = g_get_monotonic_time();
++    uint64_t before = gles_held_bytes + gles_buffer_bytes;
++    unsigned contexts = 0, groups = 0;
++
++    if (!gles_contexts) return false;
++    g_hash_table_iter_init(&it, gles_contexts);
++    while (g_hash_table_iter_next(&it, &key, &value)) {
++        GLESHost *state = value;
++        if (state == gh_current || !gles_evictable(state->owner, state->used, now)) continue;
++        if (state->group && !gles_evictable(state->group->owner, state->group->used, now)) continue;
++        g_hash_table_iter_remove(&it);
++        gles_end_context();
++        gles_note_evicted(key);
++        gles_context_free(state);
++        contexts++;
++    }
++    /* A group whose only reference left is the table's own (refs 1): no context of a live process draws with it. */
++    g_hash_table_iter_init(&it, gles_groups);
++    while (g_hash_table_iter_next(&it, &key, &value)) {
++        GLESGroup *group = value;
++        if (group->refs != 1 || !gles_evictable(group->owner, group->used, now)) continue;
++        g_hash_table_iter_remove(&it);
++        gles_note_evicted(key);
++        gles_group_unref(group);
++        groups++;
++    }
++    if (!contexts && !groups) {
++        static bool said;
++        if (!said) {             /* once: what was there, so a report shows why nothing could be freed */
++            g_autoptr(GHashTable) owners = g_hash_table_new(g_int64_hash, g_int64_equal);
++            unsigned idle = 0;
++            said = true;
++            g_hash_table_iter_init(&it, gles_contexts);
++            while (g_hash_table_iter_next(&it, NULL, &value)) {
++                GLESHost *state = value;
++                g_hash_table_add(owners, &state->owner);
++                idle += now - state->used >= GLES_EVICT_IDLE_US;
++            }
++            fprintf(stderr, "[gles] GL memory is full and nothing could be let go: %u context(s) from %u "
++                    "process(es), %u idle for %u s or more\n", g_hash_table_size(gles_contexts),
++                    g_hash_table_size(owners), idle, (unsigned)(GLES_EVICT_IDLE_US / G_USEC_PER_SEC));
++        }
++        return false;
++    }
++    /* gles_context_free made each freed context current to delete its objects: the caller's goes back. */
++    CGLSetCurrentContext(gh.cgl);
++    uint64_t after = gles_held_bytes + gles_buffer_bytes;
++    fprintf(stderr, "[gles] let go of %u context(s) and %u share group(s) of apps that stopped drawing: "
++            "%" PRIu64 " MiB back, %" PRIu64 " MiB held\n", contexts, groups,
++            (before - after) >> 20, after >> 20);
++    return true;
++}
++
+ static void gles_drop_all(void);
+ #ifdef GLES_HOST_ANGLE
+ static void gles_snapshot_register(void) {} /* migration blocker is held for live EGL state */
+@@ -9916,7 +10072,10 @@ static void gles_drop_all(void)
+     gles_context_free(&gh_legacy);
+     qatomic_set(&gles_live_contexts, 0);
+     if (gles_save_blocker) migrate_del_blocker(&gles_save_blocker);
++    if (gles_evicted) g_hash_table_remove_all(gles_evicted);
+ }
++#else
++static bool gles_evict_idle(void) { return false; }  /* one legacy context: nothing of another process's to free */
+ #endif
+ 
+ void gles_host_reset(void)
+@@ -9929,6 +10088,16 @@ void gles_host_reset(void)
+ #endif
+ }
+ 
++/* The calling guest process: its translation table base (TTBR0 less its attribute bits). Every process has its
++ * own, so two calls with the same value come from the same address space. */
++static G_GNUC_UNUSED uint64_t gles_caller_owner(CPUState *cpu)
++{
++    if (!cpu) return 0;
++    CPUARMState *env = cpu_env(cpu);
++    uint64_t ttbr0 = arm_is_secure(env) ? env->cp15.ttbr0_s : env->cp15.ttbr0_ns;
++    return (ttbr0 & ~(uint64_t)0x7f) | 1;
++}
++
+ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
+                        uint32_t argc, const uint32_t *a)
+ {
+@@ -9941,6 +10110,9 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
+         return -1;
+     }
+ 
++#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
++    gles_call_owner = gles_caller_owner(cpu);
++#endif
+     if (slot >= GLES_OP_NEW_SHAREGROUP && slot <= GLES_OP_DELETE_CONTEXT) {
+ #if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
+         r = gles_context_operation(slot, ctx, argc, a);
+@@ -9953,9 +10125,20 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
+ #if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
+     GLESHost *state = gles_contexts ? g_hash_table_lookup(gles_contexts, GUINT_TO_POINTER(ctx)) : NULL;
+     if (ctx >= 0x80000000 && !state) {
+-        gles_refuse("context:unknown");
++        if (gles_evicted && g_hash_table_contains(gles_evicted, GUINT_TO_POINTER(ctx))) {
++            if (gles_refuse("context:evicted")) {
++                fprintf(stderr, "[gles] an app came back to a context that was let go while it sat idle and GL "
++                        "memory ran out; it draws nothing until it is closed and opened again\n");
++            }
++        } else {
++            gles_refuse("context:unknown");
++        }
+         return -1;
+     }
++    if (state) {
++        state->used = g_get_monotonic_time();
++        if (state->group) state->group->used = state->used;
++    }
+     gh_current = state ? state : &gh_legacy;
+ #endif
+     gles_read_switches();
+-- 
+2.43.0

@@ -152,6 +152,9 @@ enum Reports {
         if fm.fileExists(atPath: LTMLog.url.path) {
             try? fm.copyItem(at: LTMLog.url, to: work.appendingPathComponent("lighttouch.log"))
         }
+        for part in [LTMLog.startURL, LTMLog.earlierURL] where fm.fileExists(atPath: part.path) {
+            try? fm.copyItem(at: part, to: work.appendingPathComponent(part.lastPathComponent))
+        }
         if fm.fileExists(atPath: LTMLog.serialURL.path) {
             try? fm.copyItem(at: LTMLog.serialURL, to: work.appendingPathComponent("serial.log"))
         }

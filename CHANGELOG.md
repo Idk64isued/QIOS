@@ -3,6 +3,24 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 81 — Spring Cleaning
+
+Stacks on 80. App-side plus emulator patch 0032, so the emulator libraries rebuild. Fixes what update 80's test run
+turned up.
+
+**Fixed**
+- **Games stop failing to load after a while.** Every install or uninstall restarts the home screen, and that closes
+  every open app without letting it clean up. Their graphics memory was never given back: by the time Wipeout 2
+  finished loading, five closed apps were holding nearly all of it, and from then on no game could even get a screen
+  to draw on — which is the "system unusable" after Wipeout, and very likely Minecraft's crash too. Graphics memory
+  of apps that are gone (or have sat unused in the background for 30 seconds) is now given back when it's needed.
+- **Wipeout's black shapes.** The obstacles were drawn solid black because the way Apple's GLKit sets an object's
+  colours and lighting (one call family the emulator didn't handle) was being dropped, leaving them all at zero.
+  Those calls now go through. This should fix Wipeout 1 and 2, and other games built on GLKit.
+- **Reports small enough to send.** Update 80's log was 458 MB: one line repeated eight million times while no game
+  could get a screen. That line now prints once, and the log is split every 32 MB, keeping the start of the session
+  and the latest two parts, so a report always stays sendable.
+
 ## Update 80 — Halfway to Heaven
 
 Stacks on 79. App-side plus emulator patch 0031, so the emulator libraries rebuild. The 80th update: from a device

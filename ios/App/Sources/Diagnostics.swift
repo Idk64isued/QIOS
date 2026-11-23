@@ -36,10 +36,35 @@ enum LTMLog {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("serial.log")
     }
 
+    /// The first part of a log that grew past `partLimit` (the boot, kept whole) and the part just before the one
+    /// being written now. Reports carry both, so a session that ran long still shows how it started and how it got
+    /// to where it is, and no report is ever more than three parts.
+    static var startURL: URL { url.deletingLastPathComponent().appendingPathComponent("lighttouch-start.log") }
+    static var earlierURL: URL { url.deletingLastPathComponent().appendingPathComponent("lighttouch-earlier.log") }
+    /// Update 80's log reached 458 MB (one line repeated eight million times) and could not be sent.
+    static let partLimit: UInt64 = 32 * 1024 * 1024
+
     static func start() {
         started = ProcessInfo.processInfo.systemUptime
+        try? FileManager.default.removeItem(at: startURL)
+        try? FileManager.default.removeItem(at: earlierURL)
         _ = freopen(url.path, "w", stderr)
         setvbuf(stderr, nil, _IOLBF, 0)
+    }
+
+    /// Starts a new part once the log passes `partLimit`: the first full part becomes lighttouch-start.log, later
+    /// ones lighttouch-earlier.log (replacing the one before). Called from the sampler every ten seconds.
+    static func splitIfLarge() {
+        let fm = FileManager.default
+        guard let size = ((try? fm.attributesOfItem(atPath: url.path))?[.size] as? NSNumber)?.uint64Value,
+              size > partLimit else { return }
+        let keep = fm.fileExists(atPath: startURL.path) ? earlierURL : startURL
+        fflush(stderr)
+        try? fm.removeItem(at: keep)
+        guard (try? fm.moveItem(at: url, to: keep)) != nil else { return }
+        _ = freopen(url.path, "w", stderr)
+        setvbuf(stderr, nil, _IOLBF, 0)
+        note("log continues from \(keep.lastPathComponent) (each part stops at \(partLimit >> 20) MB)")
     }
 
     static func note(_ text: String) {
@@ -79,6 +104,7 @@ enum LTMLog {
                 note(String(format: "cpu %.0f%% of one core, %.1f frames/s, thermal %@, low power %@", (cpu - lastCPU) / wall * 100,
                     Double(frames - lastFrames) / wall, thermal, ProcessInfo.processInfo.isLowPowerModeEnabled ? "ON" : "off"))
                 lastCPU = cpu; lastWall = now; lastFrames = frames
+                splitIfLarge()
             }
         }
     }
