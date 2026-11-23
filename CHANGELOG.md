@@ -3,6 +3,16 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 77 — Where's the Switch
+
+Stacks on 76. App-side only; builds from cache.
+
+**Fixed**
+- **Graphics Capture can be found.** 76 put its switch on the home screen's settings and the iOS 6-style Settings
+  page, but not on the full Settings screen most people open, and not on the classic home screen's own list. It is
+  now in all of them: Settings ▸ Advanced ▸ Graphics capture (with an ⓘ saying what it does), and Graphics Capture
+  under Settings on the classic home screen.
+
 ## Update 76 — Say Cheese
 
 Stacks on 75. App-side plus emulator patch 0028, so the emulator libraries rebuild.

@@ -25,6 +25,13 @@ struct DeviceIconArt: View {
 
 // MARK: - The original layout in iOS 6 (Settings › Home Screen › Original (iOS 6))
 
+/// Settings \u{25B8} Graphics Capture, as a row of its own: it keeps its own setting, so ClassicHome's memberwise
+/// initialiser (used from RootView) stays as it was.
+struct GraphicsCaptureRow: View {
+    @AppStorage("glCapture") private var glCapture = false
+    var body: some View { SixToggleRow(title: "Graphics Capture", isOn: $glCapture) }
+}
+
 /// The original home screen, section for section, drawn as iOS 6's grouped tables.
 struct ClassicHome: View {
     let devices: [DeviceFolder]
@@ -89,6 +96,8 @@ struct ClassicHome: View {
                 SixToggleRow(title: "Rectangle Textures \u{2192} 2D", isOn: $rect2d)
                 SixSeparator()
                 SixToggleRow(title: "Skip GL Error Checks", isOn: $fastGL)
+                SixSeparator()
+                GraphicsCaptureRow()
                 SixSeparator()
                 SixToggleRow(title: "Diagnostics in Log", isOn: $diag)
                 SixSeparator()

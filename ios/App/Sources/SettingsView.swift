@@ -49,6 +49,7 @@ struct DeviceSettingsView: View {
     @AppStorage("microphone") private var microphone = true
     @AppStorage("glRenderer") private var glRenderer = "angle"
     @AppStorage("codeCacheMB") private var codeCacheMB = 512
+    @AppStorage("glCapture") private var glCapture = false
 
     /// Rows whose ⓘ has been tapped, by title.
     @State private var expanded: Set<String> = []
@@ -166,7 +167,7 @@ struct DeviceSettingsView: View {
                                 withAnimation(.easeInOut(duration: 0.18)) { showAdvanced.toggle() }
                             } label: {
                                 HStack {
-                                    Text(showAdvanced ? "Hide" : "Boot log, debug port, USB, speed")
+                                    Text(showAdvanced ? "Hide" : "Graphics capture, boot log, debug port, USB")
                                         .font(.system(size: 13, weight: .medium, design: .rounded))
                                         .foregroundStyle(Theme.accent)
                                     Spacer()
@@ -178,6 +179,9 @@ struct DeviceSettingsView: View {
                             .buttonStyle(.plain)
 
                             if showAdvanced {
+                                toggle("Graphics capture", "Snapshots of what games draw. Next boot.",
+                                       detail: "Every ten seconds, one frame of what a game draws is saved together with each hidden layer it drew first, and a list of that frame\u{2019}s draws goes into the log. The newest four go into the next report you share. It slows games down, so turn it off when you\u{2019}re done. Takes effect on the next boot.",
+                                       isOn: $glCapture)
                                 toggle("Verbose boot", "Kernel messages instead of the logo.",
                                        detail: "The kernel\u{2019}s messages scroll on the device\u{2019}s screen instead of the Apple logo, so a slow or stuck boot shows where it is. Takes effect on the next boot.",
                                        isOn: $verboseBoot)
