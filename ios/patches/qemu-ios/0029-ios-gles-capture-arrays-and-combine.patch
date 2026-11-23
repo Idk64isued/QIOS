@@ -1,0 +1,178 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 22 Nov 2026 17:50:00 -0700
+Subject: [PATCH] ios: graphics capture -- the colour and texcoord arrays a draw reads
+
+The first capture of Where's My Water found the layer that goes missing.
+Framebuffer 2, 320x480, colour texture 67, is read back as
+
+  mean rgba=254,255,255,0
+
+in every capture: white with no alpha anywhere. The screen composites it
+with a GL_COMBINE draw that blends by that alpha, so a target with alpha
+zero everywhere composites to nothing -- the layer is drawn on screen and
+invisible. Three draws go into it each frame:
+
+  colormask=0001 blend(ZERO, ONE_MINUS_SRC_ALPHA)   quad, untextured
+  580 vertices, texture 45, blend(ONE, ONE_MINUS_SRC_ALPHA),
+      positions only (stride 8), NO texcoord array, colour array on
+  816 vertices, texture 8, blend(ONE, ONE), colormask=1110
+
+The second one is the only draw that can put alpha in, and it puts none.
+Its alpha is texture 45 times its colour array, and the trace said
+nothing about either: not the texture's format, not what the colour
+array holds, not whether that array is this draw's or one left enabled
+from an earlier one, nor what scale the modelview puts on positions that
+read (0,0) (0,0) (0.009,0). Each of those is a different fix.
+
+So a capture now also logs, per traced draw, the first two elements of
+the colour array and of the texcoord arrays on units 0 and 1 (type,
+size, stride, pointer, VBO or not), the modelview's scale and the client
+active unit, and for a unit in GL_COMBINE its combine functions, sources
+and operands. And every texture's level 0 -- format, type, and PVRTC
+ones too -- instead of the first 32 names, so texture 45 is in the log.
+
+Nothing changes unless a capture is switched on.
+---
+diff --git a/hw/arm/gles-host.c b/hw/arm/gles-host.c
+index d8a5557..a5d24d3 100644
+--- a/hw/arm/gles-host.c
++++ b/hw/arm/gles-host.c
+@@ -631,6 +631,18 @@ typedef struct {
+ /* Guest framebuffer names a capture tracks the viewport of (names are small integers, handed out in order). */
+ #define GLES_CAPTURE_FBS 64
+ 
++/* A graphics capture is on (IT_GLES_VERBOSE=2 or more): log what is normally capped or left out. */
++static bool gles_capturing(void)
++{
++    static int on = -1;
++
++    if (on < 0) {
++        const char *v = getenv("IT_GLES_VERBOSE");
++        on = v && atoi(v) >= 2;
++    }
++    return on;
++}
++
+ typedef struct {
+     GLESGroup *group;
+     GHashTable *surfaces, *pvrtc;
+@@ -3504,6 +3516,50 @@ static void gles_trace_vertices(void)
+     fprintf(stderr, ")\n");
+ }
+ 
++/*
++ * The first two elements of a colour or texcoord array, as this draw will read them. A layer drawn with a
++ * colour array whose alpha comes through as zero, or with texture coordinates that all land on one texel,
++ * is drawn and invisible -- and a stale pointer from an earlier draw looks like either.
++ */
++static void gles_trace_array(const char *what, const GLESArray *a)
++{
++    uint32_t esz = gles_type_size(a->type) * a->size;
++    uint32_t stride = a->stride ? a->stride : esz;
++    const uint8_t *src = a->vbo ? (a->ptr < a->vbo->size ? a->vbo->data + a->ptr : NULL) : a->buf;
++    size_t avail = a->vbo ? (a->ptr < a->vbo->size ? a->vbo->size - a->ptr : 0) : a->buf_size;
++    unsigned i, c;
++
++    if (!a->enabled) {
++        fprintf(stderr, "[gles]     %s: off\n", what);
++        return;
++    }
++    fprintf(stderr, "[gles]     %s: type=0x%x size=%u stride=%u ptr=0x%08x%s:", what, a->type, a->size,
++            a->stride, a->ptr, a->vbo ? " (vbo)" : "");
++    for (i = 0; i < 2 && src && esz; i++) {
++        const uint8_t *row = src + (size_t)stride * i;
++
++        if (!gles_range_ok((uint64_t)stride * i, esz, avail)) {
++            break;
++        }
++        fprintf(stderr, " (");
++        for (c = 0; c < a->size && c < 4; c++) {
++            float v;
++
++            switch (a->type) {
++            case GL_FLOAT:          v = ((const float *)row)[c];               break;
++            case GL_UNSIGNED_BYTE:  v = row[c] / 255.0f;                       break;
++            case GL_BYTE:           v = ((const int8_t *)row)[c];              break;
++            case GL_SHORT:          v = ((const int16_t *)row)[c];             break;
++            case GLES_FIXED:        v = ((const int32_t *)row)[c] / 65536.0f;  break;
++            default:                v = 0;                                     break;
++            }
++            fprintf(stderr, "%s%.3f", c ? " " : "", v);
++        }
++        fprintf(stderr, ")");
++    }
++    fprintf(stderr, "\n");
++}
++
+ static void gles_trace_draw(const char *what, uint32_t mode, uint32_t count)
+ {
+     GLfloat mv[16], cur_col[4], mat_dif[4], line_width = 0;
+@@ -3598,7 +3654,32 @@ static void gles_trace_draw(const char *what, uint32_t mode, uint32_t count)
+                 glIsEnabled(GL_ALPHA_TEST), afunc, aref,
+                 glIsEnabled(GL_STENCIL_TEST), sfunc, sref, smask, sfail, szfail, szpass,
+                 cmask[0], cmask[1], cmask[2], cmask[3], glIsEnabled(GL_SCISSOR_TEST));
++        /* The scale the modelview applies: positions in 0..1 under a scale of 64 and positions in world units
++         * under 1 read the same in the vertex line, and only one of them covers the screen. */
++        fprintf(stderr, "[gles]     modelview scale=(%.3f %.3f) clientunit=%u\n", mv[0], mv[5],
++                gh.client_active_unit);
++        for (u = 0; u < 2; u++) {
++            if (unit_env[u] == 0x8570 /* GL_COMBINE */ && unit_on[u]) {
++                static const GLenum q[] = { 0x8571, 0x8572, 0x8580, 0x8581, 0x8582, 0x8590, 0x8591, 0x8592,
++                                            0x8588, 0x8589, 0x858A, 0x8598, 0x8599, 0x859A };
++                GLint v[ARRAY_SIZE(q)];
++                size_t k;
++
++                glActiveTexture(GL_TEXTURE0 + u);
++                for (k = 0; k < ARRAY_SIZE(q); k++) {
++                    v[k] = 0;
++                    glGetTexEnviv(GL_TEXTURE_ENV, q[k], &v[k]);
++                }
++                glActiveTexture((GLenum)active);
++                fprintf(stderr, "[gles]     unit%u combine rgb=0x%x alpha=0x%x  rgb src 0x%x 0x%x 0x%x op 0x%x 0x%x 0x%x"
++                        "  alpha src 0x%x 0x%x 0x%x op 0x%x 0x%x 0x%x\n", u, v[0], v[1], v[2], v[3], v[4],
++                        v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13]);
++            }
++        }
+     }
++    gles_trace_array("colors", &gh.color);
++    gles_trace_array("texcoord0", &gh.texcoord[0]);
++    gles_trace_array("texcoord1", &gh.texcoord[1]);
+     gles_trace_vertices();
+ }
+ 
+@@ -5185,6 +5266,14 @@ static int64_t gles_pvrtc_upload(CPUState *cpu, uint32_t target, uint32_t level,
+     }
+     const uint8_t *src = data ? gles_fetch_texels(cpu, data, size, "PVRTC upload") : NULL;
+     if (data && !src) return gles_reject(GL_INVALID_OPERATION);
++    if (level == 0 && gles_capturing()) {
++        GLint name = 0;
++
++        glGetIntegerv(face ? GL_TEXTURE_BINDING_CUBE_MAP : GL_TEXTURE_BINDING_2D, &name);
++        fprintf(stderr, "[gles] texture %d level0 %ux%u PVRTC %dbpp %s%s\n", name, w, h, bpp,
++                (format == PVRTC_RGBA_2BPP || format == PVRTC_RGBA_4BPP) ? "RGBA" : "RGB",
++                replace ? " (replaced)" : "");
++    }
+     uint8_t *dst = gles_decode_buf((size_t)w * h * 4);
+     if (!dst) {
+         gles_refuse("cap:pvrtc-decode");
+@@ -7793,7 +7882,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
+ 
+             glGetIntegerv(GL_TEXTURE_BINDING_2D, &name);
+             glGetTexParameteriv(target, GL_TEXTURE_MIN_FILTER, &minf);
+-            if (name && name <= 32) {
++            if (name && (name <= 32 || gles_capturing())) {
+                 bool mips = (minf == GL_NEAREST_MIPMAP_NEAREST
+                              || minf == GL_LINEAR_MIPMAP_NEAREST
+                              || minf == GL_NEAREST_MIPMAP_LINEAR
+@@ -7811,8 +7900,8 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
+                         cnt++;
+                     }
+                 }
+-                fprintf(stderr, "[gles] texture %d level0 %ux%u fmt=0x%x "
+-                        "minfilter=0x%x mean=%llu%s%s\n", name, w, h, fmt, minf,
++                fprintf(stderr, "[gles] texture %d level0 %ux%u fmt=0x%x type=0x%x "
++                        "minfilter=0x%x mean=%llu%s%s\n", name, w, h, fmt, type, minf,
+                         cnt ? sum / cnt : 0ULL,
+                         mips ? " NEEDS-MIPS" : "",
+                         px ? "" : " (NO CONTENT)");

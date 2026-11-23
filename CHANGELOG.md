@@ -3,6 +3,20 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 78 — Alpha Zero
+
+Stacks on 77. Emulator patch 0029, so the emulator libraries rebuild.
+
+**Changed**
+- **Where's My Water: the missing layer is found; this capture says why it is empty.** The first capture (Update 76)
+  read back every hidden layer the game draws, and one of them is the culprit: a 320x480 layer that comes back white
+  with **no alpha anywhere**, in every capture. The game puts it on screen blended by that alpha, so it lands as
+  nothing — drawn, and invisible. Of the three draws that go into it each frame, only one can put alpha in, and it
+  doesn't: it is a texture multiplied by per-vertex colours, with no texture coordinates. Which of those is zero is
+  a different fix each time, and the first capture couldn't see either. Graphics Capture now also logs the colours
+  and texture coordinates each draw actually reads, the scale its geometry is drawn at, how the layers are combined,
+  and the format of every texture the game loads. Same steps as before.
+
 ## Update 77 — Where's the Switch
 
 Stacks on 76. App-side only; builds from cache.

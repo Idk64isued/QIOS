@@ -414,6 +414,12 @@ can't download alongside yet.
   stencil test and colour mask. Four slots, reused. Written for Where's My Water, whose dirt and water go through
   offscreen targets and come out missing with every one of them complete. The shim's per-frame lines move to
   `IT_GLES_VERBOSE=3`.
+- `patches/qemu-ios/0029`: more of the same capture. Where's My Water's first capture found the missing layer —
+  framebuffer 2 reads back `mean rgba=254,255,255,0`, no alpha anywhere, and the screen composites it by that alpha —
+  and the one draw that should put alpha in is texture 45 times a colour array, with no texcoord array. So each traced
+  draw now also logs the first elements of its colour and texcoord arrays (and whether they are VBO-backed), the
+  modelview scale, the client active unit and any GL_COMBINE setup, and a capture logs every texture's level 0
+  (format, type, PVRTC) rather than the first 32 names.
 - The screen is drawn through Metal (`MetalPresenter`): one copy of each frame into a shared texture and a blit,
   instead of a CGImage per frame that Core Animation copied and converted again.
 - The profiler samples 10 times a second (it was 50; every sample stops the virtual CPU for a moment).
