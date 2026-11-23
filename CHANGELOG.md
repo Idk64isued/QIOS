@@ -3,6 +3,20 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 79 — Water in the Box
+
+Stacks on 78. Emulator patch 0030, so the emulator libraries rebuild.
+
+**Fixed**
+- **Where's My Water's water (and very likely its dirt).** Update 78's capture showed the draw that makes the water
+  reading the wrong data: the positions and colours of a tiny four-corner square drawn just before it, stretched to
+  460 points, with no texture coordinates — so it drew nothing, and the water layer stayed empty. The game keeps its
+  water in a *vertex array object*, a saved bundle of "where this mesh's points, colours and texture coordinates
+  are" that it switches to with one call. Our emulation of those bundles only saved the kind newer (OpenGL ES 2.0)
+  apps use, and Where's My Water is an ES 1.1 game, so switching bundles did nothing and every such draw used
+  whatever the previous draw had left behind. The bundles now save and restore the ES 1.1 arrays too, the way the
+  real iPhone does. Any other ES 1.1 game that uses them is fixed the same way.
+
 ## Update 78 — Alpha Zero
 
 Stacks on 77. Emulator patch 0029, so the emulator libraries rebuild.

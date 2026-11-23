@@ -420,6 +420,12 @@ can't download alongside yet.
   draw now also logs the first elements of its colour and texcoord arrays (and whether they are VBO-backed), the
   modelview scale, the client active unit and any GL_COMBINE setup, and a capture logs every texture's level 0
   (format, type, PVRTC) rather than the first 32 names.
+- `patches/qemu-ios/0030`: vertex array objects carry the ES 1.1 client arrays. VAOs saved only the ES 2.0 generic
+  attributes (written for SpringBoard's and Google's engines), so in an ES 1.1 context binding one changed nothing and
+  the next draw ran on the last non-VAO draw's pointers. Where's My Water keeps its water mesh in a VAO: its metaball
+  draw read the scratch quad's positions and colours, no texcoords, 460 vertices long into zeros, the water layer
+  came back with alpha 0 everywhere, and its `GL_SUBTRACT` threshold composited it to nothing. The vertex, colour,
+  normal, texcoord and point-size arrays are now VAO state, as OES_vertex_array_object says they are.
 - The screen is drawn through Metal (`MetalPresenter`): one copy of each frame into a shared texture and a blit,
   instead of a CGImage per frame that Core Animation copied and converted again.
 - The profiler samples 10 times a second (it was 50; every sample stops the virtual CPU for a moment).

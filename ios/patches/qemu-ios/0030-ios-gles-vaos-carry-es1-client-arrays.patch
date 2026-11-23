@@ -1,0 +1,167 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 22 Nov 2026 18:55:00 -0700
+Subject: [PATCH] ios: vertex array objects carry the ES 1.1 client arrays
+
+Where's My Water's second capture shows the water draw for what it is:
+
+  fb=2 colormask=0001  4 vertices  positions stride 8 @0x006949c4
+                                   colours  stride 4 @0x0069da0c
+  fb=2 texture 45     460 vertices  positions stride 8 @0x006949c4
+                                   colours  stride 4 @0x0069da0c
+                                   (0 0 0 0) (0 0 0 0)  texcoord0: off
+
+The 460-vertex draw -- the water's metaballs, a 16x16 blob texture per
+particle, the one draw that puts alpha into the water layer -- reads the
+very pointers the four-vertex scratch quad before it set, without
+texture coordinates, and gets zeros. Its alpha is zero everywhere, and
+the screen composites that layer through GL_SUBTRACT against a primary
+alpha of 0.125, a metaball threshold: zero minus a threshold is nothing,
+so there is no water.
+
+The game called glGenVertexArraysOES (slot 839, first call from its
+context). A VAO is how its particle mesh keeps its pointers: bind it and
+draw, with nothing respecified. Our VAOs saved and restored the ES 2.0
+generic attributes only -- written for SpringBoard and Google's engines
+-- so binding one in an ES 1.1 context changed nothing, and the draw ran
+on whatever the last non-VAO draw left in the client arrays.
+
+OES_vertex_array_object on ES 1.1 makes the vertex, normal, colour,
+texture-coordinate and point-size arrays VAO state (enable, size, type,
+stride, pointer and the buffer captured with it); the client active
+texture and the ARRAY_BUFFER binding stay outside it. GLESVao now keeps
+those arrays alongside the attributes, saves and restores them on bind,
+gives a never-used VAO GL's defaults, drops their buffer references on
+delete and on buffer deletion, and says once in the log when an ES 1.1
+context binds one.
+---
+diff --git a/hw/arm/gles-host.c b/hw/arm/gles-host.c
+index a5d24d3..19b210b 100644
+--- a/hw/arm/gles-host.c
++++ b/hw/arm/gles-host.c
+@@ -571,16 +571,28 @@ typedef struct {
+  * The attribute pointers live host-side in gh.attr (guest VAs resolved at draw
+  * time), so a VAO cannot be a real host object: it is a saved copy of the
+  * generic-attribute state and the element-array binding, swapped in and out of
+- * the live arrays at glBindVertexArrayOES. The ES1 client arrays are left out:
+- * every caller seen so far (SpringBoard's and Google's ES 2.0 engines on iOS
+- * 5/6) uses VAOs with generic attributes only.
++ * the live arrays at glBindVertexArrayOES.
++ *
++ * The ES 1.1 client arrays go with it too. They were left out on the grounds that every caller seen used generic
++ * attributes only (SpringBoard's and Google's ES 2.0 engines), and Where's My Water is an ES 1.1 game that keeps
++ * its water and dirt meshes in VAOs: bind its VAO, draw, and with the client arrays left out the draw ran on the
++ * pointers and enables the LAST non-VAO draw left behind -- a four-vertex scratch quad's positions and colours, no
++ * texture coordinates, read 460 vertices long into zeros. The water layer came back with no alpha anywhere and
++ * the level drew without its water or its dirt. OES_vertex_array_object on ES 1.1 says the vertex, normal, colour,
++ * texcoord and point-size arrays are VAO state; the client active texture unit and ARRAY_BUFFER binding are not.
+  */
++#define GLES_VAO_FIXED (3 + GLES_MAX_TEXUNITS + 1)    /* vertex, colour, normal, texcoord 0-7, point size */
++
+ typedef struct {
+     struct {
+         uint32_t enabled, size, type, stride, ptr;
+         GLESBuffer *vbo;        /* reference held */
+         bool normalized;
+     } attr[GLES_MAX_ATTRIBS];
++    struct {
++        uint32_t enabled, size, type, stride, ptr;
++        GLESBuffer *vbo;        /* reference held */
++    } fixed[GLES_VAO_FIXED];
+     GLESBuffer *element;        /* reference held */
+ } GLESVao;
+ 
+@@ -5012,6 +5024,12 @@ static void gles_buffer_forget(const GLESBuffer *b)
+                     v->attr[j].ptr = 0;
+                 }
+             }
++            for (j = 0; j < GLES_VAO_FIXED; j++) {
++                if (v->fixed[j].vbo == b) {
++                    gles_buffer_bind(&v->fixed[j].vbo, NULL);
++                    v->fixed[j].ptr = 0;
++                }
++            }
+             if (v->element == b) {
+                 gles_buffer_bind(&v->element, NULL);
+             }
+@@ -5019,6 +5037,18 @@ static void gles_buffer_forget(const GLESBuffer *b)
+     }
+ }
+ 
++/* The live ES 1.1 client array a VAO's fixed[i] records. */
++static GLESArray *gles_vao_fixed_array(unsigned i)
++{
++    switch (i) {
++    case 0: return &gh.vertex;
++    case 1: return &gh.color;
++    case 2: return &gh.normal;
++    case 3 + GLES_MAX_TEXUNITS: return &gh.pointsize;
++    default: return &gh.texcoord[i - 3];
++    }
++}
++
+ static void gles_vao_destroy(gpointer p)
+ {
+     GLESVao *v = p;
+@@ -5027,6 +5057,9 @@ static void gles_vao_destroy(gpointer p)
+     for (i = 0; i < GLES_MAX_ATTRIBS; i++) {
+         gles_buffer_destroy(v->attr[i].vbo);
+     }
++    for (i = 0; i < GLES_VAO_FIXED; i++) {
++        gles_buffer_destroy(v->fixed[i].vbo);
++    }
+     gles_buffer_destroy(v->element);
+     g_free(v);
+ }
+@@ -5063,6 +5096,16 @@ static void gles_vao_save(GLESVao *v)
+         v->attr[i].normalized = gh.attr_normalized[i];
+         gles_buffer_bind(&v->attr[i].vbo, gh.attr[i].vbo);
+     }
++    for (i = 0; i < GLES_VAO_FIXED; i++) {
++        const GLESArray *a = gles_vao_fixed_array(i);
++
++        v->fixed[i].enabled = a->enabled;
++        v->fixed[i].size = a->size;
++        v->fixed[i].type = a->type;
++        v->fixed[i].stride = a->stride;
++        v->fixed[i].ptr = a->ptr;
++        gles_buffer_bind(&v->fixed[i].vbo, a->vbo);
++    }
+     gles_buffer_bind(&v->element, (GLESBuffer *)gh.element_buffer);
+ }
+ 
+@@ -5081,6 +5124,18 @@ static void gles_vao_load(const GLESVao *v)
+         gh.attr_normalized[i] = v->attr[i].normalized;
+         gles_buffer_bind(&gh.attr[i].vbo, v->attr[i].vbo);
+     }
++    for (i = 0; i < GLES_VAO_FIXED; i++) {
++        GLESArray *a = gles_vao_fixed_array(i);
++
++        a->enabled = v->fixed[i].enabled;
++        /* A VAO the guest has never set an array in keeps GL's defaults: size 4 for the vertex, colour and
++         * texcoord arrays (normals are always 3, point sizes 1). Zero would be a layout no draw can size. */
++        a->size = v->fixed[i].size ? v->fixed[i].size : (i == 2 ? 3 : i == 3 + GLES_MAX_TEXUNITS ? 1 : 4);
++        a->type = v->fixed[i].type ? v->fixed[i].type : GL_FLOAT;
++        a->stride = v->fixed[i].stride;
++        a->ptr = v->fixed[i].ptr;
++        gles_buffer_bind(&a->vbo, v->fixed[i].vbo);
++    }
+     gles_buffer_bind(&gh.element_buffer, v->element);
+ }
+ 
+@@ -7306,6 +7361,15 @@ static bool gles_es2_call(CPUState *cpu, uint32_t slot, uint32_t argc,
+      * with whatever attributes the last non-VAO caller left behind, and came
+      * out black. */
+     case 837:                                   /* glBindVertexArrayOES: vao */
++        if (ga[0] && gles_fixed_host()) {
++            static bool said;
++
++            if (!said) {
++                said = true;
++                fprintf(stderr, "[gles] an ES 1.1 app binds vertex array objects (VAO %u); its client arrays "
++                        "now go with them\n", ga[0]);
++            }
++        }
+         if (ga[0] != gh.bound_vao) {
+             gles_vao_save(gles_vao_intern(gh.bound_vao));
+             gles_vao_load(gles_vao_intern(ga[0]));
