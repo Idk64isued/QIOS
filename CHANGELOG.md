@@ -3,6 +3,24 @@
 Halcyon (formerly Light Touch for iOS / QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 84 — Say Why
+
+Stacks on 83. Emulator patch 0033, so the emulator libraries rebuild.
+
+Wipeout 2 stopped dead while starting a race: the device froze, the app kept running, and nothing in the report
+said why. Everything that announces itself had stayed quiet, so the cause could have been any of half a dozen
+things that all look the same in a log. This update makes the two silent things speak.
+
+**Added**
+- **The device now says why it stopped.** Whenever the emulated machine stops, it names the reason in the log
+  (`[runstate] the machine stopped: running -> ...`). A freeze that a person experiences as a crash should never
+  again be a guess.
+- **The log records how much memory the app is using**, next to the processor and frame-rate line. iOS kills an
+  app that grows too large without telling the app, and until now a report could not tell that apart from any
+  other sudden stop.
+
+Neither changes how anything runs. They exist so the next report answers the question this one couldn't.
+
 ## Update 83 — Halcyon
 
 App-side only, no emulator rebuild.

@@ -1,0 +1,54 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 23 Nov 2026 00:55:00 -0700
+Subject: [PATCH] ios: say why the machine stopped
+
+Update 83's run had the device stop dead in the middle of launching a
+game -- "NAND synced on stop in 5 ms", both vCPUs parked in
+qemu_process_cpu_events, never resumed, host process still alive and
+logging. To the person holding the phone that is a crash.
+
+Nothing recorded which stop it was. The app's own background save prints
+a line and had not printed one; auto-cool prints a line and had not;
+the NAND writeback reported no failure; no GL context had been evicted;
+the guest left no crash report. Every remaining explanation -- an I/O
+error, a guest shutdown, a pause request, a suspend -- looks identical
+in the log, because do_vm_stop names the reason to itself and to nobody
+else.
+
+So it says so now, on every transition out of a live state, with the
+run-state names QEMU already has:
+
+  [runstate] the machine stopped: running -> io-error
+
+This is the UNHANDLED-slot rule one level up: a stop a person
+experiences as a crash must name itself, or the next session starts
+from the same guesswork.
+
+---
+  system/cpus.c | 10 ++++++++++
+  1 file changed, 10 insertions(+)
+
+diff --git a/system/cpus.c b/system/cpus.c
+index bded87f..6920f81 100644
+--- a/system/cpus.c
++++ b/system/cpus.c
+@@ -297,6 +297,16 @@ static int do_vm_stop(RunState state, bool send_stop)
+     RunState oldstate = runstate_get();
+ 
+     if (runstate_is_live(oldstate)) {
++        /*
++         * Say why the machine stopped, every time.
++         *
++         * Update 83's run had the device simply stop mid-game -- "NAND synced on stop", both vCPUs parked, never
++         * resumed -- and nothing anywhere recorded which of the dozen reasons it was. The app's own background
++         * save logs itself and had not run; everything else was a guess. A stop a person experiences as a crash
++         * must name itself, for the same reason an unhandled GL call does.
++         */
++        fprintf(stderr, "[runstate] the machine stopped: %s -> %s\n",
++                RunState_str(oldstate), RunState_str(state));
+         vm_was_suspended = (oldstate == RUN_STATE_SUSPENDED);
+         runstate_set(state);
+         cpu_disable_ticks();
+-- 
+2.43.0

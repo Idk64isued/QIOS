@@ -101,8 +101,11 @@ enum LTMLog {
                 try? await Task.sleep(nanoseconds: 10_000_000_000)
                 let cpu = cpuSeconds(), now = Date(), frames = PerfStats.frames
                 let wall = max(now.timeIntervalSince(lastWall), 0.001)
-                note(String(format: "cpu %.0f%% of one core, %.1f frames/s, thermal %@, low power %@", (cpu - lastCPU) / wall * 100,
-                    Double(frames - lastFrames) / wall, thermal, ProcessInfo.processInfo.isLowPowerModeEnabled ? "ON" : "off"))
+                // Memory too: iOS kills a process that grows past its limit without a word to the process, and a
+                // report that does not carry this number cannot tell that apart from any other sudden stop.
+                note(String(format: "cpu %.0f%% of one core, %.1f frames/s, %d MB, thermal %@, low power %@",
+                    (cpu - lastCPU) / wall * 100, Double(frames - lastFrames) / wall, MemoryStats.footprintMB(),
+                    thermal, ProcessInfo.processInfo.isLowPowerModeEnabled ? "ON" : "off"))
                 lastCPU = cpu; lastWall = now; lastFrames = frames
                 splitIfLarge()
             }

@@ -439,6 +439,10 @@ can't download alongside yet.
   line prints once instead of on every failed attempt (458 MB of it in update 80). `glProgramUniform*EXT` (slots
   892-910) are forwarded as `glUniform*` with the named program bound: GLKit's effects use them, and dropped they
   left uniforms at zero, so those objects drew black (Wipeout 2).
+- `patches/qemu-ios/0033`: `do_vm_stop` names the stop in the log (`[runstate] the machine stopped: running ->
+  io-error`). A machine that stops mid-game is a crash to the person holding the phone, and every candidate cause
+  -- an I/O error, a guest shutdown, a pause request, a suspend, the app's own background save -- looked identical
+  in a report. Same rule as the UNHANDLED-slot warning, one level up.
 - `guest-helper/lt-locate.S`: sets the device's location through CoreLocation's `CLSimulationManager` (as Xcode's
   DTSimulateLocation does), for boards without a GPS receiver on iOS 5+. The one helper `build.py` signs: an ad-hoc
   `ldid -S`-style signature carrying `com.apple.locationd.simulation`, which locationd requires. Its strings sit at
