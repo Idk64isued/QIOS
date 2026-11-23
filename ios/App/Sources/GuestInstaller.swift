@@ -1154,7 +1154,7 @@ extension GuestAgent {
         guard status == .alive, ops.contains("unlink"), ops.contains("get") else {
             return "The device\u{2019}s agent isn\u{2019}t running yet."
         }
-        guard !app.bundleID.isEmpty, app.path.hasSuffix(".app") else { return "Light Touch doesn\u{2019}t know where this app is." }
+        guard !app.bundleID.isEmpty, app.path.hasSuffix(".app") else { return "Halcyon doesn\u{2019}t know where this app is." }
         let major = Int((guestVersion ?? "3").prefix { $0 != "." }) ?? 3
         log("Removing \(app.name) (\(app.bundleID)) at \(app.path)")
 

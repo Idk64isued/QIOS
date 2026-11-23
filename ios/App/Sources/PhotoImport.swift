@@ -35,7 +35,7 @@ enum MediaPrep {
     /// An upright, opaque baseline JPEG, at most 2048 pixels on its longer side.
     static func photo(_ data: Data, title: String) throws -> PreparedMedia {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
-            throw GuestAgent.InstallFailure(message: "\(title) isn\u{2019}t a picture Light Touch can read.")
+            throw GuestAgent.InstallFailure(message: "\(title) isn\u{2019}t a picture Halcyon can read.")
         }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,

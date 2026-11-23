@@ -134,7 +134,7 @@ struct SetupAssistantView: View {
                 SixToggleRow(title: "Experimental", subtitle: "Versions that may not start or may misbehave.", isOn: $showExperimental)
             }
             SixSection(header: "Your Own IPSW",
-                       footer: importNote.isEmpty ? "Light Touch matches it to the catalog, so it isn\u{2019}t downloaded again." : importNote) {
+                       footer: importNote.isEmpty ? "Halcyon matches it to the catalog, so it isn\u{2019}t downloaded again." : importNote) {
                 SixRow(title: importing ? "Checking\u{2026}" : "Choose an IPSW\u{2026}", titleColor: Six.blue) {
                     if !importing { showIPSWPicker = true }
                 }
@@ -186,7 +186,7 @@ struct SetupAssistantView: View {
                         downloadMessage = detail
                     }
                 }
-                importNote = "Saved to Files \u{203A} LightTouch \u{203A} IPSW."
+                importNote = "Saved to Files \u{203A} Halcyon \u{203A} IPSW."
             } catch is CancellationError {
                 importNote = "Cancelled."
             } catch {
@@ -312,7 +312,7 @@ struct SetupAssistantView: View {
                     }
                 }
                 .frame(maxWidth: .infinity)
-                SixSection(footer: creator.running ? "Keep Light Touch open until this finishes. iOS pauses it in the background." : nil) {
+                SixSection(footer: creator.running ? "Keep Halcyon open until this finishes. iOS pauses it in the background." : nil) {
                     ForEach(Array(creator.stages.enumerated()), id: \.element.id) { index, stage in
                         if index > 0 { SixSeparator() }
                         stageRow(stage)

@@ -19,7 +19,7 @@ enum StoreAPI {
         if !items.isEmpty { c.queryItems = items.sorted { $0.name < $1.name } }
         let data = try await Transfer.data(c.url!)
         guard let json = try JSONSerialization.jsonObject(with: data) as? JSON else {
-            throw Transfer.Failure(message: "Legacy Store sent something Light Touch couldn\u{2019}t read.")
+            throw Transfer.Failure(message: "Legacy Store sent something Halcyon couldn\u{2019}t read.")
         }
         if let error = json["error"] as? JSON {
             throw Transfer.Failure(message: error["message"] as? String ?? "Legacy Store refused the request.")

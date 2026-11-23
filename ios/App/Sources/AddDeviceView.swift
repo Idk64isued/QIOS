@@ -250,7 +250,7 @@ struct AddDeviceView: View {
                         downloadMessage = detail
                     }
                 }
-                downloadMessage = "Saved to Files \u{203A} LightTouch \u{203A} IPSW."
+                downloadMessage = "Saved to Files \u{203A} Halcyon \u{203A} IPSW."
             } catch is CancellationError {
                 downloadMessage = "Cancelled."
             } catch {
@@ -268,7 +268,7 @@ struct AddDeviceView: View {
 
     private var ownIPSWCard: some View {
         GlassCard("Your own IPSW", symbol: "doc.badge.plus") {
-            Text("Already have a restore file? Add it and Light Touch matches it to the catalog, so it does not download it again.")
+            Text("Already have a restore file? Add it and Halcyon matches it to the catalog, so it does not download it again.")
                 .font(.system(size: 12, design: .rounded))
                 .foregroundStyle(Theme.secondaryText)
             Button {
@@ -512,7 +512,7 @@ struct AddDeviceView: View {
                 bigButton("Done", filled: false) { onClose(device, false) }
             }
         } else if creator.running {
-            Text("Keep Light Touch open until this finishes. iOS pauses it in the background.")
+            Text("Keep Halcyon open until this finishes. iOS pauses it in the background.")
                 .font(.system(size: 11, design: .rounded))
                 .foregroundStyle(Theme.tertiaryText)
                 .multilineTextAlignment(.center)

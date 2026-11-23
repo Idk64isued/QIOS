@@ -41,7 +41,7 @@ final class AppsModel: ObservableObject {
 
     func launch(_ app: GuestAgent.GuestApp) async {
         if app.bundleID.isEmpty {
-            self.error = "This app has no bundle id; Light Touch can't launch it by name."
+            self.error = "This app has no bundle id; Halcyon can't launch it by name."
             return
         }
         _ = await agent.launchApp(bundleID: app.bundleID)
@@ -322,7 +322,7 @@ struct HelpView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
                         section("JIT", symbol: "bolt.fill",
-                            "Light Touch runs the guest through a JIT translator. Enable it first with StikDebug "
+                            "Halcyon runs the guest through a JIT translator. Enable it first with StikDebug "
                             + "(script universal.js) or in LiveContainer (Launch with JIT). Without it the app falls back to "
                             + "the interpreter, which is many times slower.")
                         section("Add a device", symbol: "plus.circle",
@@ -387,7 +387,7 @@ struct CarrierEditor: View {
     @ObservedObject var modem: ModemController
     let onDismiss: () -> Void
 
-    @State private var carrier = UserDefaults.standard.string(forKey: "carrier") ?? "Light Touch"
+    @State private var carrier = UserDefaults.standard.string(forKey: "carrier") ?? "Halcyon"
     @State private var bars = UserDefaults.standard.object(forKey: "carrierBars") as? Int ?? 4
     @State private var callNumber = UserDefaults.standard.string(forKey: "callNumber") ?? "+15551234567"
     @State private var textNumber = UserDefaults.standard.string(forKey: "textNumber") ?? "+15551234567"

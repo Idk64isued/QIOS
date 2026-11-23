@@ -4,7 +4,7 @@ import ZIPFoundation
 
 // Reports: everything about a test run in one place, so nothing is lost and nothing has to be gathered by hand.
 //
-//  - Files > Light Touch > Reports keeps the log of each of the last ten sessions, saved when the next one starts,
+//  - Files > Halcyon > Reports keeps the log of each of the last ten sessions, saved when the next one starts,
 //    so a crash or a swipe-away no longer loses the run before it.
 //  - Send report bundles a zip: what you say happened, the device, the phone, the settings, the whole log, the last
 //    session's log, the device's screen, and your app compatibility notes. It goes out through the share sheet.
@@ -72,7 +72,7 @@ enum Reports {
             .compactMap { key in defaults.object(forKey: key).map { "\(key)=\($0)" } }
             .joined(separator: " ")
         var lines = [
-            "Light Touch for iOS report, \(stamp())",
+            "Halcyon report, \(stamp())",
             "What happened: \(context.note.isEmpty ? "(not said)" : context.note)",
             "Device: \(context.deviceName ?? "none running")\(context.deviceDetails.map { " — \($0)" } ?? "")",
             "App: \(app); phone \(model), iOS \(UIDevice.current.systemVersion); \(JIT.summary)",
@@ -144,7 +144,7 @@ enum Reports {
     /// The zip, in the temporary folder, and a copy of its report.txt in Reports.
     static func bundle(_ context: Context) throws -> URL {
         let fm = FileManager.default
-        let name = "LightTouch-report-\(stamp())"
+        let name = "Halcyon-report-\(stamp())"
         let work = fm.temporaryDirectory.appendingPathComponent(name, isDirectory: true)
         try? fm.removeItem(at: work)
         try fm.createDirectory(at: work, withIntermediateDirectories: true)
@@ -316,7 +316,7 @@ struct ReportSheet: View {
                             }
                         }
                         GlassCard("Kept on this phone", symbol: "folder") {
-                            Text("Files \u{203A} On My iPhone \u{203A} LightTouch \u{203A} Reports keeps the last \(Reports.keep) sessions\u{2019} logs and every report you make, even if the app was closed or crashed.")
+                            Text("Files \u{203A} On My iPhone \u{203A} Halcyon \u{203A} Reports keeps the last \(Reports.keep) sessions\u{2019} logs and every report you make, even if the app was closed or crashed.")
                                 .font(.system(size: 12, design: .rounded))
                                 .foregroundStyle(Theme.secondaryText)
                         }

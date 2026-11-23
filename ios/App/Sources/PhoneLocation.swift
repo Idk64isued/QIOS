@@ -76,7 +76,7 @@ final class PhoneLocation: NSObject, CLLocationManagerDelegate {
             switch status {
             case .denied:
                 LTMLog.note("location: refused. Settings \u{203A} Privacy & Security \u{203A} Location Services, and allow "
-                    + (JIT.inLiveContainer ? "LiveContainer" : "Light Touch") + ".")
+                    + (JIT.inLiveContainer ? "LiveContainer" : "Halcyon") + ".")
             case .restricted:
                 // Under LiveContainer the asking app is LiveContainer, not this one: iOS reads the usage string and
                 // the grant from ITS bundle. Without one there, the prompt never appears and the answer is a flat

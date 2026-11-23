@@ -8,7 +8,7 @@ import Foundation
 // property away. An iPod touch has no modem: every call here answers false, which is what hides this from its UI.
 //
 // Properties this uses:
-//   carrier         the operator name in the status bar      "Light Touch"
+//   carrier         the operator name in the status bar      "Halcyon"
 //   signal-dbm      signal strength, -51 (full) … -113       "-75"
 //   registered      on the network at all                    "true" / "false"
 //   sim-present     a SIM in the tray                        "true" / "false"

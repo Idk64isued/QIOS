@@ -143,7 +143,7 @@ struct TweaksView: View {
                         }
                     }
                     if proxyFixed {
-                        Section(footer: Text("This device was prepared to send its web traffic through a proxy that only the Mac app runs, so every connection waited for it before giving up and going direct. Light Touch now sends it straight out. Put the proxy back only if you are running one yourself at 10.0.2.100:3128.")) {
+                        Section(footer: Text("This device was prepared to send its web traffic through a proxy that only the Mac app runs, so every connection waited for it before giving up and going direct. Halcyon now sends it straight out. Put the proxy back only if you are running one yourself at 10.0.2.100:3128.")) {
                             Button("Put Back the Web Proxy") {
                                 Task {
                                     status = "Putting the proxy back\u{2026}"

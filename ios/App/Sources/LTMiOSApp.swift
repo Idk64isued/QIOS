@@ -99,7 +99,7 @@ enum Theme {
     static let danger = adaptive(light: rgb(0.85, 0.20, 0.20), dark: rgb(1.0, 0.38, 0.38))
 }
 
-// MARK: - Background Gradient (matches Mac Light Touch gradient asset)
+// MARK: - Background Gradient (matches LightTouchMac gradient asset)
 
 struct LTBackground: View {
     var body: some View {
@@ -410,7 +410,7 @@ struct RootView: View {
             .frame(height: 140)
             .padding(.top, 14)
 
-            Text("Light Touch")
+            Text("Halcyon")
                 .font(.system(size: 32, weight: .bold, design: .rounded))
                 .foregroundStyle(Theme.primaryText)
 
@@ -480,7 +480,7 @@ struct RootView: View {
                         .font(.system(size: 12))
                         .foregroundStyle(Theme.warning)
                         .padding(.top, 1)
-                    Text("Enable JIT first: StikDebug with universal.js, then open Light Touch. In LiveContainer, use Launch with JIT.")
+                    Text("Enable JIT first: StikDebug with universal.js, then open Halcyon. In LiveContainer, use Launch with JIT.")
                         .font(.system(size: 11, design: .rounded))
                         .foregroundStyle(Theme.warning.opacity(0.8))
                 }
@@ -782,9 +782,12 @@ struct RootView: View {
 
     private var footer: some View {
         VStack(spacing: 3) {
-            Text("Light Touch for iOS")
+            Text("Halcyon")
                 .font(.system(size: 11, weight: .medium, design: .rounded))
                 .foregroundStyle(Theme.tertiaryText)
+            Text("Formerly Light Touch for iOS (QIOS) \u{00B7} on samhenrigold\u{2019}s LightTouchMac")
+                .font(.system(size: 10, design: .rounded))
+                .foregroundStyle(Theme.ink.opacity(0.18))
             Text("GPL-2.0 \u{00B7} github.com/Idk64isued/QIOS")
                 .font(.system(size: 10, design: .rounded))
                 .foregroundStyle(Theme.ink.opacity(0.18))
@@ -983,7 +986,7 @@ struct EmulatorScreen: View {
     /// when the guest doesn't seem to be reading it. Lets the user test the mic even if the "is the guest
     /// listening?" detection is wrong on a board.
     @State private var micForced = false
-    /// The Console sheet: the device's serial console and Light Touch's log, live (ConsoleView).
+    /// The Console sheet: the device's serial console and Halcyon's log, live (ConsoleView).
     @State private var showConsole = false
     @State private var recorder: ScreenRecorder?
     @State private var reportScreen: CGImage?
@@ -1643,7 +1646,7 @@ struct EmulatorScreen: View {
                 Task {
                     let result = await Screenshot.save(video: url)
                     switch result {
-                    case .saved, .savedFile: toast = "Recording saved to Photos (Light Touch album)."
+                    case .saved, .savedFile: toast = "Recording saved to Photos (Halcyon album)."
                     default:
                         toast = "Photos wouldn\u{2019}t take it; share it instead."
                         shareItem = ShareItem(url: url)
@@ -1686,7 +1689,7 @@ struct EmulatorScreen: View {
         Task {
             let result = await Screenshot.save(image: image)
             switch result {
-            case .saved, .savedFile: toast = "Saved to Photos (Light Touch album)."
+            case .saved, .savedFile: toast = "Saved to Photos (Halcyon album)."
             case .noAccess: toast = "Photos access denied."
             case .noFrame: toast = "No frame to capture yet."
             case .failed(let m): toast = "Couldn\u{2019}t save: \(m)"

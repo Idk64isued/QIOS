@@ -8,9 +8,9 @@ import ZIPFoundation
 // out of the Mac release (boot ROMs, the ready-made iPod, the guest tools a prepared device gets).
 
 extension Library {
-    /// Files > LightTouch > Device: the SecureROMs and packed devices (also where a hand copy goes).
+    /// Files > Halcyon > Device: the SecureROMs and packed devices (also where a hand copy goes).
     static var deviceFiles: URL { documents.appendingPathComponent("Device", isDirectory: true) }
-    /// Files > LightTouch > IPSW: firmware, named by catalog id (n72ap-7E18.ipsw).
+    /// Files > Halcyon > IPSW: firmware, named by catalog id (n72ap-7E18.ipsw).
     static var ipsw: URL { documents.appendingPathComponent("IPSW", isDirectory: true) }
     /// Not shown in Files: the guest tools archive and devices being prepared.
     static var support: URL {
@@ -116,13 +116,13 @@ struct CatalogFirmware: Decodable, Identifiable, Hashable {
     var support: Support {
         if status == "coming_soon" { return .comingSoon }
         if source.kind != "ipsw" || source.url == nil || source.sha1 == nil {
-            return .needsMac("Archived as a developer beta package; Light Touch can\u{2019}t fetch this one itself.")
+            return .needsMac("Archived as a developer beta package; Halcyon can\u{2019}t fetch this one itself.")
         }
         switch board {
         case "n72ap", "n45ap", "m68ap", "n18ap", "n88ap", "n81ap", "n90ap", "k48ap":
             return .onDevice
         default:
-            return .needsMac("This device needs preparation boots Light Touch doesn\u{2019}t know how to run here.")
+            return .needsMac("This device needs preparation boots Halcyon doesn\u{2019}t know how to run here.")
         }
     }
 
@@ -132,7 +132,7 @@ struct CatalogFirmware: Decodable, Identifiable, Hashable {
         case "n72ap":
             return major < 4 ? nil : "Preparing includes a keybag boot of the device (a few minutes)."
         case "n18ap", "n88ap", "n81ap", "n90ap", "k48ap":
-            return "Preparing includes \(major >= 4 ? "a keybag boot and " : "")a seal boot of the device: allow 10\u{2013}30 minutes, keep Light Touch open, and restart it before the first start." + (QemuRuntime.runsShaders
+            return "Preparing includes \(major >= 4 ? "a keybag boot and " : "")a seal boot of the device: allow 10\u{2013}30 minutes, keep Halcyon open, and restart it before the first start." + (QemuRuntime.runsShaders
                 ? " Its graphics run on this phone\u{2019}s GPU (Settings \u{203A} Graphics)."
                 : " With Classic graphics its screen is drawn in software: the Home screen and ordinary apps work, 3D games don\u{2019}t.")
         default:
@@ -196,7 +196,7 @@ struct DeviceModel: Identifiable, Hashable {
         }
     }
 
-    /// The SecureROM the emulator needs for this board, under Files > LightTouch > Device.
+    /// The SecureROM the emulator needs for this board, under Files > Halcyon > Device.
     var bootROM: String? {
         switch board {
         case "n72ap": return "bootrom_240_4"
@@ -280,7 +280,7 @@ enum IPSWStore {
                 }
                 let sha1 = try Transfer.sha1(of: partial) { progress(0.9 + $0 * 0.1, "Checking the download") }
                 guard sha1 == source.sha1 else {
-                    throw Transfer.Failure(message: "The file from \(host) is not the IPSW Light Touch knows (wrong checksum).")
+                    throw Transfer.Failure(message: "The file from \(host) is not the IPSW Halcyon knows (wrong checksum).")
                 }
                 let stored = url(for: entry)
                 try? FileManager.default.removeItem(at: stored)
@@ -300,7 +300,7 @@ enum IPSWStore {
     static func importFile(_ file: URL, progress: @escaping (Double) -> Void) throws -> CatalogFirmware {
         let sha1 = try Transfer.sha1(of: file, progress: progress)
         guard let entry = FirmwareCatalog.entry(sha1: sha1) else {
-            throw Transfer.Failure(message: "\(file.lastPathComponent) is not an IPSW Light Touch supports (or it is damaged).")
+            throw Transfer.Failure(message: "\(file.lastPathComponent) is not an IPSW Halcyon supports (or it is damaged).")
         }
         Library.ensure(Library.ipsw)
         let stored = url(for: entry)

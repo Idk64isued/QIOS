@@ -106,7 +106,7 @@ struct DeviceSettingsView: View {
                        detail: "The device\u{2019}s pixels scaled up as crisp squares. Off smooths them instead.",
                        isOn: $sharpPixels)
                 toggle("Survive closing the app", "Keep what was running.",
-                       detail: "Saves the device each time Light Touch goes to the background, so swiping it away doesn\u{2019}t lose what was running. Devices drawing with hardware graphics can\u{2019}t be saved yet; they get their storage flushed instead, so they always start again cleanly.",
+                       detail: "Saves the device each time Halcyon goes to the background, so swiping it away doesn\u{2019}t lose what was running. Devices drawing with hardware graphics can\u{2019}t be saved yet; they get their storage flushed instead, so they always start again cleanly.",
                        isOn: $keepState)
             }
 
@@ -380,7 +380,7 @@ struct DeviceSettingsView: View {
     }
 }
 
-/// A card on the Settings page: Light Touch's frosted glass, or (Settings ▸ iOS 6 look) an iOS 6 grouped section --
+/// A card on the Settings page: Halcyon's frosted glass, or (Settings ▸ iOS 6 look) an iOS 6 grouped section --
 /// an embossed header over one white rounded cell.
 struct SettingsCard<Content: View>: View {
     let title: String

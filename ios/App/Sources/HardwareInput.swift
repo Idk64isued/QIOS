@@ -13,7 +13,7 @@ import UIKit
 // Volume: an off-screen MPVolumeView lets the app read and set the system volume. On every change we send a +/-
 // button press to the emulator, then roll the system level back to where it was so iPhone volume stays put.
 //
-// Screenshot: the newest guest frame as a PNG, saved into Photos (Light Touch album).
+// Screenshot: the newest guest frame as a PNG, saved into Photos (Halcyon album).
 
 // MARK: - Hardware keyboard
 
@@ -279,13 +279,13 @@ enum Screenshot {
         return CGImageDestinationFinalize(destination) ? url : nil
     }
 
-    /// Asks Photos for write access, then saves `image` into the Light Touch album (made if it isn't there).
+    /// Asks Photos for write access, then saves `image` into the Halcyon album (made if it isn't there).
     static func save(image: CGImage) async -> Result {
         let status = await withCheckedContinuation { (c: CheckedContinuation<PHAuthorizationStatus, Never>) in
             PHPhotoLibrary.requestAuthorization(for: .addOnly) { c.resume(returning: $0) }
         }
         guard status == .authorized || status == .limited else { return .noAccess }
-        let album = await Self.album(named: "Light Touch")
+        let album = await Self.album(named: "Halcyon")
         do {
             try await PHPhotoLibrary.shared().performChanges {
                 let request = PHAssetCreationRequest.forAsset()
@@ -302,13 +302,13 @@ enum Screenshot {
         }
     }
 
-    /// Saves a recorded movie into the Light Touch album, as save(image:) does a screenshot.
+    /// Saves a recorded movie into the Halcyon album, as save(image:) does a screenshot.
     static func save(video url: URL) async -> Result {
         let status = await withCheckedContinuation { (c: CheckedContinuation<PHAuthorizationStatus, Never>) in
             PHPhotoLibrary.requestAuthorization(for: .addOnly) { c.resume(returning: $0) }
         }
         guard status == .authorized || status == .limited else { return .noAccess }
-        let album = await Self.album(named: "Light Touch")
+        let album = await Self.album(named: "Halcyon")
         do {
             try await PHPhotoLibrary.shared().performChanges {
                 let request = PHAssetCreationRequest.forAsset()

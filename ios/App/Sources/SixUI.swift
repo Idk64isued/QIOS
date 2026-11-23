@@ -17,7 +17,7 @@ enum HomeInterface: String, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .classic: return "The original list, drawn like iOS 6\u{2019}s Settings."
-        case .modern: return "The original list in Light Touch\u{2019}s glass look."
+        case .modern: return "The original list in Halcyon\u{2019}s glass look."
         }
     }
 }
@@ -106,7 +106,7 @@ enum Six {
 }
 
 /// The iOS 6 screens drawn in the glass look instead (Settings › Home Screen › Original (Glass)): the same pages, on
-/// Light Touch's gradient with frosted cards, plain bars and the system's switches. The Setup Assistant uses it.
+/// Halcyon's gradient with frosted cards, plain bars and the system's switches. The Setup Assistant uses it.
 private struct GlassStyleKey: EnvironmentKey { static let defaultValue = false }
 extension EnvironmentValues {
     var glassStyle: Bool {

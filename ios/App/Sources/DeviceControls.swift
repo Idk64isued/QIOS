@@ -460,7 +460,7 @@ final class DeviceControls: ObservableObject {
     }
 
     /// With Tilt and compass on, the device is held the way this phone is, and its picture turns so it stays lined
-    /// up with this phone rather than with Light Touch's own interface (which turns to landscape with the phone):
+    /// up with this phone rather than with Halcyon's own interface (which turns to landscape with the phone):
     /// a guest that turns its interface when tilted then reads upright, as on the real thing. Where the guest agent
     /// reports how the front app stands, that report decides instead (guestOrientation), and a turn picked from the
     /// menu holds until the guest changes.

@@ -64,7 +64,7 @@ struct CatalogApp: Codable, Identifiable, Sendable {
         }
         if reason.hasPrefix("capability:") { return "Needs hardware this device doesn\u{2019}t have" }
         switch reason {
-        case "encrypted": return "Encrypted \u{2014} can\u{2019}t open in Light Touch"
+        case "encrypted": return "Encrypted \u{2014} can\u{2019}t open in Halcyon"
         case "unavailable": return "Download no longer available"
         case "not_analyzed": return "Not checked for compatibility yet"
         default: return "Not compatible with this device"
@@ -169,7 +169,7 @@ final class LegacyStoreClient: ObservableObject {
     }
 
     private static func message(for error: Error) -> String {
-        if error is DecodingError { return "Legacy Store sent a response Light Touch couldn\u{2019}t read." }
+        if error is DecodingError { return "Legacy Store sent a response Halcyon couldn\u{2019}t read." }
         return error.localizedDescription
     }
 
@@ -245,7 +245,7 @@ final class LegacyStoreClient: ObservableObject {
     /// Downloads an IPA to a temporary file (streamed to disk) and checks it against the archive's checksum.
     func downloadIPA(_ app: CatalogApp, progress: @escaping (Double) -> Void) async throws -> URL {
         guard Self.acceptsDownload(app.downloadURL) else {
-            throw Transfer.Failure(message: "Legacy Store named a download Light Touch doesn\u{2019}t accept.")
+            throw Transfer.Failure(message: "Legacy Store named a download Halcyon doesn\u{2019}t accept.")
         }
         let folder = Library.downloads.appendingPathComponent("ipa-\(app.ipaID)", isDirectory: true)
         Library.ensure(folder)

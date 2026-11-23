@@ -1,7 +1,30 @@
 # Changelog
 
-Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
+Halcyon (formerly Light Touch for iOS / QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
+
+## Update 83 — Halcyon
+
+App-side only, no emulator rebuild.
+
+**Changed**
+- **The app is called Halcyon now.** Same app, same project, its own name — *forward thinking, legacy reborn*. It is
+  still built on samhenrigold's LightTouchMac, and both About screens say so. The repository, the bundle id and
+  `LightTouch.ipa` keep their old names on purpose: renaming those would break every install that already exists.
+- Screenshots and recordings now go to a Photos album called **Halcyon**. Anything already saved stays in the old
+  **Light Touch** album.
+- The guest's status bar carrier reads "Halcyon" on a fresh install. If you have set your own, it is untouched.
+
+## Update 82 — Roadmap
+
+Documentation only.
+
+**Added**
+- **ROADMAP.md**: what 1.0 means as a checklist, every open bug with what is already known about it, and what is
+  deliberately being left for later rather than forgotten.
+- The logo and tagline on the front page, and a plain note on how this was built: the emulator is not AI-written,
+  the iOS port is.
+- The front page no longer claims the port is untested. It had said so since the first commit.
 
 ## Update 81 — Spring Cleaning
 

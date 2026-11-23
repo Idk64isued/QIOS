@@ -57,7 +57,7 @@ final class ScreenRecorder: @unchecked Sendable {
         self.height = height
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
-        url = FileManager.default.temporaryDirectory.appendingPathComponent("Light Touch \(f.string(from: Date())).mp4")
+        url = FileManager.default.temporaryDirectory.appendingPathComponent("Halcyon \(f.string(from: Date())).mp4")
         try? FileManager.default.removeItem(at: url)
         do { writer = try AVAssetWriter(outputURL: url, fileType: .mp4) } catch {
             throw Failure.cannotStart("Couldn\u{2019}t start the movie: \(error.localizedDescription)")

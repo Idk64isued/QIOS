@@ -47,7 +47,7 @@ struct ClassicHome: View {
     let logNote: String
 
     var body: some View {
-        SixScreen(title: "Light Touch", right: ("Settings", actions.settings)) {
+        SixScreen(title: "Halcyon", right: ("Settings", actions.settings)) {
             header
             if let failure {
                 SixSection {
@@ -55,7 +55,7 @@ struct ClassicHome: View {
                            title: "Couldn\u{2019}t start", subtitle: failure, chevron: false)
                 }
             }
-            SixSection(header: "Status", footer: JIT.usable ? nil : "Enable JIT first: StikDebug with universal.js, then open Light Touch. In LiveContainer, use Launch with JIT.") {
+            SixSection(header: "Status", footer: JIT.usable ? nil : "Enable JIT first: StikDebug with universal.js, then open Halcyon. In LiveContainer, use Launch with JIT.") {
                 SixRow(title: "JIT", value: JIT.usable ? "Enabled" : "Off", chevron: false,
                        titleColor: JIT.usable ? nil : Six.red)
                 SixSeparator()
@@ -120,7 +120,7 @@ struct ClassicHome: View {
                 SixSeparator()
                 SixRow(title: "Clear Log", chevron: false, titleColor: Six.red, centered: true, action: actions.clearLog)
             }
-            Text("Light Touch for iOS\nGPL-2.0 \u{00B7} github.com/Idk64isued/QIOS")
+            Text("Halcyon \u{2014} formerly Light Touch for iOS (QIOS)\nOn samhenrigold\u{2019}s LightTouchMac \u{00B7} GPL-2.0 \u{00B7} github.com/Idk64isued/QIOS")
                 .font(Six.font(13))
                 .foregroundStyle(Six.header)
                 .shadow(color: Six.headerShadow, radius: 0, y: 1)
@@ -142,7 +142,7 @@ struct ClassicHome: View {
                 DeviceIconArt(model: DeviceModel(board: "n72ap")).frame(width: 57, height: 57)
             }
             VStack(alignment: .leading, spacing: 3) {
-                Text("Light Touch").font(Six.font(22, bold: true)).foregroundStyle(Six.text)
+                Text("Halcyon").font(Six.font(22, bold: true)).foregroundStyle(Six.text)
                     .shadow(color: Six.headerShadow, radius: 0, y: 1)
                 Text("Old iPhone OS, on your iPhone").font(Six.font(14)).foregroundStyle(Six.header)
                     .shadow(color: Six.headerShadow, radius: 0, y: 1)

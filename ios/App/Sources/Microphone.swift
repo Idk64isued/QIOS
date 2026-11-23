@@ -63,7 +63,7 @@ final class Microphone: @unchecked Sendable {
         let granted = await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
             AVAudioSession.sharedInstance().requestRecordPermission { c.resume(returning: $0) }
         }
-        guard granted else { return "Light Touch isn\u{2019}t allowed to use the microphone (Settings \u{203A} Privacy \u{203A} Microphone)." }
+        guard granted else { return "Halcyon isn\u{2019}t allowed to use the microphone (Settings \u{203A} Privacy \u{203A} Microphone)." }
         AudioSessionSetup.wantsMicrophone = true
         AudioSessionSetup.apply()
         let input = engine.inputNode

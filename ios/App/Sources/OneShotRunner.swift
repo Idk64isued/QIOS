@@ -7,7 +7,7 @@ import FirmwareKit
 /// boards), run in this process. The Mac app starts each in a helper process; iOS starts no processes, and QEMU starts
 /// only once per library image (it never releases what it allocates). So every boot loads its own copy of the
 /// emulator library — a copied file is a new image with fresh globals, under the same code signature — runs it
-/// headless on a thread, and is abandoned when the boot ends. The memory it held stays taken until Light Touch quits,
+/// headless on a thread, and is abandoned when the boot ends. The memory it held stays taken until Halcyon quits,
 /// which is why the plan says to restart the app after preparing.
 enum OneShotRunner {
     private static var installed = false
@@ -32,7 +32,7 @@ enum OneShotRunner {
         let url = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("LightTouchDevice")
         if !fm.fileExists(atPath: url.path) {
             try? fm.removeItem(at: url)
-            guard fm.createFile(atPath: url.path, contents: Data("#!/bin/false\nLight Touch runs its preparation boots in-process.\n".utf8))
+            guard fm.createFile(atPath: url.path, contents: Data("#!/bin/false\nHalcyon runs its preparation boots in-process.\n".utf8))
             else { return nil }
             chmod(url.path, 0o755)
         }

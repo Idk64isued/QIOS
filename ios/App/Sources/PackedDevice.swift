@@ -2,7 +2,7 @@ import Compression
 import CryptoKit
 import Foundation
 
-/// Unpacks a Light Touch packed device (an .itbase folder, e.g. the Mac app's Contents/Resources/Device/n72ap-7E18.itbase)
+/// Unpacks a Halcyon packed device (an .itbase folder, e.g. the Mac app's Contents/Resources/Device/n72ap-7E18.itbase)
 /// into a device base, on the phone. Same as FirmwareKit's PreparedBase.unpack for the files (the identity reseed and
 /// language seed are not done: the packed base is an en-US device that boots with the identity it was packed with).
 ///
@@ -26,7 +26,7 @@ enum PackedDevice {
 
     static let chunk = 1 << 20
 
-    /// The packed devices found in Files > Light Touch (at the top, or in Device/).
+    /// The packed devices found in Files > Halcyon (at the top, or in Device/).
     static func find() -> [URL] {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         var found: [URL] = []

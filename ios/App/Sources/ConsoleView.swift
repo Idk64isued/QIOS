@@ -1,12 +1,12 @@
 import SwiftUI
 
 /// The Console button's sheet: the device's own serial console (iBoot, the kernel with Settings › Kernel console on,
-/// the guest helpers) and Light Touch's log, live, as the Mac app's Device Console and Kernel Console show them.
+/// the guest helpers) and Halcyon's log, live, as the Mac app's Device Console and Kernel Console show them.
 /// Both are tails of files that keep growing (LTMLog.serialURL and LTMLog.url), reread once a second while open.
 struct ConsoleView: View {
     enum Source: String, CaseIterable {
         case device = "Device"
-        case app = "Light Touch"
+        case app = "Halcyon"
     }
 
     let onDone: () -> Void

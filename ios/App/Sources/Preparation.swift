@@ -98,7 +98,7 @@ enum OnDevicePrep {
         softwareGraphics: Bool = false,
         emit: @escaping @Sendable (PrepEvent) -> Void
     ) async throws {
-        throw Transfer.Failure(message: "This build of Light Touch cannot prepare firmware. Use the ready-made iPod touch, or a newer build.")
+        throw Transfer.Failure(message: "This build of Halcyon cannot prepare firmware. Use the ready-made iPod touch, or a newer build.")
     }
     #endif
 }
@@ -402,7 +402,7 @@ final class DeviceCreator: ObservableObject {
 
             begin("prepare", "Unpacking the guest tools")
             guard OnDevicePrep.available else {
-                throw Transfer.Failure(message: "This build of Light Touch cannot prepare firmware. Use the ready-made iPod touch, or a newer build.")
+                throw Transfer.Failure(message: "This build of Halcyon cannot prepare firmware. Use the ready-made iPod touch, or a newer build.")
             }
             let tools = try MacFiles.guestToolsDirectory()
             // Preparing/ and Devices/ are on the same volume, so publishing is a rename and the sparse NAND stays sparse.

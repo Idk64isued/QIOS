@@ -46,7 +46,7 @@ final class StoreDownloads: ObservableObject {
             // Anything that was mid-way when the app last quit didn't finish.
             for i in saved.indices where saved[i].isActive {
                 saved[i].state = .failed
-                saved[i].status = "Stopped when Light Touch closed."
+                saved[i].status = "Stopped when Halcyon closed."
             }
             entries = saved
         }

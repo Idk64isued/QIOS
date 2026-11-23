@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-/// Storage: what Light Touch keeps on the phone and how much room each thing takes: devices, firmware, the Mac
+/// Storage: what Halcyon keeps on the phone and how much room each thing takes: devices, firmware, the Mac
 /// files, caches and logs. Like the Mac app's Storage settings.
 struct StorageView: View {
     let onClose: () -> Void
@@ -80,7 +80,7 @@ struct StorageView: View {
                 .font(.system(size: 26))
                 .foregroundStyle(Theme.accent)
             VStack(alignment: .leading, spacing: 3) {
-                Text("Light Touch uses \(Transfer.format(used))")
+                Text("Halcyon uses \(Transfer.format(used))")
                     .font(.system(size: 16, weight: .semibold, design: .rounded))
                     .foregroundStyle(Theme.primaryText)
                 Text("\(Transfer.format(free)) free on this iPhone")

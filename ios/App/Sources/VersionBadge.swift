@@ -2,7 +2,7 @@ import SwiftUI
 
 /// A firmware's badge in the version lists (the Setup Assistant's Choose Software, and Add Device): a tile with the
 /// major version and the system's name of the time ("iPhone OS" up to 3, "iOS" from 4), each major version in its own
-/// colours, and a corner tag on a developer seed ("BETA 2", "GM"). Light Touch's own design, not Apple's artwork.
+/// colours, and a corner tag on a developer seed ("BETA 2", "GM"). Halcyon's own design, not Apple's artwork.
 struct VersionBadge: View {
     let firmware: CatalogFirmware
     var size: CGFloat = 44

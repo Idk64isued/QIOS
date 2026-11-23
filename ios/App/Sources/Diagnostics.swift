@@ -22,7 +22,7 @@ enum MemoryStats {
     }
 }
 
-/// A log file you can send: Files > On My iPhone > LightTouch > lighttouch.log, rewritten every launch.
+/// A log file you can send: Files > On My iPhone > Halcyon > lighttouch.log, rewritten every launch.
 /// The emulator's own messages (stderr) land in it too, including the vCPU accounting switched on by IT_VCPU_ACCT.
 enum LTMLog {
     private static var started = ProcessInfo.processInfo.systemUptime
