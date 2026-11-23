@@ -73,8 +73,9 @@ final class DeviceControls: ObservableObject {
 
     private var lastGuestDegrees: Int?
     private var orientationWatch: Task<Void, Never>?
-    /// The guest's agent, so the sleep overlay waits until the OS is actually up (not a dark panel mid-boot).
-    private weak var agent: GuestAgent?
+    /// The guest's agent, so the sleep overlay waits until the OS is actually up (not a dark panel mid-boot), and the
+    /// one that sets a simulated location (startLocation). Set by the device view before start().
+    weak var agent: GuestAgent?
     /// Latched true the first time the guest comes up; before that a dark panel means booting, not asleep.
     private var hasBooted = false
 
@@ -142,6 +143,9 @@ final class DeviceControls: ObservableObject {
     private let location = PhoneLocation()
     /// Set by the device view before start(): whether this board's modem has a GPS receiver (Board.hasGPS).
     var hasGPS = false
+    /// Set by the device view before start(): a board without a receiver running iOS 5 or later, where the
+    /// location goes in through iOS's own location simulation instead (GuestLocation), and the agent that does it.
+    var simulatesLocation = false
     var passLocation: Bool { Self.setting("passLocation", default: true) }
     private var lastBattery: (level: Int, charging: Int)?
     private var running = false
@@ -164,7 +168,7 @@ final class DeviceControls: ObservableObject {
         UIDevice.current.isBatteryMonitoringEnabled = true
         applyPowerState()
         if passMotion { startMotion() }
-        if passLocation, hasGPS { location.start(qemu: qemu) }
+        if passLocation, hasGPS || simulatesLocation { startLocation() }
 
         // One timer for everything: the device's own state, the vibrator, the guest's pasteboard, the battery.
         // Four times a second is enough to feel immediate without costing anything.
@@ -358,8 +362,27 @@ final class DeviceControls: ObservableObject {
 
     func setLocation(_ on: Bool) {
         UserDefaults.standard.set(on, forKey: "passLocation")
-        guard running, hasGPS else { return }
-        on ? location.start(qemu: qemu) : location.stop()
+        guard running, hasGPS || simulatesLocation else { return }
+        if on {
+            startLocation()
+        } else {
+            location.stop()
+            if !hasGPS, let agent { Task { await agent.stopSimulatedLocation() } }
+        }
+    }
+
+    /// This phone's location into the device: the modem's GPS receiver where the board has one, otherwise iOS's own
+    /// location simulation, set from inside the device (lt-locate) each time this phone has moved far enough.
+    private func startLocation() {
+        if hasGPS {
+            location.sink = nil
+        } else {
+            location.sink = { [weak self] fix in
+                let c = fix.coordinate
+                Task { @MainActor in await self?.agent?.simulateLocation(latitude: c.latitude, longitude: c.longitude) }
+            }
+        }
+        location.start(qemu: qemu)
     }
 
     func setMotion(_ on: Bool) {
@@ -374,7 +397,6 @@ final class DeviceControls: ObservableObject {
     /// heading becomes the device's compass. Asking for a magnetic reference frame is what fills in the heading.
     private func startMotion() {
         guard motion.isDeviceMotionAvailable, !motion.isDeviceMotionActive else { return }
-        motion.deviceMotionUpdateInterval = 1.0 / 30
         let frame: CMAttitudeReferenceFrame =
             CMMotionManager.availableAttitudeReferenceFrames().contains(.xMagneticNorthZVertical)
             ? .xMagneticNorthZVertical : .xArbitraryZVertical
@@ -382,16 +404,34 @@ final class DeviceControls: ObservableObject {
         var smoothed: CMAcceleration?
         var smoothedHeading: Double?
         var lastSent: (pitch: Double, roll: Double)?
+        var neutral: CMAcceleration?
+        var lastShake = Date.distantPast
+        motion.deviceMotionUpdateInterval = 1.0 / 60
         motion.startDeviceMotionUpdates(using: frame, to: .main) { [weak self] data, _ in
             guard let self, let data else { return }
+            // Shaking. CoreMotion splits what the phone feels into gravity (which way is down) and the user's own
+            // acceleration; only gravity was ever passed on, so a shake -- all user acceleration -- never reached
+            // the device. A jolt past 1.4 g is a shake: the device gets one (its accelerometer swings hard for a
+            // fifth of a second, which is what iOS and games look for), at most once every 0.6 s. (1.4 g: a firm shake, not a bump.)
+            let a = data.userAcceleration
+            if (a.x * a.x + a.y * a.y + a.z * a.z).squareRoot() > 1.4, Date().timeIntervalSince(lastShake) > 0.6 {
+                lastShake = Date()
+                self.qemu?.shake?()
+            }
             // The raw accelerometer jitters, so a tiny tilt of this phone shook the device. Smooth the gravity
-            // vector (a low-pass, ~0.25 of each new reading) and send a new attitude only when it has moved more
-            // than a degree, so a still phone holds the device still.
+            // vector lightly and send a new attitude once it has moved a quarter of a degree. (It was a heavy
+            // smoothing and a whole degree at 30 Hz: a ball rolled in visible steps, which reads as twitchy.)
             let g = data.gravity
-            let s = smoothed.map { CMAcceleration(x: $0.x * 0.75 + g.x * 0.25, y: $0.y * 0.75 + g.y * 0.25, z: $0.z * 0.75 + g.z * 0.25) } ?? g
+            let s = smoothed.map { CMAcceleration(x: $0.x * 0.6 + g.x * 0.4, y: $0.y * 0.6 + g.y * 0.4, z: $0.z * 0.6 + g.z * 0.4) } ?? g
             smoothed = s
-            if let (pitch, roll) = Self.guestAttitude(gravity: s) {
-                let moved = lastSent.map { abs($0.pitch - pitch) > 1 || abs($0.roll - roll) > 1 } ?? true
+            // Settings > Tilt sensitivity: how far the device tilts for each degree this phone does, measured from
+            // the way the phone was held when tilt came on. At 100% the device reads exactly this phone's gravity.
+            let k = Self.tiltSensitivity
+            if neutral == nil { neutral = s }
+            let n = neutral ?? s
+            let felt = k >= 0.999 ? s : CMAcceleration(x: n.x + (s.x - n.x) * k, y: n.y + (s.y - n.y) * k, z: n.z + (s.z - n.z) * k)
+            if let (pitch, roll) = Self.guestAttitude(gravity: felt) {
+                let moved = lastSent.map { abs($0.pitch - pitch) > 0.25 || abs($0.roll - roll) > 0.25 } ?? true
                 if moved {
                     lastSent = (pitch, roll)
                     self.qemu?.attitude?(pitch, roll, 1)
@@ -442,6 +482,12 @@ final class DeviceControls: ObservableObject {
     /// roll the right edge down: gravity (sin r cos p, sin p, -cos r cos p). The device then reads the same gravity
     /// this phone does, whichever way it is held. CoreMotion's own pitch and roll are Euler angles about another
     /// order of axes, and fed straight in they read upright as flat.
+    /// Settings > Tilt sensitivity, as a fraction: 1 passes this phone's tilt through as it is.
+    static var tiltSensitivity: Double {
+        let v = UserDefaults.standard.object(forKey: "tiltSensitivity") as? Double ?? 1
+        return max(0.25, min(1, v))
+    }
+
     static func guestAttitude(gravity g: CMAcceleration) -> (Double, Double)? {
         let length = (g.x * g.x + g.y * g.y + g.z * g.z).squareRoot()
         guard length > 0.1, length.isFinite else { return nil }

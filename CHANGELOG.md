@@ -3,6 +3,73 @@
 Light Touch for iOS (QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 80 — Halfway to Heaven
+
+Stacks on 79. App-side plus emulator patch 0031, so the emulator libraries rebuild. The 80th update: from a device
+that wouldn't show a picture to iOS 3 through 6 installing apps and Where's My Water, Need for Speed, Crash Team
+Racing and Super Monkey Ball drawing right.
+
+**Fixed**
+- **Shaking the phone shakes the device.** Only "which way is down" was ever passed on from this phone's motion
+  sensors; a shake is all movement and no "down", so it never arrived. A firm jolt (past 1.4 g) is now a shake on the device
+  (what iOS's shake-to-undo and games look for), at most one every 0.6 s, while Tilt is on.
+- **Tilt is smoother, and its sensitivity is yours to set.** It was smoothed heavily and sent only once it had moved a
+  whole degree, 30 times a second, so a rolling ball moved in steps that read as twitchy. Now it's lightly smoothed,
+  sent 60 times a second from a quarter of a degree, and Settings ▸ Tilt sensitivity (shown while Tilt is on) scales
+  it: 100% is this phone's exact tilt, 40–80% are gentler, measured from the way you held the phone when tilt came on.
+- **Sound that isn't floaty.** With Smooth sound on, the playback speed was re-tuned ten times a second chasing the
+  buffer, and a time-stretcher whose speed never sits still warbles. It now follows the pace the emulator actually
+  makes sound at over the last three seconds, changes slowly, and moves in whole 2% steps.
+- **A little more speed.** The built-in profiler stops the device's CPUs for a moment every time it samples, ten times
+  a second. After the first two minutes of a session it samples twice a second instead.
+- **Minecraft's black screen after it turns sideways (likely).** Minecraft starts upright, rotates to landscape and
+  goes black with the game still running underneath. Its log says why: after the rotation it keeps drawing into
+  framebuffer 1, whose picture belongs on the screen, but the emulator had stopped treating that framebuffer as the
+  screen, so all twenty of its draws a frame went nowhere. A framebuffer drawing into the screen's own picture is
+  now always treated as the screen, and deleting the framebuffer in use now behaves the way the real iPhone does. If
+  it's still black, the log now lists the game's last 24 framebuffer steps in order, which says exactly what's left.
+
+**Added**
+- **Why an app quits the moment it opens.** FIFA 14 shows its launch image and is gone within a second, and the log
+  had nothing to say: it never creates a graphics context, so it isn't a graphics bug, and iOS doesn't log a crashed
+  app anywhere we were reading. iOS does write a crash report, though — the process, the exception, the crashed
+  thread and, for an app that dies before it starts, dyld's own reason ("Symbol not found", "Library not loaded").
+  The app now reads the device's newest crash report every 30 seconds and puts the lines that matter in the log the
+  first time each one appears (or says once that there is none).
+- **Whether a device can run an app, at install time.** The installer now logs which CPUs an app's code is for, the
+  iOS it needs and any hardware it requires, and warns when it can't run here: code only for armv7s (iPhone 5) or
+  newer, which iOS refuses without writing any crash report, or a minimum iOS newer than the device's.
+- **"Install anyway?"** Installing an .ipa first checks whether the device can run it (its code's CPU, the iOS it
+  needs) and asks before copying anything when it can't. The installer logs the same findings for every app.
+- **A banner when an app crashes.** A crash on the device while you watch shows up under the screen in a line — which
+  app, and why ("it needs something this iOS doesn't have", or the exception) — for twelve seconds.
+- **Uninstall, without a jailbreak.** Apps on the Device ▸ ⋯ ▸ Delete now works on any device. Without a jailbreak
+  there's no `rm`, so the app's Info.plist and executable go (which is what makes a folder an app; its other files
+  stay), then iOS 5 and 6 rebuild their app list from disk the same way installs do since Update 75, and earlier
+  versions have the entry taken out by hand. A jailbroken device removes the whole folder.
+
+- **An iOS 6 app icon.** Same picture, with iOS 6's gloss: a bright band over the top half ending in a soft arc, and a
+  faint bevel at the edges. Modern iOS draws icons flat, so the gloss is in the artwork itself.
+- **Settings in the iOS 6 look.** The full Settings page can be drawn the way iOS 6 drew its own: pinstriped
+  background, glossy blue bar, embossed section headers over white grouped cells, and iOS 6's ON/OFF switches.
+  Settings ▸ View ▸ iOS 6 look, on by default; off brings back the glass cards.
+
+- **Location on the iPhone 4 (iOS 5 and 6), simulated.** Only the 3GS has a GPS receiver the emulator answers for, so on
+  every iOS 6 device Location Services found nothing. iOS 5 and later have another door, the one Xcode uses to set a
+  location on a real iPhone: CoreLocation's simulation interface, which locationd honours from a process carrying the
+  `com.apple.locationd.simulation` entitlement. New guest helper **lt-locate** (`ios/guest-helper/lt-locate.S`) is that
+  process — `[CLSimulationManager appendSimulatedLocation:]`, `flush`, `startLocationSimulation`, each asked for with
+  `respondsToSelector:` first — and `build.py` now signs helpers that need it the way `ldid -S` does (an ad-hoc
+  CodeDirectory plus the entitlements; prepared devices run unsigned code, and the kernel still reads entitlements
+  from the blob). Settings ▸ Location now shows on iOS 5/6 devices; with it on, this phone's position goes in when the
+  device starts and whenever you've moved 25 m. If this iOS turns it down, the log says exactly what it lacked. Eight
+  new emulator tests run lt-locate against a faked Objective-C runtime: the calls, their order, the coordinates as
+  doubles on the stack where Apple's ABI puts them, and every way it can be missing something.
+
+**Not yet**
+- Anti-aliasing (`APPLE_framebuffer_multisample`): no game tested so far asks for it (no `UNHANDLED` line in any log),
+  and resolving it needs a framebuffer blit the ES 1.1 host context doesn't have. It waits for a game that needs it.
+
 ## Update 79 — Water in the Box
 
 Stacks on 78. Emulator patch 0030, so the emulator libraries rebuild.

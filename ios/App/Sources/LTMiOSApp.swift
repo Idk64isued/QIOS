@@ -795,6 +795,13 @@ struct RootView: View {
 
 // MARK: - IPA Picker
 
+/// An .ipa waiting on the "Install anyway?" question.
+struct InstallWarning: Identifiable {
+    let url: URL
+    let message: String
+    var id: String { url.path }
+}
+
 struct IPAPickerView: View {
     let onPick: (URL?) -> Void
     @State private var showPicker = false
@@ -956,6 +963,8 @@ struct EmulatorScreen: View {
     @State private var showHelp = false
     @State private var installNote = ""
     @State private var toast = ""
+    /// An .ipa that looks like it can't run on this device, waiting on "Install anyway?" (performInstall).
+    @State private var installWarning: InstallWarning?
     @StateObject private var volume = VolumeWatcher()
     /// Settings › Volume buttons. Off (the default) leaves this phone's volume buttons to this phone. On, every
     /// press was swallowed and sent to the guest, which threw its own volume overlay up over whatever was running,
@@ -1029,6 +1038,10 @@ struct EmulatorScreen: View {
             details = device.details
             modem.qemu = emulator.qemu
             controls.hasGPS = details.board?.hasGPS ?? false
+            // No receiver, but iOS 5 or later: the location goes in through iOS's own simulation (GuestLocation).
+            controls.simulatesLocation = !controls.hasGPS
+                && (Int((details.version ?? "").prefix { $0 != "." }) ?? 0) >= 5
+            controls.agent = emulator.agent
             controls.start(qemu: emulator.qemu)
             AutoCool.shared.start(qemu: emulator.qemu)
             if let agent = emulator.agent { controls.watchGuestOrientation(agent: agent) }
@@ -1061,6 +1074,21 @@ struct EmulatorScreen: View {
         }
         .onChange(of: controls.guestWantsShutdown) { confirmed in
             if confirmed { toast = "The device has shut itself down. Save & quit, or shut the emulator down." }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: GuestAgent.crashNotification)) { note in
+            guard let message = note.object as? String else { return }
+            toast = message
+            Task {
+                try? await Task.sleep(nanoseconds: 12_000_000_000)
+                if toast == message { toast = "" }
+            }
+        }
+        .alert(item: $installWarning) { warning in
+            Alert(title: Text("Install anyway?"), message: Text(warning.message),
+                  primaryButton: .default(Text("Install Anyway")) {
+                      Task { await performInstall(url: warning.url, checked: true) }
+                  },
+                  secondaryButton: .cancel { try? FileManager.default.removeItem(at: warning.url) })
         }
         .onChange(of: emulator.state) { state in
             if state == .running { playStartupTone() }
@@ -1461,7 +1489,19 @@ struct EmulatorScreen: View {
 
     /// Install an IPA through the guest agent (no jailbreak needed); the USB bridge is the fallback when the agent
     /// isn't there.
-    private func performInstall(url: URL) async {
+    private func performInstall(url: URL, checked: Bool = false) async {
+        // Can this device run it at all? Asked before anything is copied, and only asked: an app built only for a
+        // newer iPhone or a newer iOS quits the moment it opens, but whether to try is the user's call.
+        if !checked, let agent = emulator.agent, agent.status == .alive {
+            let version = agent.guestVersion
+            let problem = await Task.detached(priority: .userInitiated) {
+                GuestAgent.installProblem(ipa: url, iosVersion: version)
+            }.value
+            if let problem {
+                installWarning = InstallWarning(url: url, message: problem)
+                return
+            }
+        }
         defer { try? FileManager.default.removeItem(at: url) }
         installNote = "Installing \(url.lastPathComponent)\u{2026}"
         if let agent = emulator.agent, agent.status == .alive {

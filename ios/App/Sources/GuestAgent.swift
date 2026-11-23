@@ -36,6 +36,16 @@ final class GuestAgent: ObservableObject {
     var rebuildTried: Set<String> = []
     /// The app list has been reported this boot (GuestInstaller.reportAppListOncePerBoot).
     var appListReported = false
+    /// The last crash report read off the device (GuestCrashes), so each one is logged once. Kept across boots: an
+    /// old report is not news again just because the device restarted.
+    var lastCrashSeen: String?
+    /// Simulated location (GuestLocation): where this phone last was, what the device was last told this boot,
+    /// whether lt-locate is in place, and whether this iOS turned the simulation down (then it isn't tried again
+    /// until the next boot).
+    var pendingLocation: (latitude: Double, longitude: Double)?
+    var locationSent: (latitude: Double, longitude: Double)?
+    var locateReady = false
+    var locationRefused = false
     /// This device's installd has already turned an app down this boot, so the next install skips it and copies the
     /// app in by hand straight away (GuestInstaller). Cleared when a fresh agent says hello.
     var installdRefuses = false
@@ -186,6 +196,9 @@ final class GuestAgent: ObservableObject {
         installdRestrictionTried = false
         installdNeverReached = false
         installdJobChecked = false
+        locateReady = false
+        locationSent = nil          // locationd forgets a simulated location at a restart: tell the new boot
+        locationRefused = false
     }
 
     /// Guest tools already copied into the running device, by name. Cleared when a fresh agent says hello.

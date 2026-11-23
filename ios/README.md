@@ -426,6 +426,15 @@ can't download alongside yet.
   draw read the scratch quad's positions and colours, no texcoords, 460 vertices long into zeros, the water layer
   came back with alpha 0 everywhere, and its `GL_SUBTRACT` threshold composited it to nothing. The vertex, colour,
   normal, texcoord and point-size arrays are now VAO state, as OES_vertex_array_object says they are.
+- `patches/qemu-ios/0031`: a framebuffer whose colour is the drawable's renderbuffer (one with no GL storage) is the
+  drawable, at the incomplete-framebuffer check too: Minecraft rotated to landscape kept drawing into framebuffer 1,
+  which had lost that meaning and was `INCOMPLETE_ATTACHMENT` on the host, so every draw was thrown away. Also:
+  deleting the bound drawable framebuffer binds 0, and the incomplete report lists the last 24 framebuffer and
+  renderbuffer operations (gen, bind, storage, delete, attach) in order.
+- `guest-helper/lt-locate.S`: sets the device's location through CoreLocation's `CLSimulationManager` (as Xcode's
+  DTSimulateLocation does), for boards without a GPS receiver on iOS 5+. The one helper `build.py` signs: an ad-hoc
+  `ldid -S`-style signature carrying `com.apple.locationd.simulation`, which locationd requires. Its strings sit at
+  32-byte offsets in a table reached from r10, because `adr` can't encode the distances; `test.py` covers it.
 - The screen is drawn through Metal (`MetalPresenter`): one copy of each frame into a shared texture and a blit,
   instead of a CGImage per frame that Core Animation copied and converted again.
 - The profiler samples 10 times a second (it was 50; every sample stops the virtual CPU for a moment).

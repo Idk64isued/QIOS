@@ -218,6 +218,8 @@ final class Emulator: ObservableObject {
                         await ga.fixWebProxy()
                         await ga.revertGLFrontEnd()
                         await ga.reportAppListOncePerBoot()
+                        await ga.reportNewCrash()
+                        await ga.flushSimulatedLocation()
                     }
                     try? await Task.sleep(nanoseconds: 30_000_000_000)
                     if Task.isCancelled { return }

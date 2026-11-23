@@ -40,15 +40,27 @@ HELPERS = [
      "lt-notify, an armv6 program the app puts into the guest to post Darwin notifications (`lt-notify NAME...`),\n"
      "/// the way installd does once it has installed something, so the rest of the system re-reads the app list.\n"
      "/// Dynamically linked: see macho_dyld."),
+    ("lt-locate.S", "GuestLocateBinary.swift", "GuestLocateBinary", "/usr/local/bin/lt-locate",
+     "lt-locate, an armv6 program the app puts into the guest to set where the device is (`lt-locate LAT LON`, or\n"
+     "/// `lt-locate stop`) through CoreLocation's simulation interface, as Xcode does with a real phone. Dynamically\n"
+     "/// linked and signed with com.apple.locationd.simulation: see macho_dyld and code_signature."),
 ]
 
 # The helpers dyld loads, and the libSystem symbols bound into their __DATA, in slot order.
-DYLD_HELPERS = {"lt-install.S": ["_dlopen", "_dlsym"], "lt-notify.S": ["_dlopen", "_dlsym"]}
+DYLD_HELPERS = {"lt-install.S": ["_dlopen", "_dlsym"], "lt-notify.S": ["_dlopen", "_dlsym"],
+                "lt-locate.S": ["_dlopen", "_dlsym"]}
+
+# Helpers that need entitlements, and which. locationd takes simulated locations only from a process signed with
+# com.apple.locationd.simulation (Xcode's DTSimulateLocation is); the other two are what location-faking tools ask for
+# alongside it, harmless where unused.
+ENTITLED = {"lt-locate.S": ["com.apple.locationd.simulation", "com.apple.locationd.preauthorized",
+                            "com.apple.locationd.effective_bundle"]}
 
 CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V6 = 12, 6
 MH_MAGIC, MH_EXECUTE, MH_NOUNDEFS, MH_DYLDLINK, MH_TWOLEVEL = 0xFEEDFACE, 2, 1, 4, 0x80
 LC_SEGMENT, LC_UNIXTHREAD, ARM_THREAD_STATE, ARM_THREAD_STATE_COUNT = 0x1, 0x5, 1, 17
 LC_SYMTAB, LC_DYSYMTAB, LC_LOAD_DYLIB, LC_LOAD_DYLINKER, LC_DYLD_INFO_ONLY = 0x2, 0xB, 0xC, 0xE, 0x80000022
+LC_CODE_SIGNATURE = 0x1D
 BASE = 0x1000
 PAGE = 0x1000
 # Where macho_dyld puts __DATA. lt-install.S addresses it directly (mov r11, #0x2000).
@@ -138,7 +150,54 @@ def bind_opcodes(symbols, segment_index):
     return bytes(ops)
 
 
-def macho_dyld(code, symbols):
+def entitlements_plist(keys):
+    body = "".join(f"\t<key>{k}</key>\n\t<true/>\n" for k in keys)
+    return ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+            '<plist version="1.0">\n<dict>\n' + body + '</dict>\n</plist>\n').encode()
+
+
+def code_signature(image, identifier, entitlements):
+    """An ad-hoc code signature for `image` (the file up to where the signature goes), as ldid -S makes one: a
+    SuperBlob holding a CodeDirectory (SHA-1 of every 4 KiB page, and of the entitlements and requirements blobs in
+    their special slots), an empty requirements set and the entitlements. Nothing vouches for it -- there is no CMS
+    signature -- and nothing needs to: every prepared device boots with signature enforcement off ("AMFI: Invalid
+    signature but permitting execution"), and the kernel still reads the entitlements out of the blob, which is how
+    locationd learns this process may simulate locations."""
+    import hashlib
+    sha1 = lambda b: hashlib.sha1(b).digest()
+    ents = struct.pack(">II", 0xFADE7171, 8 + len(entitlements)) + entitlements
+    reqs = struct.pack(">III", 0xFADE0C01, 12, 0)
+    ident = identifier.encode() + b"\0"
+    pages = [image[i:i + PAGE] for i in range(0, len(image), PAGE)]
+    special = [b"\0" * 20] * 5                                       # slots -5 .. -1
+    special[0] = sha1(ents)                                          # -5 entitlements
+    special[3] = sha1(reqs)                                          # -2 requirements
+    hashes = b"".join(special) + b"".join(sha1(p) for p in pages)
+    header_len = 44
+    ident_off = header_len
+    hash_off = ident_off + len(ident) + 5 * 20
+    cd_len = hash_off + 20 * len(pages)
+    cd = struct.pack(">IIIIIIIIIBBBBI", 0xFADE0C02, cd_len, 0x20001, 0, hash_off, ident_off, 5, len(pages), len(image),
+                     20, 1, 0, 12, 0)
+    assert len(cd) == header_len
+    cd += ident + hashes
+    blobs = [(0, cd), (2, reqs), (5, ents)]
+    off = 12 + 8 * len(blobs)
+    index, payload = b"", b""
+    for kind, blob in blobs:
+        index += struct.pack(">II", kind, off + len(payload))
+        payload += blob
+    sb = struct.pack(">III", 0xFADE0CC0, 12 + len(index) + len(payload), len(blobs)) + index + payload
+    return sb + b"\0" * (-len(sb) % 16)
+
+
+def signature_size(image_len, identifier, entitlements):
+    """The signature's length for an image this long, known before the image is (its header names it)."""
+    return len(code_signature(b"\0" * image_len, identifier, entitlements))
+
+
+def macho_dyld(code, symbols, entitlements=None, identifier=None):
     """A dynamically linked executable, laid out as ld would for iPhone OS 3-6 without a PIE flag:
 
         __PAGEZERO 0x0      __TEXT 0x1000 (header, load commands, code)
@@ -151,8 +210,12 @@ def macho_dyld(code, symbols):
     linkedit = bind_opcodes(symbols, 2)
     strtab_off = len(linkedit)
     linkedit += b"\0" * 4                                            # the string table: "" (and padding)
+    if entitlements is not None:
+        linkedit += b"\0" * (-len(linkedit) % 16)                     # a signature after it starts 16-aligned
     text_vm, data_vm, link_vm = BASE, DYLD_DATA, DYLD_DATA + PAGE
     data_off, link_off = PAGE, 2 * PAGE
+    sig_off = link_off + len(linkedit)
+    sig_len = signature_size(sig_off, identifier, entitlements) if entitlements is not None else 0
 
     def build(code_off):
         entry = text_vm + code_off
@@ -164,7 +227,7 @@ def macho_dyld(code, symbols):
         # sections is one tools (and some loaders) skip when they number segments for binding.
         data_section = struct.pack("<16s16sIIIIIIIII", b"__data", b"__DATA", data_vm, 64, data_off, 2, 0, 0, 0, 0, 0)
         cmds += seg("__DATA", data_vm, PAGE, data_off, PAGE, 3, data_section, 1)
-        cmds += seg("__LINKEDIT", link_vm, PAGE, link_off, len(linkedit), 1)
+        cmds += seg("__LINKEDIT", link_vm, PAGE, link_off, len(linkedit) + sig_len, 1)
         cmds += struct.pack("<12I", LC_DYLD_INFO_ONLY, 48, 0, 0, link_off, strtab_off, 0, 0, 0, 0, 0, 0)
         cmds += struct.pack("<6I", LC_SYMTAB, 24, link_off + strtab_off, 0, link_off + strtab_off, 4)
         cmds += struct.pack("<II18I", LC_DYSYMTAB, 80, *([0] * 18))
@@ -175,6 +238,9 @@ def macho_dyld(code, symbols):
         cmds += struct.pack("<IIII", LC_UNIXTHREAD, 16 + 4 * ARM_THREAD_STATE_COUNT, ARM_THREAD_STATE,
                             ARM_THREAD_STATE_COUNT) + struct.pack("<17I", *regs)
         ncmds = 10
+        if sig_len:
+            cmds += struct.pack("<IIII", LC_CODE_SIGNATURE, 16, sig_off, sig_len)
+            ncmds += 1
         header = struct.pack("<IiiIIII", MH_MAGIC, CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V6, MH_EXECUTE, ncmds, len(cmds),
                              MH_NOUNDEFS | MH_DYLDLINK | MH_TWOLEVEL)
         return header, cmds, entry
@@ -186,6 +252,11 @@ def macho_dyld(code, symbols):
     text = header + cmds + code
     assert len(text) <= PAGE, "lt-install's code no longer fits its one page of __TEXT"
     blob = text + b"\0" * (PAGE - len(text)) + b"\0" * PAGE + linkedit
+    if sig_len:
+        assert len(blob) == sig_off
+        signature = code_signature(blob, identifier, entitlements)
+        assert len(signature) == sig_len
+        blob += signature
     return blob, entry
 
 
@@ -216,8 +287,11 @@ def check_path_file():
 def main():
     stale = []
     for source, swift_name, enum, guest_path, doc in HELPERS:
-        blob, _ = (macho_dyld(text_bytes(source), DYLD_HELPERS[source]) if source in DYLD_HELPERS
-                   else macho(text_bytes(source)))
+        if source in DYLD_HELPERS:
+            ents = entitlements_plist(ENTITLED[source]) if source in ENTITLED else None
+            blob, _ = macho_dyld(text_bytes(source), DYLD_HELPERS[source], ents, source[:-2])
+        else:
+            blob, _ = macho(text_bytes(source))
         out = os.path.join(SOURCES, swift_name)
         if "--check" in sys.argv:
             if not os.path.exists(out) or embedded(out) != blob:

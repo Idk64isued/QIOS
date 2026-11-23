@@ -11,6 +11,9 @@ final class PhoneLocation: NSObject, CLLocationManagerDelegate {
     private weak var qemu: QemuRuntime?
     private var lastSent = Date.distantPast
     private(set) var running = false
+    /// Where fixes go on a board without a GPS receiver: iOS's own location simulation, through the guest agent
+    /// (GuestLocation). Nil sends them to the modem's receiver, as on the 3GS.
+    var sink: ((CLLocation) -> Void)?
 
     override init() {
         super.init()
@@ -33,7 +36,7 @@ final class PhoneLocation: NSObject, CLLocationManagerDelegate {
         guard running else { return }
         running = false
         manager.stopUpdatingLocation()
-        _ = qemu?.modemSet?("gps-fix", "")
+        if sink == nil { _ = qemu?.modemSet?("gps-fix", "") }
         LTMLog.note("location: off")
     }
 
@@ -51,7 +54,11 @@ final class PhoneLocation: NSObject, CLLocationManagerDelegate {
     private func send(_ location: CLLocation) {
         guard running, Date().timeIntervalSince(lastSent) >= 1, let fix = Self.fix(location) else { return }
         lastSent = Date()
-        _ = qemu?.modemSet?("gps-fix", fix)
+        if let sink {
+            sink(location)
+        } else {
+            _ = qemu?.modemSet?("gps-fix", fix)
+        }
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {

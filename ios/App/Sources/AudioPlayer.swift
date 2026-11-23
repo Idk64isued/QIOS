@@ -39,6 +39,8 @@ final class AudioPlayer: @unchecked Sendable {
     private let timePitch = AVAudioUnitTimePitch()
     private var rate: Float = 1
     private var dryEvents = 0                      // times it ran dry since the last report (audio thread, under lock)
+    private var produced = 0                       // stereo frames the emulator has handed over (under lock)
+    private var producedWindow: [Int] = []         // `produced` at each pace tick, the last three seconds of them
     private let lateFrames = 44100 * (UserDefaults.standard.bool(forKey: "smoothSound") ? 45 : 20) / 100     // this much buffered means the sound trails...
     private let trimToFrames = 44100 * (UserDefaults.standard.bool(forKey: "smoothSound") ? 15 : 8) / 100    // ...so drop back to this
 
@@ -176,19 +178,30 @@ final class AudioPlayer: @unchecked Sendable {
         qemu.audioStop(generation)
     }
 
-    /// Ten times a second: nudge the playback rate toward whatever keeps the buffer at its target. Below it, slow
-    /// down (to 70% at most, where it still sounds like the same sound); at or above it, ease back to full speed.
+    /// Ten times a second: set the playback speed to the pace the emulator is actually making sound at.
+    ///
+    /// It used to chase the buffer instead -- 0.2 of the way to "faster if full, slower if empty" every tenth of a
+    /// second -- so the speed never sat still, and a time-stretcher whose speed keeps changing warbles: the sound
+    /// came out floaty and thin, which is how it was described. Now the speed follows what the emulator produced over
+    /// the last three seconds (a steady number while a game runs), with only a small correction for the buffer,
+    /// moves there slowly, and is handed to the stretcher in whole 2% steps so it isn't retuned all the time.
     private func pace() {
         os_unfair_lock_lock(lock)
         let buffered = count / 2
         let isPlaying = playing
+        let made = produced
         os_unfair_lock_unlock(lock)
-        guard isPlaying, smooth else { return }
+        producedWindow.append(made)
+        if producedWindow.count > 31 { producedWindow.removeFirst(producedWindow.count - 31) }
+        guard isPlaying, smooth, producedWindow.count >= 11 else { return }
+        let seconds = Float(producedWindow.count - 1) / 10
+        let measured = Float(made - producedWindow[0]) / (44100 * seconds)
         let error = Float(buffered - targetFrames) / Float(targetFrames)    // -1 empty ... 0 on target ... >0 ahead
-        let wanted = max(0.7, min(1.0, 1.0 + 0.5 * error))
-        rate += (wanted - rate) * 0.2
-        if abs(timePitch.rate - rate) > 0.01 { timePitch.rate = rate }
-        let bypass = rate > 0.97
+        let wanted = max(0.75, min(1.0, measured + 0.05 * error))
+        rate += (wanted - rate) * 0.05
+        let stepped = (rate * 50).rounded() / 50
+        if abs(timePitch.rate - stepped) > 0.001 { timePitch.rate = stepped }
+        let bypass = stepped >= 0.98
         if timePitch.bypass != bypass { timePitch.bypass = bypass }
     }
 
@@ -220,6 +233,7 @@ final class AudioPlayer: @unchecked Sendable {
             writeIndex = (writeIndex + 1) % capacity
         }
         count += incoming
+        produced += incoming / 2
         // Running late: more than half a second queued means the sound now trails the screen. Catch up.
         if count / 2 > lateFrames {
             let drop = count - trimToFrames * 2

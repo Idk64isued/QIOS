@@ -47,8 +47,17 @@ final class AppsModel: ObservableObject {
         _ = await agent.launchApp(bundleID: app.bundleID)
     }
 
+    @Published var busy: String?
+    /// What went wrong with the last removal, shown above the list (error is for an empty one).
+    @Published var note: String?
+
+    /// Removes the app (GuestAgent.uninstallApp). The Home screen restarts on the way, which takes a few seconds.
     func delete(_ app: GuestAgent.GuestApp) async {
-        _ = await agent.removeApp(at: app.path)
+        guard busy == nil else { return }
+        busy = "Removing \(app.name)\u{2026} The Home screen restarts on the way."
+        let problem = await agent.uninstallApp(app)
+        busy = nil
+        note = problem
         reload()
     }
 }
@@ -85,7 +94,13 @@ struct AppsBrowserView: View {
     }
 
     @ViewBuilder private var content: some View {
-        if model.loading && model.apps.isEmpty {
+        if let busy = model.busy {
+            VStack(spacing: 10) {
+                ProgressView().tint(Theme.accent)
+                Text(busy).font(.system(size: 12, design: .rounded)).foregroundStyle(Theme.secondaryText)
+                    .multilineTextAlignment(.center).padding(.horizontal, 32)
+            }
+        } else if model.loading && model.apps.isEmpty {
             VStack(spacing: 10) {
                 ProgressView().tint(Theme.accent)
                 Text("Reading /Applications\u{2026}").font(.system(size: 12, design: .rounded)).foregroundStyle(Theme.secondaryText)
@@ -99,6 +114,10 @@ struct AppsBrowserView: View {
         } else {
             ScrollView {
                 LazyVStack(spacing: 6) {
+                    if let note = model.note {
+                        Text(note).font(.system(size: 12, design: .rounded)).foregroundStyle(Theme.warning)
+                            .multilineTextAlignment(.center).padding(.bottom, 4)
+                    }
                     ForEach(model.apps) { app in appRow(app) }
                 }
                 .padding(.horizontal, 16)
@@ -320,8 +339,7 @@ struct HelpView: View {
                             + "the rest). Switch in the \u{2026} menu.")
                         section("Apps", symbol: "bag",
                             "Legacy Store lists apps that run on this device and installs them. Apps on the device shows what "
-                            + "is installed and can launch or remove them. Installing new apps from an IPA works best on a "
-                            + "jailbroken device for now.")
+                            + "is installed and can launch or remove them, with or without a jailbreak.")
                         section("Save & quit", symbol: "tray.and.arrow.down",
                             "The emulator can save its full state before closing; the next launch restores it in seconds. "
                             + "If the device uses live GL state (the home screen), save may refuse\u{2014}go into an app first.")

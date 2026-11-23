@@ -73,6 +73,30 @@ extension GuestAgent {
         let executable = info["CFBundleExecutable"] as? String ?? ""
         let appName = bundle.lastPathComponent
         let display = info["CFBundleDisplayName"] as? String ?? info["CFBundleName"] as? String ?? (appName as NSString).deletingPathExtension
+
+        // 1a. Whether this device can run it at all. Nothing stops an install here -- the app goes in either way --
+        // but an app built only for a newer CPU, or that asks for hardware or an iOS this device doesn't have, quits
+        // the instant it opens, and iOS writes no crash report when the CPU is the reason. Say so now.
+        let slices = Self.binarySlices(bundle.appendingPathComponent(executable))
+        let needs: [String] = {
+            if let list = info["UIRequiredDeviceCapabilities"] as? [String] { return list }
+            if let dict = info["UIRequiredDeviceCapabilities"] as? [String: Any] {
+                return dict.compactMap { key, value in (value as? Bool) == false ? nil : key }.sorted()
+            }
+            return []
+        }()
+        log("\(display): code for " + (slices.isEmpty ? "an unknown CPU" : slices.joined(separator: ", "))
+            + "; needs iOS " + (info["MinimumOSVersion"] as? String ?? "?")
+            + (needs.isEmpty ? "" : "; requires " + needs.joined(separator: ", ")))
+        if !slices.isEmpty, !slices.contains(where: { ["armv6", "armv7"].contains($0) }) {
+            log("\(display) has no armv7 or armv6 code, which is all the emulated iPhones and iPods run: it will quit "
+                + "as soon as it opens. It needs a device with a newer CPU (armv7s is the iPhone 5).")
+        }
+        if let minimum = info["MinimumOSVersion"] as? String, let have = guestVersion,
+            minimum.compare(have, options: .numeric) == .orderedDescending
+        {
+            log("\(display) needs iOS \(minimum) and this device runs \(have): it is likely to quit as soon as it opens.")
+        }
         guard !appName.contains("\n") else { throw InstallFailure(message: "The app\u{2019}s name has a line break in it.") }
         if let minimum = info["MinimumOSVersion"] as? String, let need = Int(minimum.prefix { $0 != "." }), need > major {
             log("\(display) asks for iPhone OS \(minimum); this device runs \(guestVersion ?? "?"). Installing anyway.")
@@ -1118,6 +1142,95 @@ extension GuestAgent {
     }
 
     /// The user apps the device lists, from MobileInstallation's cache (iPhone OS 2 and later; no jailbreak needed).
+    /// Takes an app off the device. Nil when it is gone from the device's app list, or what went wrong.
+    ///
+    /// A device without a jailbreak has no `rm`, so the bundle's Info.plist and executable go (the agent can unlink
+    /// files), which is what makes a folder an app; the rest of its files stay where they are. Then the app list: on
+    /// iOS 5 and 6 iOS rebuilds it from the folders on disk, exactly as an install does since Update 75 (the list
+    /// taken away, installd and SpringBoard stopped, the rebuilt list checked), and the old list minus this app goes
+    /// back if no rebuild comes; on earlier versions the entry is taken out by hand. A jailbroken device removes the
+    /// whole folder with `rm -rf` first.
+    func uninstallApp(_ app: GuestApp) async -> String? {
+        guard status == .alive, ops.contains("unlink"), ops.contains("get") else {
+            return "The device\u{2019}s agent isn\u{2019}t running yet."
+        }
+        guard !app.bundleID.isEmpty, app.path.hasSuffix(".app") else { return "Light Touch doesn\u{2019}t know where this app is." }
+        let major = Int((guestVersion ?? "3").prefix { $0 != "." }) ?? 3
+        log("Removing \(app.name) (\(app.bundleID)) at \(app.path)")
+
+        // 1. The bundle.
+        if hasShell {
+            let parent = (app.path as NSString).deletingLastPathComponent
+            let target = parent.hasPrefix("/var/mobile/Applications/") && parent.count > "/var/mobile/Applications/".count
+                ? parent : app.path
+            _ = await spawn(argv: ["/bin/rm", "-rf", target])
+        } else {
+            var executable = ((app.path as NSString).lastPathComponent as NSString).deletingPathExtension
+            if let data = await getFile(app.path + "/Info.plist"),
+                let info = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+                let name = info["CFBundleExecutable"] as? String, !name.isEmpty
+            {
+                executable = name
+            }
+            _ = await unlink(path: app.path + "/" + executable)
+            _ = await unlink(path: app.path + "/Info.plist")
+        }
+        _ = await sync()
+
+        // 2. The app list.
+        guard major >= 2 else { return nil }      // iPhone OS 1 scans /Applications at start
+        var format = PropertyListSerialization.PropertyListFormat.binary
+        guard let data = await getFile(Self.installationCache),
+            var cache = try? PropertyListSerialization.propertyList(from: data, options: [], format: &format) as? [String: Any]
+        else { return "The app\u{2019}s files are gone, but the device\u{2019}s app list couldn\u{2019}t be read. Restart the device." }
+        var user = cache["User"] as? [String: Any] ?? [:]
+        user[app.bundleID] = nil
+        cache["User"] = user
+        guard let without = try? PropertyListSerialization.data(fromPropertyList: cache, format: format, options: 0) else {
+            return "The app list couldn\u{2019}t be rewritten. Restart the device."
+        }
+        func putBack() async -> Bool {
+            guard await putData(without, guestPath: Self.installationCache, mode: "0644") else { return false }
+            _ = await chown(uid: 501, gid: 501, path: Self.installationCache)
+            _ = await sync()
+            return true
+        }
+        if major >= 5 {
+            _ = await unlink(path: Self.installationCache)
+            for base in ["icons", "smallicons", "spotlight"] {
+                for scale in ["", "@2x"] {
+                    for ext in ["", ".plist"] {
+                        _ = await unlink(path: "/var/mobile/Library/Caches/com.apple.springboard-imagecache-" + base + scale + ext)
+                    }
+                }
+            }
+            _ = await sync()
+            _ = await run(["/bin/launchctl", "stop", "com.apple.mobile.installd"], timeout: 15)
+            _ = await run(["/bin/launchctl", "stop", "com.apple.SpringBoard"], timeout: 15)
+            for _ in 0..<15 {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard let rebuilt = await getFile(Self.installationCache),
+                    let list = try? PropertyListSerialization.propertyList(from: rebuilt, format: nil) as? [String: Any]
+                else { continue }
+                if (list["User"] as? [String: Any])?[app.bundleID] == nil {
+                    log("iOS rebuilt its app list without \(app.name): removed")
+                    return nil
+                }
+                log("iOS rebuilt its app list and \(app.name) is still in it; taking it out by hand")
+                return await putBack() ? nil : "Couldn\u{2019}t update the app list. Restart the device."
+            }
+            log("No rebuilt app list after 30 seconds; putting the old one back without \(app.name)")
+            guard await putBack() else { return "Couldn\u{2019}t put the app list back. Restart the device." }
+            _ = await run(["/bin/launchctl", "stop", "com.apple.SpringBoard"], timeout: 15)
+            return nil
+        }
+        guard await putBack() else { return "Couldn\u{2019}t update the app list. Restart the device." }
+        _ = await run(["/bin/launchctl", "stop", "com.apple.mobile.installd"], timeout: 15)
+        _ = await run(["/bin/launchctl", "stop", "com.apple.SpringBoard"], timeout: 15)
+        log("Removed \(app.name) from the app list")
+        return nil
+    }
+
     func installedUserApps() async -> [GuestApp] {
         guard let data = await getFile(Self.installationCache),
             let cache = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],

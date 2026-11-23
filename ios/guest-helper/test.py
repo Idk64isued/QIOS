@@ -653,4 +653,164 @@ good &= check_notify("an iOS with no notify_post says so rather than pretending"
                      st["exit"] == 1 and st["err"] == b"lt-notify: this iOS has no notify_post\n"
                      and st["posted"] == [], st)
 
+locate_blob = load("GuestLocateBinary.swift")
+
+
+def run_locate(args, no_class=(), no_selector=(), no_lib=False):
+    """lt-locate under the same emulator, with dyld's libraries, the Objective-C runtime and strtod faked. The
+    runtime fake keeps every message sent, so a test can check the calls and their arguments in order."""
+    flags, cmds = load_commands(locate_blob)
+    segments, entry = [], None
+    for cmd, c in cmds:
+        if cmd == LC_SEGMENT_:
+            name = c[8:24].rstrip(b"\0").decode()
+            vmaddr, vmsize, fileoff, filesize = struct.unpack_from("<IIII", c, 24)
+            segments.append((vmaddr, vmsize, fileoff, filesize, name))
+        elif cmd == LC_UNIXTHREAD_:
+            entry = struct.unpack_from("<17I", c, 16)[15]
+    uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
+    for vmaddr, vmsize, fileoff, filesize, name in segments:
+        if vmsize and name != "__PAGEZERO":
+            uc.mem_map(vmaddr, vmsize)
+            uc.mem_write(vmaddr, locate_blob[fileoff:fileoff + filesize])
+    FAKES = 0x00F00000
+    uc.mem_map(FAKES, 0x10000)
+    names = ["dlopen", "dlsym", "objc_getClass", "sel_registerName", "objc_msgSend", "strtod", "usleep"]
+    at = {n: FAKES + 16 * i for i, n in enumerate(names)}
+    for a in at.values():
+        uc.mem_write(a, struct.pack("<I", 0xE12FFF1E))     # bx lr
+    for addr, ordinal, symbol in binds(locate_blob, segments):
+        uc.mem_write(addr, struct.pack("<I", at[symbol.lstrip("_")]))
+
+    state = {"exit": None, "out": b"", "err": b"", "opened": [], "sent": [], "slept": None, "made": None}
+    sels, objects = {}, {}
+
+    def cstr(addr):
+        out = b""
+        while True:
+            ch = uc.mem_read(addr, 1)
+            if ch == b"\0":
+                return out.decode()
+            out += ch
+            addr += 1
+
+    def r(n):
+        return uc.reg_read([UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3][n])
+
+    def fake(uc, address, size, _):
+        if address == at["dlopen"]:
+            state["opened"].append(cstr(r(0)))
+            uc.reg_write(UC_ARM_REG_R0, 0 if no_lib else 0x1000 + len(state["opened"]))
+        elif address == at["dlsym"]:
+            uc.reg_write(UC_ARM_REG_R0, at.get(cstr(r(1)), 0))
+        elif address == at["objc_getClass"]:
+            name = cstr(r(0))
+            uc.reg_write(UC_ARM_REG_R0, 0 if name in no_class else {"CLSimulationManager": 0xC1A55, "CLLocation": 0xC10C}.get(name, 0))
+        elif address == at["sel_registerName"]:
+            name = cstr(r(0))
+            sel = 0x5E000 + 0x10 * (list(sels.values()).index(name) if name in sels.values() else len(sels))
+            sels[sel] = name
+            uc.reg_write(UC_ARM_REG_R0, sel)
+        elif address == at["objc_msgSend"]:
+            receiver, sel = r(0), sels[r(1)]
+            result = 0
+            if sel == "alloc":
+                result = 0xA000 + receiver
+            elif sel == "init":
+                result = receiver
+            elif sel == "respondsToSelector:":
+                result = 0 if sels[r(2)] in no_selector else 1
+            elif sel == "initWithLatitude:longitude:":
+                sp = uc.reg_read(UC_ARM_REG_SP)
+                lat = struct.unpack("<d", struct.pack("<II", r(2), r(3)))[0]
+                lon = struct.unpack("<d", bytes(uc.mem_read(sp, 8)))[0]
+                state["made"] = (round(lat, 6), round(lon, 6), sp % 8)
+                result = 0xB0B0
+            else:
+                state["sent"].append((sel, r(2) if sel.endswith(":") else None))
+            for reg in (UC_ARM_REG_R9, UC_ARM_REG_R12, UC_ARM_REG_R2, UC_ARM_REG_R3):
+                uc.reg_write(reg, 0xDEADBEEF)
+            uc.reg_write(UC_ARM_REG_R0, result)
+        elif address == at["strtod"]:
+            value = float(cstr(r(0)))
+            lo, hi = struct.unpack("<II", struct.pack("<d", value))
+            uc.reg_write(UC_ARM_REG_R0, lo)
+            uc.reg_write(UC_ARM_REG_R1, hi)
+            uc.reg_write(UC_ARM_REG_R9, 0xDEADBEEF)
+        elif address == at["usleep"]:
+            state["slept"] = r(0)
+
+    uc.hook_add(UC_HOOK_CODE, fake, begin=FAKES, end=FAKES + 0x1000)
+
+    def svc(uc, intno, _):
+        num = uc.reg_read(UC_ARM_REG_R12)
+        if num == 4:
+            fd = uc.reg_read(UC_ARM_REG_R0)
+            buf, n = uc.reg_read(UC_ARM_REG_R1), uc.reg_read(UC_ARM_REG_R2)
+            state["err" if fd == 2 else "out"] += bytes(uc.mem_read(buf, n))
+            uc.reg_write(UC_ARM_REG_R0, n)
+        elif num == 1:
+            state["exit"] = uc.reg_read(UC_ARM_REG_R0)
+            uc.emu_stop()
+        else:
+            raise AssertionError(f"lt-locate made system call {num}")
+
+    uc.hook_add(UC_HOOK_INTR, svc)
+    stack, strings = 0x80000, 0x90000
+    uc.mem_map(stack - 0x10000, 0x30000)
+    ptrs, at_s = [], strings
+    for a in args:
+        uc.mem_write(at_s, a.encode() + b"\0")
+        ptrs.append(at_s)
+        at_s += len(a) + 1
+    uc.mem_write(stack - 12, struct.pack(f"<I{len(ptrs)}II", len(ptrs), *ptrs, 0))
+    uc.reg_write(UC_ARM_REG_SP, stack - 12)
+    uc.emu_start(entry, 0, count=400_000)
+    return state
+
+
+def check_locate(name, ok, state=None):
+    print(("ok   " if ok else "FAIL ") + "lt-locate: " + name)
+    if not ok and state is not None:
+        print("  ", state)
+    return ok
+
+
+LOC = "/usr/local/bin/lt-locate"
+st = run_locate([LOC, "43.615", "-116.2023"])
+good &= check_locate("sets the location: stop, clear, append it, flush, start, then waits for locationd",
+                     st["exit"] == 0 and st["out"] == b"lt-locate: ok\n"
+                     and st["made"] == (43.615, -116.2023, 0)
+                     and st["sent"] == [("stopLocationSimulation", None), ("clearSimulatedLocations", None),
+                                        ("appendSimulatedLocation:", 0xB0B0), ("flush", None),
+                                        ("startLocationSimulation", None)]
+                     and st["slept"] == 1500000
+                     and st["opened"] == ["/usr/lib/libSystem.B.dylib", "/usr/lib/libobjc.A.dylib",
+                                          "/System/Library/Frameworks/CoreLocation.framework/CoreLocation"], st)
+st = run_locate([LOC, "stop"])
+good &= check_locate("stop ends the simulation: stop, clear, flush",
+                     st["exit"] == 0 and st["made"] is None
+                     and st["sent"] == [("stopLocationSimulation", None), ("clearSimulatedLocations", None),
+                                        ("flush", None)], st)
+st = run_locate([LOC, "-33.8688", "151.2093"])
+good &= check_locate("southern and eastern coordinates keep their signs",
+                     st["exit"] == 0 and st["made"] == (-33.8688, 151.2093, 0), st)
+st = run_locate([LOC, "43.615", "-116.2023"], no_class=("CLSimulationManager",))
+good &= check_locate("an iOS without CLSimulationManager says so and exits 2",
+                     st["exit"] == 2 and st["out"] == b"lt-locate: no CLSimulationManager\n" and st["sent"] == [], st)
+st = run_locate([LOC, "43.615", "-116.2023"], no_selector=("startLocationSimulation",))
+good &= check_locate("a missing method is named, the rest still sent, exit 2",
+                     st["exit"] == 2 and st["out"] == b"lt-locate: no startLocationSimulation\n"
+                     and [s for s, _ in st["sent"]] == ["stopLocationSimulation", "clearSimulatedLocations",
+                                                        "appendSimulatedLocation:", "flush"], st)
+st = run_locate([LOC])
+good &= check_locate("no coordinates is a usage line on stderr, exit 1",
+                     st["exit"] == 1 and st["err"] == b"lt-locate: give LATITUDE LONGITUDE, or stop to end\n", st)
+st = run_locate([LOC, "43.615"])
+good &= check_locate("a latitude alone is a usage line too, and nothing is sent",
+                     st["exit"] == 1 and st["err"].startswith(b"lt-locate: give") and st["sent"] == [], st)
+st = run_locate([LOC, "1", "2"], no_lib=True)
+good &= check_locate("a library that won't load says so on stderr, exit 1",
+                     st["exit"] == 1 and st["err"] == b"lt-locate: a library this needs did not load\n", st)
+
 sys.exit(0 if good else 1)

@@ -109,7 +109,8 @@ enum ThreadSampler {
             return
         }
         let all = targets()
-        LTMLog.note("[prof] sampling \(all.map(\.name).joined(separator: ", ")) at 10 Hz")
+        LTMLog.note("[prof] sampling \(all.map(\.name).joined(separator: ", ")) at 10 Hz, then 2 Hz after two minutes")
+        let began = Date()
 
         let frames = UnsafeMutablePointer<UInt64>.allocate(capacity: depth)
         let state = UnsafeMutablePointer<natural_t>.allocate(capacity: 68)
@@ -170,7 +171,9 @@ enum ThreadSampler {
                 let key = parts.isEmpty ? "(only system frames)" : parts.joined(separator: " < ")
                 stacks[target.name, default: [:]][key, default: 0] += 1
             }
-            usleep(interval)
+            // Every sample stops the guest's CPUs for a moment. Boot and an app's first minutes are where the
+            // questions are; after two minutes a sample every half second still fills a window, at a fifth of the cost.
+            usleep(Date().timeIntervalSince(began) > 120 ? 500_000 : interval)
 
             if Date().timeIntervalSince(windowStart) >= window {
                 windowStart = Date()
