@@ -3,6 +3,70 @@
 Halcyon (formerly Light Touch for iOS / QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 87 — Development Dream
+
+App-side only, no emulator rebuild. Stacks on 86.
+
+Every question that has to be asked costs a round trip, so this update makes the report answer the ones that kept
+coming up.
+
+**Added**
+- **The report lists every setting**, not a hand-kept selection. The old list had already fallen behind — Graphics
+  capture was missing from it, so a report couldn't say whether the thing slowing a session down was even switched
+  on. Now the familiar ones come first and anything else the app has set follows automatically, so a setting added
+  later can never go missing again.
+- **The log says which app is in front.** The device has been able to answer this all along and nothing ever asked
+  it, so every report left out the most useful fact in it: which game was on screen when the problem happened.
+  It's now noted whenever it changes.
+- **The lines that matter now include** why the machine stopped, a pause that looks like a freeze, the memory
+  warning, whether textures are being kept compressed, and when memory was given back.
+
+## Update 86 — Leave It Packed
+
+Stacks on 85. Emulator patch 0035, so the emulator libraries rebuild.
+
+**Added**
+- **Settings ▸ Keep Textures Compressed (experimental, off by default).**
+
+  Almost every game of this era stores its artwork in a compressed form called PVRTC. Until now each one was
+  unpacked into plain pixels before use, because the Mac this emulator came from couldn't read it at all. Unpacking
+  costs about **eight times the memory** — a single large texture goes from half a megabyte to four — plus the time
+  to do it on every load.
+
+  Your phone's graphics chip descends from the same family as the one in the device being emulated, so it reads
+  this format natively. With this on, the artwork is handed over as-is: much less memory, less heat, faster loading.
+
+  **It is experimental and it may break games.** It trusts your phone's graphics driver to draw the artwork exactly
+  the way the unpacker does. Usually it does. Some games may show wrong colours or blocky edges. A few may look
+  grainy in the distance, because fine detail levels can't be built from compressed artwork. Anything the driver
+  refuses is unpacked as before, so it should never fail outright — but if a game looks wrong, turn it off and
+  reopen the game.
+
+  It's in Settings ▸ Advanced, and in the classic home's settings list.
+
+## Update 85 — Room to Breathe
+
+Stacks on 84. Emulator patch 0034, so the emulator libraries rebuild.
+
+Update 84's memory line answered the question immediately. The app was using **2.07 GB**, and the frame rate dropped
+to zero every time it sat there and recovered whenever it dipped. That is iOS taking memory back from an app that
+has grown too big — not a graphics bug, but it feels exactly like a freeze, and it is behind the Wipeout 2 stalls,
+the stutter, and probably some of the black screens too.
+
+Three things were each given a big budget without anyone adding them up: the emulated device's RAM (512 MB), the
+translator's code cache (512 MB) and the graphics memory cap (512 MB). iOS judges the total.
+
+**Fixed**
+- **Graphics memory now leaves room for everything else.** The cap drops from 512 MB to 320 MB. It was set against
+  the emulated device alone, and because it was never reached, update 81's "give back the memory of apps that are
+  gone" never actually ran — the phone ran out first. Now it can.
+- **A pause says so.** When the app goes to the background and cannot save the device, it pauses it. That was
+  silent, and a paused device is indistinguishable from a frozen one. It now says so in the log, and says when it
+  starts again.
+- **The log warns when memory gets dangerous**, once a session, with the setting that helps most.
+
+**If it still stutters:** Settings ▸ Code cache ▸ **256 MB** is the next biggest saving, and it needs no update.
+
 ## Update 84 — Say Why
 
 Stacks on 83. Emulator patch 0033, so the emulator libraries rebuild.

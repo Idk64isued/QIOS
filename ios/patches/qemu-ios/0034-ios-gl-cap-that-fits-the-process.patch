@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 23 Nov 2026 16:55:00 -0700
+Subject: [PATCH] ios: a GL memory cap that fits the whole process
+
+Update 84's run, with the footprint finally in the log:
+
+  [ltm 161.0s] cpu 64% of one core, 10.4 frames/s, 2006 MB
+  [ltm 171.1s] cpu 65% of one core,  0.3 frames/s, 2086 MB
+  [ltm 181.1s] cpu 49% of one core,  0.0 frames/s, 2070 MB
+  [ltm 201.3s] cpu 63% of one core, 11.4 frames/s, 2084 MB
+  [ltm 211.3s] cpu 58% of one core,  0.0 frames/s, 2071 MB
+
+The frame rate dies exactly when the footprint sits at ~2.07 GB and
+recovers when it dips. That is iOS taking memory back from a process
+that is too big, not a graphics bug; to the person holding the phone it
+is a freeze.
+
+512 MiB was picked against the emulated device's RAM alone. But the
+process also holds the guest's RAM (512 MB on an iPhone 4), the JIT's
+code cache (512 MB by default) and QEMU's own structures, and iOS
+judges the sum. Worse, the cap was never reached, so 0032's eviction --
+which exists precisely to give memory back under pressure -- never ran.
+The phone gave out before the budget did.
+
+The default is now 320 MiB, which leaves the rest of the process room
+and lets eviction do its job, and IT_GLES_MAX_MB overrides it so this
+can be tuned against a real measurement without another emulator build.
+
+---
+  hw/arm/gles-host.c | 27 ++++++++++++++++++++++++++-
+  1 file changed, 26 insertions(+), 1 deletion(-)
+
+diff --git a/hw/arm/gles-host.c b/hw/arm/gles-host.c
+index b21b7a3..6ccc282 100644
+--- a/hw/arm/gles-host.c
++++ b/hw/arm/gles-host.c
+@@ -420,7 +420,32 @@ static unsigned gles_fb_w = 320, gles_fb_h = 480;   /* the iPod panel: lcd->pw/p
+  * of it; past this an allocation fails with GL_OUT_OF_MEMORY, as their drivers'
+  * did. Decoded PVRTC is 8-16x its size on the device, so the cap is the largest
+  * RAM rather than a device's texture budget. */
+-#define GLES_MAX_GPU_BYTES    ((uint64_t)512 << 20)
++/*
++ * 512 MiB was chosen against the emulated device's RAM and nothing else, which was a mistake: this process also
++ * holds the guest's RAM (512 MB on an iPhone 4), the JIT's code cache (512 MB by default) and QEMU's own
++ * structures, and iOS judges the total. Update 84's run measured 2.07 GB and the frame rate collapsed to zero
++ * whenever it sat there -- the system fighting the process for memory, which reads as a freeze. Worse, the cap
++ * was never reached, so the eviction that gives back dead apps' GL never ran: the phone gave out first.
++ *
++ * The default is now a figure that leaves the rest of the process room, and IT_GLES_MAX_MB overrides it, so the
++ * app can tune this against a real measurement without a new emulator build.
++ */
++#define GLES_DEFAULT_MAX_GPU_MB 320u
++static uint64_t gles_max_gpu_bytes(void)
++{
++    static uint64_t cap;
++
++    if (!cap) {
++        const char *v = getenv("IT_GLES_MAX_MB");
++        unsigned mb = v ? (unsigned)atoi(v) : 0;
++
++        if (mb < 64 || mb > 4096) mb = GLES_DEFAULT_MAX_GPU_MB;
++        cap = (uint64_t)mb << 20;
++        fprintf(stderr, "[gles] GL objects may hold %u MiB%s\n", mb, v && mb == atoi(v) ? " (IT_GLES_MAX_MB)" : "");
++    }
++    return cap;
++}
++#define GLES_MAX_GPU_BYTES    gles_max_gpu_bytes()
+ 
+ /* [off, off + len) lies inside a `size`-byte buffer. Every buffer-object, index
+  * and client-array range check goes through here, so none of them can wrap. */
+-- 
+2.43.0

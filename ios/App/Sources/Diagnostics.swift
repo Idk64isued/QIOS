@@ -26,6 +26,8 @@ enum MemoryStats {
 /// The emulator's own messages (stderr) land in it too, including the vCPU accounting switched on by IT_VCPU_ACCT.
 enum LTMLog {
     private static var started = ProcessInfo.processInfo.systemUptime
+    /// The memory warning below is said once a session, not every ten seconds.
+    private static var warnedMemory = false
 
     static var url: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("lighttouch.log")
@@ -46,6 +48,7 @@ enum LTMLog {
 
     static func start() {
         started = ProcessInfo.processInfo.systemUptime
+        warnedMemory = false
         try? FileManager.default.removeItem(at: startURL)
         try? FileManager.default.removeItem(at: earlierURL)
         _ = freopen(url.path, "w", stderr)
@@ -108,6 +111,14 @@ enum LTMLog {
                     thermal, ProcessInfo.processInfo.isLowPowerModeEnabled ? "ON" : "off"))
                 lastCPU = cpu; lastWall = now; lastFrames = frames
                 splitIfLarge()
+                // iOS fights a process this size for memory long before it kills it: the frame rate collapses
+                // while the processor still runs. Update 84's run sat at 2.07 GB and stuttered to nothing.
+                if MemoryStats.footprintMB() >= 1800 && !warnedMemory {
+                    warnedMemory = true
+                    note("memory: this app is using \(MemoryStats.footprintMB()) MB. iOS starts taking memory back "
+                       + "around here, which shows up as stutter or a freeze. Settings \u{25B8} Code cache \u{25B8} 256 MB "
+                       + "is the biggest single saving.")
+                }
             }
         }
     }

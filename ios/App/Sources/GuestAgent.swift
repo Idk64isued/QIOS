@@ -39,6 +39,8 @@ final class GuestAgent: ObservableObject {
     /// The last crash report read off the device (GuestCrashes), so each one is logged once. Kept across boots: an
     /// old report is not news again just because the device restarted.
     var lastCrashSeen: String?
+    /// The app that was last seen in front, so a change is said once rather than every few seconds.
+    var frontmostSeen: String?
     /// Simulated location (GuestLocation): where this phone last was, what the device was last told this boot,
     /// whether lt-locate is in place, and whether this iOS turned the simulation down (then it isn't tried again
     /// until the next boot).
@@ -196,6 +198,7 @@ final class GuestAgent: ObservableObject {
         installdRestrictionTried = false
         installdNeverReached = false
         installdJobChecked = false
+        frontmostSeen = nil         // a new boot starts at SpringBoard again; say what comes to the front first
         locateReady = false
         locationSent = nil          // locationd forgets a simulated location at a restart: tell the new boot
         locationRefused = false
@@ -397,6 +400,22 @@ final class GuestAgent: ObservableObject {
         guard agentRequest("\(id) orientation\n"), let reply = await pollRaw(id: id, timeout: 2), reply.status == 0
         else { return nil }
         return Int((String(data: reply.body, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Says in the log which app came to the front, whenever that changes.
+    ///
+    /// The agent has answered `frontmost` all along and nothing ever asked it, so every report left the single
+    /// most useful fact out: which game was on screen when the thing being reported happened. Working that out
+    /// meant asking, and an answer that costs a round trip is an answer the person pays for.
+    func reportFrontmost() async {
+        guard ops.contains("frontmost") else { return }
+        let id = UUID().uuidString
+        guard agentRequest("\(id) frontmost\n"), let reply = await pollRaw(id: id, timeout: 2), reply.status == 0
+        else { return }
+        let name = (String(data: reply.body, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != frontmostSeen else { return }
+        frontmostSeen = name
+        log("in front: \(name)")
     }
 
     /// sync(2) in the guest: what it has written reaches its storage, so a kill now leaves a consistent disk.

@@ -1,0 +1,200 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 23 Nov 2026 17:20:00 -0700
+Subject: [PATCH] ios: hand PVRTC to the host still compressed (experimental)
+
+PVRTC was THE texture format of the 2008-2010 catalogue, and every level
+of it has been decoded to RGBA on the CPU since the beginning, because
+the Mac this came from has no PVRTC at all. That costs 8x the memory --
+a 1024x1024 4bpp level is 512 KiB compressed and 4 MiB decoded -- plus
+the time to decode it, on a process update 84 measured at 2.07 GB with
+iOS taking memory back from it while the frame rate sat at zero.
+
+The phones this runs on descend from the same PowerVR line as the
+devices emulated, so their GL generally takes these four formats
+unchanged, and the enums are the IMG extension's own.
+
+Off unless IT_GLES_PVRTC_NATIVE asks for it, because it trades our
+decoder's exact output for the host driver's, and a driver that
+advertises the extension can still differ at edges and on odd sizes.
+
+What it will and will not do:
+
+- Only a complete level with real texels in the standard padded
+  representation. The MBX driver's compact one-word mip tail is not
+  what a host driver expects, so those still decode.
+- Level 0 decides for the whole chain and every later level follows it;
+  a chain mixing compressed and decoded levels would be incomplete. A
+  level 0 that decodes clears the flag, so changing the setting cannot
+  leave a half-converted texture.
+- A cube face decides for itself: only GL_TEXTURE_2D has a per-texture
+  record, and the answer is the same for every face anyway.
+- Anything the host refuses is decoded in the same call, charge given
+  back, with a line saying so. A driver that lies costs one wasted call.
+- glGenerateMipmap cannot filter compressed pixels, so a texture kept
+  compressed keeps MAX_LEVEL at 0 and samples its full-size level: a
+  filtering quality loss on that texture and nothing worse. Said out
+  loud rather than left as a silent difference.
+
+---
+  hw/arm/gles-host.c | 117 ++++++++++++++++++++++++++++++++++++++++++++++++++++-
+  1 file changed, 116 insertions(+), 1 deletion(-)
+
+diff --git a/hw/arm/gles-host.c b/hw/arm/gles-host.c
+index 6ccc282..7a5f965 100644
+--- a/hw/arm/gles-host.c
++++ b/hw/arm/gles-host.c
+@@ -658,6 +658,9 @@ typedef struct {
+ typedef struct {
+     /* 4096 (our texture cap) down to 1. */
+     GLESPVRTCLevel levels[13];
++    /* Level 0 went to the host still compressed (gles_pvrtc_native). Every other level of the same texture must
++     * follow it: a chain that mixes compressed and decoded levels is an incomplete texture. */
++    bool native;
+ } GLESPVRTC;
+ 
+ typedef struct {
+@@ -2906,6 +2909,40 @@ static bool gles_is_paletted(uint32_t f)
+     return f >= GLES_PALETTE_FIRST && f <= GLES_PALETTE_LAST;
+ }
+ 
++/*
++ * Handing PVRTC to the host as it is, instead of decoding it to RGBA.
++ *
++ * Decoding costs 8x the memory (a 1024x1024 4bpp level is 512 KiB compressed and 4 MiB decoded) and the CPU time
++ * to do it, on a process that update 84 measured at 2.07 GB with iOS taking memory back from it. The phones this
++ * runs on descend from the same PowerVR line as the devices emulated, so their GL usually accepts these four
++ * formats unchanged -- and the enums are the IMG extension's own, so they pass straight through.
++ *
++ * Off unless IT_GLES_PVRTC_NATIVE says otherwise, because it trusts the host driver to reproduce what our decoder
++ * does exactly, and a driver that advertises the extension can still differ at edges and on odd sizes. Every
++ * upload falls back to decoding if the host refuses it, and Settings can turn it off per device.
++ */
++static bool gles_pvrtc_native(void)
++{
++    static int on = -1;
++
++    if (on < 0) {
++        const char *want = getenv("IT_GLES_PVRTC_NATIVE");
++        const char *ext;
++
++        if (!want || !atoi(want)) {
++            on = 0;
++            return false;
++        }
++        /* A context is current by the time any upload runs, so the string is here to be read. */
++        ext = (const char *)glGetString(GL_EXTENSIONS);
++        on = ext && strstr(ext, "texture_compression_pvrtc") ? 1 : 0;
++        fprintf(stderr, "[gles] PVRTC textures stay compressed: %s\n",
++                on ? "yes (the host GL takes them)"
++                   : "NO -- this host GL does not advertise PVRTC, so they are decoded as before");
++    }
++    return on == 1;
++}
++
+ static bool pvrtc_decode(const uint8_t *src, uint32_t w, uint32_t h, int bpp,
+                          bool alpha, bool padded, uint8_t *dst)
+ {
+@@ -5347,6 +5384,22 @@ static int64_t gles_generate_mipmap(uint32_t target)
+         gles_refuse("mipmap:target:0x%x", target);
+         return gles_reject(GL_INVALID_ENUM);
+     }
++    /*
++     * A compressed level cannot be the source of a generated chain -- the host has no decoded pixels to filter --
++     * so a texture kept compressed keeps MAX_LEVEL at 0 and samples level 0 alone. That is a filtering quality
++     * loss on that texture and nothing worse, and it is said out loud rather than left as a silent difference
++     * from the decoded path.
++     */
++    if (target == GL_TEXTURE_2D) {
++        GLESPVRTC *kept = gles_pvrtc_texture(false);
++        if (kept && kept->native) {
++            if (gles_refuse("mipmap:native-pvrtc")) {
++                fprintf(stderr, "[gles] glGenerateMipmap on a texture kept compressed: it keeps its full-size "
++                        "level and samples that (turn off native PVRTC textures if this one looks grainy)\n");
++            }
++            return 0;
++        }
++    }
+     gles_texture_begin();
+     /* The level-0 upload capped MAX_LEVEL at 0 (below); desktop GL generates and samples no level past the cap,
+      * so lift it to GL's default: the chain this makes is complete. */
+@@ -5420,6 +5473,61 @@ static int64_t gles_pvrtc_upload(CPUState *cpu, uint32_t target, uint32_t level,
+                 (format == PVRTC_RGBA_2BPP || format == PVRTC_RGBA_4BPP) ? "RGBA" : "RGB",
+                 replace ? " (replaced)" : "");
+     }
++    /*
++     * Straight to the host, still compressed, when that is on and this upload is the plain case for it: real
++     * texels (a null upload has nothing to hand over), the standard padded representation (the MBX driver's
++     * compact mip tail is not what a host driver expects), and a texture whose level 0 already went this way --
++     * or this IS level 0, which decides for the rest of the chain.
++     *
++     * Anything the host refuses falls back to decoding below, in this same call, so a driver that advertises
++     * PVRTC and then will not take it costs a wasted call and nothing else.
++     */
++    bool chain_native;
++    if (face) {
++        /* A cube face has no record of its own (only GL_TEXTURE_2D is tracked), and the answer is the same for
++         * every face of every texture, so each decides for itself and they agree. */
++        chain_native = gles_pvrtc_native();
++    } else if (level == 0 && !replace) {
++        chain_native = gles_pvrtc_native();     /* a fresh level 0 decides for the whole chain */
++    } else {
++        GLESPVRTC *known = gles_pvrtc_texture(false);
++        chain_native = known && known->native;  /* every later level follows it */
++    }
++    if (src && size == standard && chain_native && gles_pvrtc_native()) {
++        if (gles_charge_texture(target, level, size)) {
++            GLenum error;
++
++            gles_texture_begin();
++            /* A full-image replace is a redefinition: CompressedTexSubImage2D is GL_INVALID_OPERATION for PVRTC
++             * on the drivers that have it, and this path only ever replaces a whole level anyway. */
++            glCompressedTexImage2D(target, level, format, w, h, 0, size, src);
++            error = glGetError();
++            if (!error) {
++                if (level == 0 && gles_capturing()) {
++                    fprintf(stderr, "[gles]   (kept compressed: %zu bytes instead of %zu decoded)\n",
++                            (size_t)size, (size_t)w * h * 4);
++                }
++                int64_t r = gles_texture_end(target, level, (GLESPVRTCLevel){ w, h, format });
++                if (!r && target == GL_TEXTURE_2D) {
++                    /* Only 2D textures have a record; a cube face would otherwise mark whichever 2D texture
++                     * happens to be bound. */
++                    GLESPVRTC *texture = gles_pvrtc_texture(false);
++                    if (texture) texture->native = true;
++                }
++                return r;
++            }
++            /* Give the bytes back and decode instead; gles_texture_begin below clears this error. */
++            if (gles_tex_charge.table) {
++                gles_charge(gles_tex_charge.table, gles_tex_charge.key, gles_tex_charge.old, NULL);
++                gles_tex_charge.table = NULL;
++            }
++            if (gles_refuse("pvrtc:native-refused:0x%x", error)) {
++                fprintf(stderr, "[gles] the host GL would not take a %ux%u PVRTC level (0x%x); decoding it "
++                        "instead, as before\n", w, h, error);
++            }
++        }
++    }
++
+     uint8_t *dst = gles_decode_buf((size_t)w * h * 4);
+     if (!dst) {
+         gles_refuse("cap:pvrtc-decode");
+@@ -5452,7 +5560,14 @@ static int64_t gles_pvrtc_upload(CPUState *cpu, uint32_t target, uint32_t level,
+ #endif
+         glTexImage2D(target, level, internal, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, dst);
+     }
+-    return gles_texture_end(target, level, (GLESPVRTCLevel){ w, h, format });
++    int64_t decoded = gles_texture_end(target, level, (GLESPVRTCLevel){ w, h, format });
++    if (!decoded && level == 0 && !replace && target == GL_TEXTURE_2D) {
++        /* This name may have been a compressed texture a moment ago (the setting changed, or the host refused
++         * this one). Level 0 decides the chain, so say plainly that it is decoded now. */
++        GLESPVRTC *texture = gles_pvrtc_texture(false);
++        if (texture) texture->native = false;
++    }
++    return decoded;
+ }
+ 
+ /* IOSurface-backed textures are aliases of guest memory. Upload on bind;
+-- 
+2.43.0

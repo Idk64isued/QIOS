@@ -66,11 +66,23 @@ enum Reports {
             $0.withMemoryRebound(to: CChar.self, capacity: 256) { String(cString: $0) }
         }
         let defaults = UserDefaults.standard
-        let settings = ["viewMode", "appearance", "homeInterface", "autoCool", "smoothSound", "keepState", "passBattery", "reportCharger", "mirrorVibration", "passMotion",
-                        "cellularModem", "enableUSB", "verboseBoot", "kernelConsole", "passLocation", "netRestricted", "netLAN", "codeCacheMB", "fastGL", "rect2d", "diag", "sharpPixels", "coolMode",
-                        "wifiNetwork", "debugPort", "rawKeyboard", "microphone", "glRenderer"]
-            .compactMap { key in defaults.object(forKey: key).map { "\(key)=\($0)" } }
-            .joined(separator: " ")
+        // The ones worth reading first, in a familiar order, then ANYTHING ELSE this app has set.
+        //
+        // This was a hand-kept list alone, and it had already fallen behind: "Graphics capture" was missing, so a
+        // report could not say whether the thing slowing the session down was even on, and every setting added
+        // after it would have gone the same way. A setting that does not reach the report is a question that has
+        // to be asked instead, and asking costs a round trip that the person is paying for.
+        let known = ["viewMode", "appearance", "homeInterface", "autoCool", "smoothSound", "keepState", "passBattery", "reportCharger", "mirrorVibration", "passMotion",
+                     "cellularModem", "enableUSB", "verboseBoot", "kernelConsole", "passLocation", "netRestricted", "netLAN", "codeCacheMB", "fastGL", "rect2d", "diag", "sharpPixels", "coolMode",
+                     "wifiNetwork", "debugPort", "rawKeyboard", "microphone", "glRenderer", "glCapture", "pvrtcNative", "tiltSensitivity", "simulatesLocation", "sixSettings"]
+        func show(_ key: String) -> String? { defaults.object(forKey: key).map { "\(key)=\($0)" } }
+        // iOS keeps its own preferences in the same place; those are not ours and say nothing about a device.
+        let theirs = ["Apple", "NS", "com.apple", "WebKit", "INNext", "AK", "PK", "MSV", "AddingEmojiKeybordHandled"]
+        let extras = defaults.dictionaryRepresentation().keys
+            .filter { key in !known.contains(key) && !theirs.contains(where: { key.hasPrefix($0) }) }
+            .sorted()
+            .compactMap(show)
+        let settings = (known.compactMap(show) + extras).joined(separator: " ")
         var lines = [
             "Halcyon report, \(stamp())",
             "What happened: \(context.note.isEmpty ? "(not said)" : context.note)",
@@ -91,7 +103,12 @@ enum Reports {
     /// the profiler, saves.
     static func importantLines(_ text: String, limit: Int = 160) -> [String] {
         let keys = ["error", "fail", "REFUSED", "npot", "has only level 0", "host APPLE", "[agent]", "[audio]", "[prof]",
-                    "background:", "first lit frame", "could not", "couldn", "stopped", "panic", "[snapshot]", "cpu "]
+                    "background:", "first lit frame", "could not", "couldn", "stopped", "panic", "[snapshot]", "cpu ",
+                    // Why a machine stopped, a pause that looks like a freeze, the memory warning, and whether
+                    // textures are being kept compressed: each one answers a question that otherwise has to be
+                    // asked, and each was added after a session was spent asking it.
+                    "[runstate]", "the device is paused", "the device is running again", "memory:", "PVRTC",
+                    "auto cool", "let go of", "frame buffer"]
         var out: [String] = []
         for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
             let l = String(line)

@@ -52,6 +52,7 @@ struct DeviceSettingsView: View {
     @AppStorage("glRenderer") private var glRenderer = "angle"
     @AppStorage("codeCacheMB") private var codeCacheMB = 512
     @AppStorage("glCapture") private var glCapture = false
+    @AppStorage("pvrtcNative") private var pvrtcNative = false
 
     /// Rows whose ⓘ has been tapped, by title.
     @State private var expanded: Set<String> = []
@@ -225,6 +226,9 @@ struct DeviceSettingsView: View {
                     toggle("Graphics capture", "Snapshots of what games draw. Next boot.",
                            detail: "Every ten seconds, one frame of what a game draws is saved together with each hidden layer it drew first, and a list of that frame\u{2019}s draws goes into the log. The newest four go into the next report you share. It slows games down, so turn it off when you\u{2019}re done. Takes effect on the next boot.",
                            isOn: $glCapture)
+                    toggle("Keep textures compressed", "Experimental. May break some games. Next boot.",
+                           detail: "Most games of this era store their artwork in a compressed form this phone\u{2019}s own graphics chip understands, because it descends from the one in the device being emulated. Normally each one is unpacked first, which uses about eight times the memory and costs time on every load. With this on they are handed over as they are: much less memory, less heat, faster loading.\n\nIt is experimental because it trusts this phone\u{2019}s graphics driver to draw them exactly as the unpacker does. Most of the time it does. Some games may show wrong colours or blocky edges, and a few may look grainy in the distance because detail levels cannot be built from compressed artwork. Anything the driver refuses is unpacked as before. If a game looks wrong, turn this off and reopen it. Takes effect on the next boot.",
+                           isOn: $pvrtcNative)
                     toggle("Verbose boot", "Kernel messages instead of the logo.",
                            detail: "The kernel\u{2019}s messages scroll on the device\u{2019}s screen instead of the Apple logo, so a slow or stuck boot shows where it is. Takes effect on the next boot.",
                            isOn: $verboseBoot)

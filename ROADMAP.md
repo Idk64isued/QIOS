@@ -58,6 +58,13 @@ rabbit hole.
 `glWeightPointerOES` (slots 807-810), which are unimplemented. Skinned/animated pieces will be wrong. Looked fine in
 testing, so low priority.
 
+## Experimental, and why
+
+**Keep Textures Compressed** (update 86, off by default). PVRTC artwork handed to the host GL as it is rather than
+decoded to RGBA at 8x the memory. It trades this decoder's exact output for the host driver's, so it can change how
+a game looks; every refusal falls back to decoding, and the setting turns it off per device. Worth testing broadly
+before it could ever be a default.
+
 ## Deliberately not in 1.0
 
 Each of these is a new subsystem, not a fix, and would end the release on a cliffhanger:

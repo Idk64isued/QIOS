@@ -32,6 +32,13 @@ struct GraphicsCaptureRow: View {
     var body: some View { SixToggleRow(title: "Graphics Capture", isOn: $glCapture) }
 }
 
+/// Settings \u{25B8} Keep Textures Compressed, likewise its own row. Experimental: see SettingsView for what it does
+/// and what it can cost.
+struct CompressedTexturesRow: View {
+    @AppStorage("pvrtcNative") private var pvrtcNative = false
+    var body: some View { SixToggleRow(title: "Keep Textures Compressed", isOn: $pvrtcNative) }
+}
+
 /// The original home screen, section for section, drawn as iOS 6's grouped tables.
 struct ClassicHome: View {
     let devices: [DeviceFolder]
@@ -98,6 +105,8 @@ struct ClassicHome: View {
                 SixToggleRow(title: "Skip GL Error Checks", isOn: $fastGL)
                 SixSeparator()
                 GraphicsCaptureRow()
+                SixSeparator()
+                CompressedTexturesRow()
                 SixSeparator()
                 SixToggleRow(title: "Diagnostics in Log", isOn: $diag)
                 SixSeparator()
@@ -214,6 +223,8 @@ struct SixHomeSettings: View {
                 SixToggleRow(title: "Skip GL Error Checks", isOn: $fastGL)
                 SixSeparator()
                 SixToggleRow(title: "Graphics Capture", isOn: $glCapture)
+                SixSeparator()
+                CompressedTexturesRow()
             }
             SixSection(header: "Code Cache", footer: "More holds more of a device\u{2019}s translated code, at the cost of memory.") {
                 SixSegments(options: [(256, "256 MB"), (512, "512 MB"), (1024, "1 GB")], selection: $codeCacheMB)

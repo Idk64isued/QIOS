@@ -443,6 +443,16 @@ can't download alongside yet.
   io-error`). A machine that stops mid-game is a crash to the person holding the phone, and every candidate cause
   -- an I/O error, a guest shutdown, a pause request, a suspend, the app's own background save -- looked identical
   in a report. Same rule as the UNHANDLED-slot warning, one level up.
+- `patches/qemu-ios/0034`: `GLES_MAX_GPU_BYTES` is 320 MiB, from `IT_GLES_MAX_MB`. 512 MiB was chosen against the
+  emulated device's RAM alone, but the process also holds the guest's RAM, the JIT code cache and QEMU's own
+  structures, and iOS judges the sum: update 84 measured 2.07 GB with the frame rate collapsing to zero whenever it
+  sat there. The old cap was also never reached, so 0032's eviction never ran.
+- `patches/qemu-ios/0035`: PVRTC levels go to the host compressed when `IT_GLES_PVRTC_NATIVE` is set and the host
+  advertises the extension, instead of decoding each to RGBA at 8x the memory. Complete levels in the standard
+  padded form only (the MBX compact mip tail still decodes); level 0 decides the chain and later levels follow, a
+  decoding level 0 clears the flag; cube faces decide per face (only 2D has a record); anything the host refuses
+  decodes in the same call with the charge given back; `glGenerateMipmap` on a compressed texture keeps
+  `MAX_LEVEL` at 0 and says so, which costs mip filtering on that texture and nothing else.
 - `guest-helper/lt-locate.S`: sets the device's location through CoreLocation's `CLSimulationManager` (as Xcode's
   DTSimulateLocation does), for boards without a GPS receiver on iOS 5+. The one helper `build.py` signs: an ad-hoc
   `ldid -S`-style signature carrying `com.apple.locationd.simulation`, which locationd requires. Its strings sit at

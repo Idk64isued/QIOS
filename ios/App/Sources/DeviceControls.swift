@@ -526,12 +526,19 @@ final class DeviceControls: ObservableObject {
     /// Stops the emulated CPU while the app is in the background, so an old iPhone isn't quietly eating this
     /// phone's battery in a pocket. Resumed on the way back.
     func suspend() {
+        // Said out loud: this pause is invisible otherwise, and a paused machine looks exactly like a frozen one.
+        // Update 84's report had the device stop dead with no line anywhere naming which of half a dozen paths
+        // did it; this was the one.
+        LTMLog.note("the device is paused (the app went to the background and its state could not be saved)")
         qemu?.pause?()
     }
 
     /// `resumeCPU` is false when the machine comes back from a background save, which restarts it its own way.
     func wake(resumeCPU: Bool = true) {
-        if resumeCPU { qemu?.resume?() }
+        if resumeCPU {
+            LTMLog.note("the device is running again")
+            qemu?.resume?()
+        }
         applyPowerState()
     }
 

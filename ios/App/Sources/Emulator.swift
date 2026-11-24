@@ -157,6 +157,11 @@ final class Emulator: ObservableObject {
                 unsetenv("IT_GLES_TRACE_EVERY")
                 unsetenv("IT_GLES_DUMP_DIR")
             }
+            // Experimental: hand the host GL its PVRTC textures still compressed instead of decoding each one to
+            // RGBA, which costs 8x the memory and the CPU time to do it. The emulator checks the host actually
+            // advertises PVRTC and falls back to decoding anything it refuses, but a driver can still differ from
+            // our decoder, so this is off unless asked for.
+            setenv("IT_GLES_PVRTC_NATIVE", UserDefaults.standard.bool(forKey: "pvrtcNative") ? "1" : "0", 1)
             // The graphics fix: rectangle textures (what the iPod touch 2G composites with) drawn as plain 2D textures.
             setenv("IT_GLES_RECT2D", (UserDefaults.standard.object(forKey: "rect2d") as? Bool ?? true) ? "1" : "0", 1)
             try? FileManager.default.createDirectory(at: directory.appendingPathComponent("logs"), withIntermediateDirectories: true)
@@ -218,6 +223,7 @@ final class Emulator: ObservableObject {
                         await ga.fixWebProxy()
                         await ga.revertGLFrontEnd()
                         await ga.reportAppListOncePerBoot()
+                        await ga.reportFrontmost()
                         await ga.reportNewCrash()
                         await ga.flushSimulatedLocation()
                     }
