@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 23 Nov 2026 18:35:00 -0700
+Subject: [PATCH] ios: ANGLE does not get native PVRTC, and say the extensions
+
+0035 put PVRTC through to the host untouched. On ANGLE that produces a
+black game: Wipeout, Wipeout 2 and Bejeweled drew their entire artwork
+black while their text and uncompressed textures were perfect.
+
+The failure has no symptom to catch. ANGLE advertises
+GL_IMG_texture_compression_pvrtc, takes every glCompressedTexImage2D
+without raising an error, and then samples black -- the run's log has
+not one REFUSED or GL error from 145 native uploads, all square and
+power of two. Its ES 1.1 is emulated over its own core and compressed
+formats evidently do not survive the trip.
+
+With nothing to detect, the renderer has to be named. The iPhone's own
+OpenGL ES (gl-renderer=es3) is the driver these formats are native to,
+so it is still free to try; ANGLE decodes as it always did and says why.
+
+Also prints GL_EXTENSIONS on every renderer, not just the non-ANGLE EAGL
+build. Working out what a host actually offers should not need a
+custom build.
+
+---
+  hw/arm/gles-host.c | 26 +++++++++++++++++++++++---
+  1 file changed, 23 insertions(+), 3 deletions(-)
+
+diff --git a/hw/arm/gles-host.c b/hw/arm/gles-host.c
+index 7a5f965..3aec68e 100644
+--- a/hw/arm/gles-host.c
++++ b/hw/arm/gles-host.c
+@@ -2934,11 +2934,31 @@ static bool gles_pvrtc_native(void)
+             return false;
+         }
+         /* A context is current by the time any upload runs, so the string is here to be read. */
++        const char *renderer = (const char *)glGetString(GL_RENDERER);
+         ext = (const char *)glGetString(GL_EXTENSIONS);
+         on = ext && strstr(ext, "texture_compression_pvrtc") ? 1 : 0;
+-        fprintf(stderr, "[gles] PVRTC textures stay compressed: %s\n",
+-                on ? "yes (the host GL takes them)"
+-                   : "NO -- this host GL does not advertise PVRTC, so they are decoded as before");
++        /*
++         * ANGLE is the exception, and it has to be named rather than detected: it advertises PVRTC, accepts every
++         * upload without raising a single error, and then samples black. Update 87's run had Wipeout, Wipeout 2
++         * and Bejeweled draw their whole artwork black while their text and uncompressed textures were perfect,
++         * with no GL error anywhere in the log -- there is nothing to catch at upload time, so the only honest
++         * check is which renderer this is. Its ES 1.1 is emulated over its own core and compressed formats do not
++         * survive that trip.
++         *
++         * The iPhone's own OpenGL ES (gl-renderer=es3) is the driver these formats are native to, so it is left
++         * free to try.
++         */
++        if (on && renderer && strstr(renderer, "ANGLE")) {
++            on = 0;
++            fprintf(stderr, "[gles] PVRTC textures stay compressed: NO -- this renderer says it takes them and "
++                    "then draws them black, so they are decoded as before. The iPhone's own OpenGL ES "
++                    "(Settings > Graphics) is the one to try this on.\n");
++        } else {
++            fprintf(stderr, "[gles] PVRTC textures stay compressed: %s\n",
++                    on ? "yes (the host GL takes them)"
++                       : "NO -- this host GL does not advertise PVRTC, so they are decoded as before");
++        }
++        if (ext) fprintf(stderr, "[gles] host extensions: %s\n", ext);
+     }
+     return on == 1;
+ }
+-- 
+2.43.0

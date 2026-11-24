@@ -36,7 +36,7 @@ struct GraphicsCaptureRow: View {
 /// and what it can cost.
 struct CompressedTexturesRow: View {
     @AppStorage("pvrtcNative") private var pvrtcNative = false
-    var body: some View { SixToggleRow(title: "Keep Textures Compressed", isOn: $pvrtcNative) }
+    var body: some View { SixToggleRow(title: "Smaller Textures", isOn: $pvrtcNative) }
 }
 
 /// The original home screen, section for section, drawn as iOS 6's grouped tables.

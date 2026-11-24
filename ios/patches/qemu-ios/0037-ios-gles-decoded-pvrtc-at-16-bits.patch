@@ -1,0 +1,118 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 23 Nov 2026 18:45:00 -0700
+Subject: [PATCH] ios: decoded PVRTC at 16 bits a pixel
+
+0035 saves 8x by not decoding at all, and 0036 had to shut that off on
+ANGLE, which takes the uploads without complaint and draws them black.
+That leaves the renderer most people run on paying 4 bytes a pixel for
+artwork that arrived at half a byte.
+
+This is the saving that needs nothing from the driver. Decode exactly as
+before, then keep the result at 16 bits: PVRTC's RGB formats carry no
+alpha so RGB565 loses only colour precision, and the RGBA ones go to
+RGBA4444. Half the texture memory on every renderer, in two types ANGLE
+has handled all along -- update 87's own log has guest textures arriving
+as 0x8363 and 0x8033.
+
+2x that works beats 8x that does not. The cost is mild banding on smooth
+gradients, and IT_GLES_PVRTC_16BIT leaves it off unless asked.
+
+The conversion is in place: the output is half the input and is written
+behind the read, so the two never cross.
+
+---
+  hw/arm/gles-host.c | 60 +++++++++++++++++++++++++++++++++++++++++++++++++-----
+  1 file changed, 55 insertions(+), 5 deletions(-)
+
+diff --git a/hw/arm/gles-host.c b/hw/arm/gles-host.c
+index 3aec68e..09d5633 100644
+--- a/hw/arm/gles-host.c
++++ b/hw/arm/gles-host.c
+@@ -2963,6 +2963,44 @@ static bool gles_pvrtc_native(void)
+     return on == 1;
+ }
+ 
++/*
++ * The same saving without trusting the host driver at all: decode as always, then keep the result at 16 bits a
++ * pixel instead of 32.
++ *
++ * PVRTC's RGB formats carry no alpha, so RGB565 loses nothing but colour precision; the RGBA ones go to RGBA4444.
++ * Either way the texture is half the size of the RGBA8888 it would have been, on every renderer, with no format
++ * the host has to agree to -- ANGLE takes these two types already, which is more than can be said for PVRTC
++ * itself (0036). The cost is mild banding on smooth gradients.
++ */
++static bool gles_pvrtc_16bit(void)
++{
++    static int on = -1;
++
++    if (on < 0) {
++        const char *v = getenv("IT_GLES_PVRTC_16BIT");
++        on = v && atoi(v) ? 1 : 0;
++        if (on) fprintf(stderr, "[gles] decoded PVRTC is kept at 16 bits a pixel (half the memory)\n");
++    }
++    return on == 1;
++}
++
++/*
++ * RGBA8888 -> RGB565 or RGBA4444, in place: the output is half the input and is written behind the read, so the
++ * two never cross.
++ */
++static void gles_pack16(uint8_t *buf, size_t pixels, bool alpha)
++{
++    uint16_t *out = (uint16_t *)buf;
++
++    for (size_t i = 0; i < pixels; i++) {
++        const uint8_t *p = buf + i * 4;
++        uint16_t r = p[0], g = p[1], b = p[2], a = p[3];
++
++        out[i] = alpha ? (uint16_t)(((r >> 4) << 12) | ((g >> 4) << 8) | ((b >> 4) << 4) | (a >> 4))
++                       : (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
++    }
++}
++
+ static bool pvrtc_decode(const uint8_t *src, uint32_t w, uint32_t h, int bpp,
+                          bool alpha, bool padded, uint8_t *dst)
+ {
+@@ -5563,22 +5601,34 @@ static int64_t gles_pvrtc_upload(CPUState *cpu, uint32_t target, uint32_t level,
+         memset(dst, 0, (size_t)w * h * 4);
+     }
+     gles_report_decode(format, w, h, dst);
+-    if (!replace && !gles_charge_texture(target, level, (uint64_t)w * h * 4)) {
++    /* Half the bytes, same picture to within a little banding. Done after the report so what it measures is the
++     * decode itself, not the packing. */
++    bool alpha = format == PVRTC_RGBA_2BPP || format == PVRTC_RGBA_4BPP;
++    bool packed = gles_pvrtc_16bit();
++    GLenum texels = GL_UNSIGNED_BYTE, give = GL_RGBA;
++    if (packed) {
++        gles_pack16(dst, (size_t)w * h, alpha);
++        texels = alpha ? GL_UNSIGNED_SHORT_4_4_4_4 : GL_UNSIGNED_SHORT_5_6_5;
++        give = alpha ? GL_RGBA : GL_RGB;
++    }
++    if (!replace && !gles_charge_texture(target, level, (uint64_t)w * h * (packed ? 2 : 4))) {
+         return gles_reject(GL_OUT_OF_MEMORY);
+     }
+     gles_texture_begin();
+     gles_unpack_tight();
+     if (replace) {
+-        glTexSubImage2D(target, level, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, dst);
++        glTexSubImage2D(target, level, 0, 0, w, h, give, texels, dst);
+     } else {
+         /* An ES host takes RGBA texels only into RGBA storage (GL_RGB would be GL_INVALID_OPERATION, and so would a
+          * replacement's RGBA glTexSubImage2D); the RGB formats decode with alpha 255, so they sample the same. */
+ #ifdef GLES_HOST_ANGLE
+-        GLenum internal = GL_RGBA;
++        /* An ES host wants the internal format to match what it is given; packed texels already say which. */
++        GLenum internal = packed ? give : GL_RGBA;
+ #else
+-        GLenum internal = (format == PVRTC_RGB_2BPP || format == PVRTC_RGB_4BPP) ? GL_RGB : GL_RGBA;
++        GLenum internal = packed ? give
++                        : ((format == PVRTC_RGB_2BPP || format == PVRTC_RGB_4BPP) ? GL_RGB : GL_RGBA);
+ #endif
+-        glTexImage2D(target, level, internal, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, dst);
++        glTexImage2D(target, level, internal, w, h, 0, give, texels, dst);
+     }
+     int64_t decoded = gles_texture_end(target, level, (GLESPVRTCLevel){ w, h, format });
+     if (!decoded && level == 0 && !replace && target == GL_TEXTURE_2D) {
+-- 
+2.43.0

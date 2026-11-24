@@ -3,6 +3,42 @@
 Halcyon (formerly Light Touch for iOS / QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 89 — Half Measures
+
+Stacks on 88. Emulator patch 0037, so the emulator libraries rebuild.
+
+**Changed**
+- **"Keep textures compressed" is now "Smaller textures", and it works on every graphics mode.**
+
+  The compressed route saves the most but only works on the iPhone's own OpenGL ES, because the default mode draws
+  it black. So the default mode now gets the other half of the idea: the artwork is unpacked as usual, then kept
+  at **two bytes a pixel instead of four**. Half the texture memory, in a form every driver has handled for
+  fifteen years, with nothing to trust and no way to produce a black screen.
+
+  One switch, and it takes whichever route your graphics mode can actually do. Two times that works beats eight
+  times that doesn't.
+
+  Still experimental: the half-size route can show mild banding on smooth gradients.
+
+## Update 88 — Black Is Not a Colour
+
+Stacks on 87. Emulator patch 0036, so the emulator libraries rebuild.
+
+**Fixed**
+- **Keep Textures Compressed no longer ruins games on the default graphics mode.** Turned on, it drew Wipeout,
+  Wipeout 2 and Bejeweled entirely black. The default mode (ANGLE) claims it can take this artwork, accepts every
+  single piece without one complaint, and then draws it black — 145 textures uploaded, not one error reported.
+  There is nothing to detect, so the mode is now named outright: it decodes as it always did, and the log says why.
+
+  The setting still works on **the iPhone's own OpenGL ES** (Settings ▸ Graphics), which is the mode this artwork
+  is native to. That is where to try it, and it is still experimental there.
+
+- **The log now lists what the graphics mode actually offers** on every mode, not just one. Finding out what a
+  host supports shouldn't need a special build.
+
+This is what the toggle was for. Nothing broke for anyone who didn't turn it on, and the experiment cost one
+build and no damage.
+
 ## Update 87 — Development Dream
 
 App-side only, no emulator rebuild. Stacks on 86.

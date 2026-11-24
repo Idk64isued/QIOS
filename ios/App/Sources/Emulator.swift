@@ -161,7 +161,13 @@ final class Emulator: ObservableObject {
             // RGBA, which costs 8x the memory and the CPU time to do it. The emulator checks the host actually
             // advertises PVRTC and falls back to decoding anything it refuses, but a driver can still differ from
             // our decoder, so this is off unless asked for.
-            setenv("IT_GLES_PVRTC_NATIVE", UserDefaults.standard.bool(forKey: "pvrtcNative") ? "1" : "0", 1)
+            // Two ways to the same end, best available first. Handing the host its PVRTC untouched is 8x the
+            // saving but needs a driver that truly supports it (the default renderer claims to and draws black,
+            // so the emulator refuses it there). Keeping the decoded result at 16 bits a pixel is only 2x but
+            // asks nothing of the driver and works everywhere, so it carries the renderers the first cannot.
+            let smaller = UserDefaults.standard.bool(forKey: "pvrtcNative")
+            setenv("IT_GLES_PVRTC_NATIVE", smaller ? "1" : "0", 1)
+            setenv("IT_GLES_PVRTC_16BIT", smaller ? "1" : "0", 1)
             // The graphics fix: rectangle textures (what the iPod touch 2G composites with) drawn as plain 2D textures.
             setenv("IT_GLES_RECT2D", (UserDefaults.standard.object(forKey: "rect2d") as? Bool ?? true) ? "1" : "0", 1)
             try? FileManager.default.createDirectory(at: directory.appendingPathComponent("logs"), withIntermediateDirectories: true)

@@ -453,6 +453,14 @@ can't download alongside yet.
   decoding level 0 clears the flag; cube faces decide per face (only 2D has a record); anything the host refuses
   decodes in the same call with the charge given back; `glGenerateMipmap` on a compressed texture keeps
   `MAX_LEVEL` at 0 and says so, which costs mip filtering on that texture and nothing else.
+- `patches/qemu-ios/0036`: native PVRTC is refused on ANGLE by name. It advertises the extension, accepts every
+  `glCompressedTexImage2D` without an error, and samples black (update 87: 145 uploads, all square power-of-two,
+  zero refusals, every game's artwork black while text was perfect). There is no symptom to detect, so the
+  renderer string decides. `gl-renderer=es3` is still allowed. `GL_EXTENSIONS` is now printed on every renderer.
+- `patches/qemu-ios/0037`: decoded PVRTC kept at 16 bits a pixel under `IT_GLES_PVRTC_16BIT` -- RGB565 for the
+  RGB formats (no alpha to lose), RGBA4444 for the others. Half the texture memory on every renderer, in two types
+  ANGLE already handles, where 0035's pass-through saves 8x but only where the driver truly supports it. The
+  conversion is in place: the output is half the input and is written behind the read.
 - `guest-helper/lt-locate.S`: sets the device's location through CoreLocation's `CLSimulationManager` (as Xcode's
   DTSimulateLocation does), for boards without a GPS receiver on iOS 5+. The one helper `build.py` signs: an ad-hoc
   `ldid -S`-style signature carrying `com.apple.locationd.simulation`, which locationd requires. Its strings sit at
