@@ -65,14 +65,47 @@ decoded to RGBA at 8x the memory. It trades this decoder's exact output for the 
 a game looks; every refusal falls back to decoding, and the setting turns it off per device. Worth testing broadly
 before it could ever be a default.
 
+## Jailbreaking a device that already exists
+
+Wanted, and deliberately left until 1.0 is out, because it is bigger than it looks. Scoped on 2026-11-23 so the
+next attempt does not start from zero.
+
+**It is not "copy Cydia in."** `--jailbreak` patches the kernel's sandbox — Seatbelt and `sb_evaluate` — and those
+patches are baked into the device's base during preparation. `Packages/FirmwareKit/Sources/FirmwareSchema/`
+`PreparationChanges.swift` records four rounds of getting them right, each board- and version-specific:
+
+- serial 6 (`87176ebc`, iOS 5/6/7): the kernel's Seatbelt was stock, so sandboxed apps died when Substrate's
+  library loaded
+- serial 7 (`c4ad1d50`, iOS 4): the sandbox patch missed `sb_evaluate` on 4.x, same symptom
+- serial 18 (`3eb0c3c3`): the patch left `sb_evaluate`'s action byte empty, so the kernel killed a sandboxed
+  daemon that switches profile on exec — BTServer restarted all session on boards that keep it
+
+**Why "later" is hard.** A device is `base/` (prepared, read-only: `kboot.bin`, `nor.bin`) plus `overlay/` (its
+NAND and a writable NOR copy — where every installed app lives). Jailbreaking after the fact means a patched
+kernel married to a filesystem built without one, plus Cydia and Substrate placed into a system that is already
+running. Each of those can leave a device that will not boot, which costs more than the apps it was meant to save.
+
+**The shape a working attempt would probably take**, in order of what to confirm first:
+
+1. Can the sandbox patches be applied to an existing `base/kboot.bin` on their own, outside a full preparation? The
+   kernel is a separate file from the NAND, so if yes, the overlay never has to be touched and most of the risk
+   goes away. Confirm this before anything else — it decides whether the feature is cheap or expensive.
+2. Cydia and Substrate are files. The guest agent already installs apps into a running device (`put`, `lt-unpack`,
+   `chown`, the icon-cache rebuild in `GuestInstaller.swift`), so placing them at runtime is the part that is
+   already solved.
+3. AMFI is not an obstacle here: the serial log shows `AMFI: Invalid signature but permitting execution`, so
+   unsigned binaries already run. None of a real jailbreak's exploit work applies.
+4. Take a backup first, and make the option reversible (keep the stock `kboot.bin` beside the patched one) so a
+   failed attempt is a setting away from undone rather than a lost device.
+
 ## Deliberately not in 1.0
 
 Each of these is a new subsystem, not a fix, and would end the release on a cliffhanger:
 
 - Real camera support
 - Real (non-simulated) GPS
-- Jailbreaking an already-set-up device
 - A Cydia repo hub
+- Jailbreaking a device that already exists — wanted, and scoped above; held until after 1.0 on purpose
 - Anti-aliasing
 - JIT-less speed work
 - Fake serial numbers for iServices — declined, not deferred

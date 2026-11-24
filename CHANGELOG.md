@@ -3,6 +3,38 @@
 Halcyon (formerly Light Touch for iOS / QIOS), newest first. Each update is named for its commit. "Added", "Fixed" and "Removed" say
 what changed for someone using the app; the patch numbers are the emulator changes in `ios/patches/qemu-ios`.
 
+## Update 91 — Caught in the Act
+
+App-side only, no emulator rebuild. Stacks on 90.
+
+Update 89's report was meant to show Wipeout 2 crashing. It didn't contain Wipeout 2 at all. The log notes which
+app is in front, but it only asked every thirty seconds, and a game that dies two seconds after you tap its icon
+is gone long before the next question. The one report that mattered most was the one the log couldn't see.
+
+**Fixed**
+- **The log now checks which app is in front every three seconds** instead of every thirty. It's one small
+  question and it only writes a line when the answer changes, so asking ten times as often costs almost nothing.
+  The slower checks stay on their own schedule.
+- **A game that quits on its own is now named as such.** If an app is replaced by the Home screen within half a
+  minute of opening, nobody closed it — it ended. That's what a crash looks like from outside, and iOS 6 only
+  writes a crash report sometimes, so this is often the only witness:
+
+  `com.activision.wipeout2 went back to the Home screen after 3 s — it ended on its own`
+
+## Update 90 — Written Down
+
+Documentation only. No rebuild.
+
+**Added**
+- **ROADMAP.md now scopes "jailbreak a device that already exists."** It's wanted, and it's being held until after
+  1.0 on purpose, so the reasons are written down rather than remembered: it patches the kernel's sandbox rather
+  than just copying Cydia in, there are four recorded rounds of getting those patches right, and the risk is a
+  device that won't boot rather than one that's merely missing apps.
+
+  It also records the four things to confirm first, in order, and which one decides whether the whole feature is
+  cheap or expensive. Next time this comes up — this year or next, me or someone else — it starts from there
+  instead of from nothing.
+
 ## Update 89 — Half Measures
 
 Stacks on 88. Emulator patch 0037, so the emulator libraries rebuild.

@@ -233,8 +233,17 @@ final class Emulator: ObservableObject {
                         await ga.reportNewCrash()
                         await ga.flushSimulatedLocation()
                     }
-                    try? await Task.sleep(nanoseconds: 30_000_000_000)
-                    if Task.isCancelled { return }
+                    // Which app is in front is asked far more often than the rest of this loop runs: a game
+                    // that dies two seconds after its icon is tapped was invisible at thirty-second intervals,
+                    // which is exactly the report that mattered (Wipeout 2 never appeared in update 89's log at
+                    // all). It is one short request and it only writes a line when the answer changes, so asking
+                    // ten times as often costs almost nothing. The heavy checks above stay on their own pace.
+                    for _ in 0..<10 {
+                        try? await Task.sleep(nanoseconds: 3_000_000_000)
+                        if Task.isCancelled { return }
+                        let live = await ga.status
+                        if live == .alive { await ga.reportFrontmost() }
+                    }
                     await ga.probe()
                 }
             }

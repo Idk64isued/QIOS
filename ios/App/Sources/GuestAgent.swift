@@ -41,6 +41,8 @@ final class GuestAgent: ObservableObject {
     var lastCrashSeen: String?
     /// The app that was last seen in front, so a change is said once rather than every few seconds.
     var frontmostSeen: String?
+    /// When it came to the front, so an app that goes straight back to the Home screen can be named as such.
+    var frontmostSince: Date?
     /// Simulated location (GuestLocation): where this phone last was, what the device was last told this boot,
     /// whether lt-locate is in place, and whether this iOS turned the simulation down (then it isn't tried again
     /// until the next boot).
@@ -199,6 +201,7 @@ final class GuestAgent: ObservableObject {
         installdNeverReached = false
         installdJobChecked = false
         frontmostSeen = nil         // a new boot starts at SpringBoard again; say what comes to the front first
+        frontmostSince = nil
         locateReady = false
         locationSent = nil          // locationd forgets a simulated location at a restart: tell the new boot
         locationRefused = false
@@ -414,7 +417,23 @@ final class GuestAgent: ObservableObject {
         else { return }
         let name = (String(data: reply.body, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name != frontmostSeen else { return }
+        /*
+         * An app that is replaced by the Home screen within half a minute of reaching the front did not get
+         * closed by anyone: it ended. That is what a crash looks like from out here, and it is worth saying
+         * plainly, because the device writes a crash report only sometimes and the frontmost poll is the only
+         * other witness.
+         */
+        let home = "com.apple.springboard"
+        if let previous = frontmostSeen, let since = frontmostSince,
+           previous.lowercased() != home, name.lowercased() == home {
+            let seconds = Date().timeIntervalSince(since)
+            if seconds < 30 {
+                log(String(format: "%@ went back to the Home screen after %.0f s \u{2014} it ended on its own "
+                           + "(a crash looks like this from here)", previous, seconds))
+            }
+        }
         frontmostSeen = name
+        frontmostSince = Date()
         log("in front: \(name)")
     }
 
